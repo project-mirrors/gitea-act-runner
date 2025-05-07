@@ -281,7 +281,7 @@ func registerNoInteractive(ctx context.Context, configFile string, regArgs *regi
 	}
 	if err := inputs.validate(); err != nil {
 		log.WithError(err).Errorf("Invalid input, please re-run act command.")
-		return nil
+		return err
 	}
 	if err := doRegister(ctx, cfg, inputs); err != nil {
 		return fmt.Errorf("Failed to register runner: %w", err)
