@@ -163,6 +163,12 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		preset.Token = t
 	}
 
+	if actionsIdTokenRequestUrl := taskContext["actions_id_token_request_url"].GetStringValue(); actionsIdTokenRequestUrl != "" {
+		r.envs["ACTIONS_ID_TOKEN_REQUEST_URL"] = actionsIdTokenRequestUrl
+		r.envs["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] = taskContext["actions_id_token_request_token"].GetStringValue()
+		task.Secrets["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] = r.envs["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+	}
+
 	giteaRuntimeToken := taskContext["gitea_runtime_token"].GetStringValue()
 	if giteaRuntimeToken == "" {
 		// use task token to action api token for previous Gitea Server Versions
