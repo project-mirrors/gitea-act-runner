@@ -52,7 +52,7 @@ func runRegister(ctx context.Context, regArgs *registerArgs, configFile *string)
 			}
 		} else {
 			go func() {
-				if err := registerInteractive(ctx, *configFile); err != nil {
+				if err := registerInteractive(ctx, *configFile, regArgs); err != nil {
 					log.Fatal(err)
 					return
 				}
@@ -127,6 +127,22 @@ func validateLabels(ls []string) error {
 	return nil
 }
 
+func (r *registerInputs) stageValue(stage registerStage) string {
+	switch stage {
+	case StageInputInstance:
+		return r.InstanceAddr
+	case StageInputToken:
+		return r.Token
+	case StageInputRunnerName:
+		return r.RunnerName
+	case StageInputLabels:
+		if len(r.Labels) > 0 {
+			return strings.Join(r.Labels, ",")
+		}
+	}
+	return ""
+}
+
 func (r *registerInputs) assignToNext(stage registerStage, value string, cfg *config.Config) registerStage {
 	// must set instance address and token.
 	// if empty, keep current stage.
@@ -181,6 +197,7 @@ func (r *registerInputs) assignToNext(stage registerStage, value string, cfg *co
 
 		if validateLabels(r.Labels) != nil {
 			log.Infoln("Invalid labels, please input again, leave blank to use the default labels (for example, ubuntu-latest:docker://docker.gitea.com/runner-images:ubuntu-latest)")
+			r.Labels = nil
 			return StageInputLabels
 		}
 		return StageWaitingForRegistration
@@ -188,11 +205,25 @@ func (r *registerInputs) assignToNext(stage registerStage, value string, cfg *co
 	return StageUnknown
 }
 
-func registerInteractive(ctx context.Context, configFile string) error {
+func initInputs(regArgs *registerArgs) *registerInputs {
+	inputs := &registerInputs{
+		InstanceAddr: regArgs.InstanceAddr,
+		Token:        regArgs.Token,
+		RunnerName:   regArgs.RunnerName,
+		Ephemeral:    regArgs.Ephemeral,
+	}
+	regArgs.Labels = strings.TrimSpace(regArgs.Labels)
+	// command line flag.
+	if regArgs.Labels != "" {
+		inputs.Labels = strings.Split(regArgs.Labels, ",")
+	}
+	return inputs
+}
+
+func registerInteractive(ctx context.Context, configFile string, regArgs *registerArgs) error {
 	var (
 		reader = bufio.NewReader(os.Stdin)
 		stage  = StageInputInstance
-		inputs = new(registerInputs)
 	)
 
 	cfg, err := config.LoadDefault(configFile)
@@ -202,13 +233,17 @@ func registerInteractive(ctx context.Context, configFile string) error {
 	if f, err := os.Stat(cfg.Runner.File); err == nil && !f.IsDir() {
 		stage = StageOverwriteLocalConfig
 	}
+	inputs := initInputs(regArgs)
 
 	for {
-		printStageHelp(stage)
-
-		cmdString, err := reader.ReadString('\n')
-		if err != nil {
-			return err
+		cmdString := inputs.stageValue(stage)
+		if cmdString == "" {
+			printStageHelp(stage)
+			var err error
+			cmdString, err = reader.ReadString('\n')
+			if err != nil {
+				return err
+			}
 		}
 		stage = inputs.assignToNext(stage, strings.TrimSpace(cmdString), cfg)
 
@@ -255,24 +290,16 @@ func registerNoInteractive(ctx context.Context, configFile string, regArgs *regi
 	if err != nil {
 		return err
 	}
-	inputs := &registerInputs{
-		InstanceAddr: regArgs.InstanceAddr,
-		Token:        regArgs.Token,
-		RunnerName:   regArgs.RunnerName,
-		Labels:       defaultLabels,
-		Ephemeral:    regArgs.Ephemeral,
-	}
-	regArgs.Labels = strings.TrimSpace(regArgs.Labels)
-	// command line flag.
-	if regArgs.Labels != "" {
-		inputs.Labels = strings.Split(regArgs.Labels, ",")
-	}
+	inputs := initInputs(regArgs)
 	// specify labels in config file.
 	if len(cfg.Runner.Labels) > 0 {
 		if regArgs.Labels != "" {
 			log.Warn("Labels from command will be ignored, use labels defined in config file.")
 		}
 		inputs.Labels = cfg.Runner.Labels
+	}
+	if len(inputs.Labels) == 0 {
+		inputs.Labels = defaultLabels
 	}
 
 	if inputs.RunnerName == "" {
