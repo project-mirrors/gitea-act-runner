@@ -160,39 +160,46 @@ type daemonArgs struct {
 
 // initLogging setup the global logrus logger.
 func initLogging(cfg *config.Config) {
+	callPrettyfier := func(f *runtime.Frame) (string, string) {
+		// get function name
+		s := strings.Split(f.Function, ".")
+		funcname := "[" + s[len(s)-1] + "]"
+		// get file name and line number
+		_, filename := path.Split(f.File)
+		filename = "[" + filename + ":" + strconv.Itoa(f.Line) + "]"
+		return funcname, filename
+	}
+
 	isTerm := isatty.IsTerminal(os.Stdout.Fd())
 	format := &log.TextFormatter{
-		DisableColors: !isTerm,
-		FullTimestamp: true,
+		DisableColors:    !isTerm,
+		FullTimestamp:    true,
+		CallerPrettyfier: callPrettyfier,
 	}
 	log.SetFormatter(format)
 
-	if l := cfg.Log.Level; l != "" {
-		level, err := log.ParseLevel(l)
-		if err != nil {
-			log.WithError(err).
-				Errorf("invalid log level: %q", l)
-		}
+	l := cfg.Log.Level
+	if l == "" {
+		log.Infof("Log level not set, sticking to info")
+		return
+	}
 
-		// debug level
-		if level == log.DebugLevel {
-			log.SetReportCaller(true)
-			format.CallerPrettyfier = func(f *runtime.Frame) (string, string) {
-				// get function name
-				s := strings.Split(f.Function, ".")
-				funcname := "[" + s[len(s)-1] + "]"
-				// get file name and line number
-				_, filename := path.Split(f.File)
-				filename = "[" + filename + ":" + strconv.Itoa(f.Line) + "]"
-				return funcname, filename
-			}
-			log.SetFormatter(format)
-		}
+	level, err := log.ParseLevel(l)
+	if err != nil {
+		log.WithError(err).
+			Errorf("invalid log level: %q", l)
+	}
 
-		if log.GetLevel() != level {
-			log.Infof("log level changed to %v", level)
-			log.SetLevel(level)
-		}
+	// debug level
+	switch level {
+	case log.DebugLevel, log.TraceLevel:
+		log.SetReportCaller(true) // Only in debug or trace because it takes a performance toll
+		log.Infof("Log level %s requested, setting up report caller for further debugging", level)
+	}
+
+	if log.GetLevel() != level {
+		log.Infof("log level set to %v", level)
+		log.SetLevel(level)
 	}
 }
 

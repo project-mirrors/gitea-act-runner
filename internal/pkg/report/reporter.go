@@ -143,6 +143,12 @@ func (r *Reporter) Fire(entry *log.Entry) error {
 	if step.StartedAt == nil {
 		step.StartedAt = timestamppb.New(timestamp)
 	}
+
+	// Force reporting log errors as raw output to prevent silent failures
+	if entry.Level == log.ErrorLevel {
+		entry.Data["raw_output"] = true
+	}
+
 	if v, ok := entry.Data["raw_output"]; ok {
 		if rawOutput, ok := v.(bool); ok && rawOutput {
 			if row := r.parseLogRow(entry); row != nil {
