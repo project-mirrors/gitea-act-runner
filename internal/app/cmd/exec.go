@@ -39,6 +39,7 @@ type executeArgs struct {
 	envs                  []string
 	envfile               string
 	secrets               []string
+	vars                  []string
 	defaultActionsURL     string
 	insecureSecrets       bool
 	privileged            bool
@@ -128,6 +129,22 @@ func (i *executeArgs) LoadEnvs() map[string]string {
 	envs["ACTIONS_CACHE_URL"] = i.cacheHandler.ExternalURL() + "/"
 
 	return envs
+}
+
+func (i *executeArgs) LoadVars() map[string]string {
+	vars := make(map[string]string)
+	if i.vars != nil {
+		for _, runVar := range i.vars {
+			e := strings.SplitN(runVar, `=`, 2)
+			if len(e) == 2 {
+				vars[e[0]] = e[1]
+			} else {
+				vars[e[0]] = ""
+			}
+		}
+	}
+
+	return vars
 }
 
 // Workdir returns path to workdir
@@ -386,6 +403,7 @@ func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command
 			LogOutput:             true,
 			JSONLogger:            execArgs.jsonLogger,
 			Env:                   execArgs.LoadEnvs(),
+			Vars:                  execArgs.LoadVars(),
 			Secrets:               execArgs.LoadSecrets(),
 			InsecureSecrets:       execArgs.insecureSecrets,
 			Privileged:            execArgs.privileged,
@@ -468,6 +486,7 @@ func loadExecCmd(ctx context.Context) *cobra.Command {
 	execCmd.Flags().StringArrayVarP(&execArg.envs, "env", "", []string{}, "env to make available to actions with optional value (e.g. --env myenv=foo or --env myenv)")
 	execCmd.PersistentFlags().StringVarP(&execArg.envfile, "env-file", "", ".env", "environment file to read and use as env in the containers")
 	execCmd.Flags().StringArrayVarP(&execArg.secrets, "secret", "s", []string{}, "secret to make available to actions with optional value (e.g. -s mysecret=foo or -s mysecret)")
+	execCmd.Flags().StringArrayVarP(&execArg.vars, "var", "", []string{}, "variable to make available to actions with optional value (e.g. --var myvar=foo or --var myvar)")
 	execCmd.PersistentFlags().BoolVarP(&execArg.insecureSecrets, "insecure-secrets", "", false, "NOT RECOMMENDED! Doesn't hide secrets while printing logs.")
 	execCmd.Flags().BoolVar(&execArg.privileged, "privileged", false, "use privileged mode")
 	execCmd.Flags().StringVar(&execArg.usernsMode, "userns", "", "user namespace to use")
