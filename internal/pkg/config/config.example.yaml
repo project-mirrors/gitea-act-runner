@@ -99,6 +99,10 @@ container:
   force_pull: true
   # Rebuild docker image(s) even if already present
   force_rebuild: false
+  # Always require a reachable docker daemon, even if not required by act_runner
+  require_docker: false
+  # Timeout to wait for the docker daemon to be reachable, if docker is required by require_docker or act_runner
+  docker_timeout: 0s
 
 host:
   # The parent directory of a job's working directory.
