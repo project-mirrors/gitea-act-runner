@@ -31,6 +31,7 @@ type Runner struct {
 	FetchTimeout    time.Duration     `yaml:"fetch_timeout"`    // FetchTimeout specifies the timeout duration for fetching resources.
 	FetchInterval   time.Duration     `yaml:"fetch_interval"`   // FetchInterval specifies the interval duration for fetching resources.
 	Labels          []string          `yaml:"labels"`           // Labels specify the labels of the runner. Labels are declared on each startup
+	GithubMirror    string            `yaml:"github_mirror"`    // GithubMirror defines what mirrors should be used when using github
 }
 
 // Cache represents the configuration for caching.

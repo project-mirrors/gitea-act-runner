@@ -113,6 +113,17 @@ func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) error {
 	return nil
 }
 
+// getDefaultActionsURL
+// when DEFAULT_ACTIONS_URL == "https://github.com" and GithubMirror is not blank,
+// it should be set to GithubMirror first.
+func (r *Runner) getDefaultActionsURL(ctx context.Context, task *runnerv1.Task) string {
+	giteaDefaultActionsURL := task.Context.Fields["gitea_default_actions_url"].GetStringValue()
+	if giteaDefaultActionsURL == "https://github.com" && r.cfg.Runner.GithubMirror != "" {
+		return r.cfg.Runner.GithubMirror
+	}
+	return giteaDefaultActionsURL
+}
+
 func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.Reporter) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -137,7 +148,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	taskContext := task.Context.Fields
 
 	log.Infof("task %v repo is %v %v %v", task.Id, taskContext["repository"].GetStringValue(),
-		taskContext["gitea_default_actions_url"].GetStringValue(),
+		r.getDefaultActionsURL(ctx, task),
 		r.client.Address())
 
 	preset := &model.GithubContext{
@@ -211,7 +222,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		ContainerOptions:      r.cfg.Container.Options,
 		ContainerDaemonSocket: r.cfg.Container.DockerHost,
 		Privileged:            r.cfg.Container.Privileged,
-		DefaultActionInstance: taskContext["gitea_default_actions_url"].GetStringValue(),
+		DefaultActionInstance: r.getDefaultActionsURL(ctx, task),
 		PlatformPicker:        r.labels.PickPlatform,
 		Vars:                  task.Vars,
 		ValidVolumes:          r.cfg.Container.ValidVolumes,
