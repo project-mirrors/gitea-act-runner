@@ -59,8 +59,6 @@ RUN apk add --no-cache tini bash git tzdata
 COPY --from=builder /opt/src/act_runner/act_runner /usr/local/bin/act_runner
 COPY scripts/run.sh /usr/local/bin/run.sh
 
-VOLUME /var/run/docker.sock
-
 VOLUME /data
 
 ENTRYPOINT ["/sbin/tini","--","run.sh"]
