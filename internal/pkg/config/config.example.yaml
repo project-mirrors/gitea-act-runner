@@ -44,8 +44,8 @@ runner:
   # If it's empty when execute `daemon`, will use labels in `.runner` file.
   labels:
     - "ubuntu-latest:docker://docker.gitea.com/runner-images:ubuntu-latest"
+    - "ubuntu-24.04:docker://docker.gitea.com/runner-images:ubuntu-24.04"
     - "ubuntu-22.04:docker://docker.gitea.com/runner-images:ubuntu-22.04"
-    - "ubuntu-20.04:docker://docker.gitea.com/runner-images:ubuntu-20.04"
 
 cache:
   # Enable cache server to use actions/cache.
