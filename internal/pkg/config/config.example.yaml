@@ -21,7 +21,7 @@ runner:
   env_file: .env
   # The timeout for a job to be finished.
   # Please note that the Gitea instance also has a timeout (3h by default) for the job.
-  # So the job could be stopped by the Gitea instance if it's timeout is shorter than this.
+  # So the job could be stopped by the Gitea instance if its timeout is shorter than this.
   timeout: 3h
   # The timeout for the runner to wait for running jobs to finish when shutting down.
   # Any running jobs that haven't finished after this timeout will be cancelled.
@@ -72,7 +72,7 @@ container:
   network: ""
   # Whether to use privileged mode or not when launching task containers (privileged mode is required for Docker-in-Docker).
   privileged: false
-  # And other options to be used when the container is started (eg, --add-host=my.gitea.url:host-gateway).
+  # Any other options to be used when the container is started (e.g., --add-host=my.gitea.url:host-gateway).
   options:
   # The parent directory of a job's working directory.
   # NOTE: There is no need to add the first '/' of the path as act_runner will add it automatically. 
@@ -90,7 +90,7 @@ container:
   # valid_volumes:
   #   - '**'
   valid_volumes: []
-  # overrides the docker client host with the specified one.
+  # Overrides the docker client host with the specified one.
   # If it's empty, act_runner will find an available docker host automatically.
   # If it's "-", act_runner will find an available docker host automatically, but the docker host won't be mounted to the job containers and service containers.
   # If it's not empty or "-", the specified docker host will be used. An error will be returned if it doesn't work.
