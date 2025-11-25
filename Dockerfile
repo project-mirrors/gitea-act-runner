@@ -17,7 +17,7 @@ RUN make clean && make build
 ### DIND VARIANT
 #
 #
-FROM docker:dind AS dind
+FROM docker:28-dind AS dind
 
 RUN apk add --no-cache s6 bash git tzdata
 
@@ -32,7 +32,7 @@ ENTRYPOINT ["s6-svscan","/etc/s6"]
 ### DIND-ROOTLESS VARIANT
 #
 #
-FROM docker:dind-rootless AS dind-rootless
+FROM docker:28-dind-rootless AS dind-rootless
 
 USER root
 RUN apk add --no-cache s6 bash git tzdata
