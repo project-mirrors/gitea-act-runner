@@ -308,63 +308,44 @@ A password in a proxy URL is hidden in job logs. Any step can still read it, bec
 
 #### Caching (`actions/cache`)
 
-Each runner starts its own cache server automatically. Cache entries are local to that runner — runners do not share a cache by default.
+Each runner starts its own cache server, so runners do not share cached entries. When the runner itself runs in Docker, set `cache.host` to an address job containers can reach and `cache.port` to a fixed published port, or put jobs on a shared `container.network`.
+
+**Sharing a cache between runners**
+
+Run one `gitea-runner cache-server` and point every runner at it, using the same secret everywhere, for example from `openssl rand -hex 32`:
+
+```yaml
+# cache-server.yaml
+cache:
+  dir: /data/actcache
+  port: 8088
+  external_secret: "<secret>" # or external_secret_file: /path/to/secret
+```
+
+```bash
+gitea-runner -c cache-server.yaml cache-server
+```
+
+```yaml
+# each runner's config
+cache:
+  external_server: "http://<cache-server-host>:8088/"
+  external_secret: "<secret>"
+```
+
+Jobs connect to `external_server` too, so point it at the reverse proxy if one fronts the server. `--dir`, `--host` and `--port` override the matching `cache` keys. Eviction settings take effect on the cache server, not on the runners.
+
+Runners can also share one `cache.dir` on a file system with working file locks, at the cost of slower cache requests.
 
 **Eviction**
 
-An entry nothing has read or written for `retention` is removed, and a repository past `repo_size_limit` loses its least recently accessed entries until it fits; `size_limit` caps the whole cache the same way. Age alone never retires an entry still in use, and whatever these allow, the cache keeps free space above `health_check.min_free_disk_space_mb` when health checks are enabled.
-
-These apply where the cache server runs, so on a shared server they belong in *its* config, not the runners'. See `retention`, `repo_size_limit`, `size_limit` and `sweep_interval` in [config.example.yaml](internal/pkg/config/config.example.yaml) for units and defaults.
+Entries not read or written within `retention` (default `168h`) are removed. A repository over `repo_size_limit` (default `10GB`) loses its least recently used entries, and `size_limit` (off by default) caps the whole cache the same way. Entries in use are never removed. The cache also keeps 1024 MiB free on its volume, or `health_check.min_free_disk_space_mb` when health checks are enabled. See [config.example.yaml](internal/pkg/config/config.example.yaml) for all options.
 
 **Cache service v2**
 
-`actions/cache@v4.2` and later can use the *cache service v2* API. The runner serves it from the same store as v1, on by default, and it works with `external_server`. Turn it off with:
+`actions/cache` v3.4.0, v4.2.0 and later use the cache service v2 API, which the runner serves by default. These actions fall back to v1 on hosts they do not recognize as GitHub, so the runner removes that check from them while a job runs. This also lets the stock `actions/upload-artifact` v4.4.0 and `actions/download-artifact` v4.1.8 and later work without the `gitea-upload-artifact` fork. With `runner.patch_actions: false`, the cache stays on v1 and the artifact actions fail.
 
-```yaml
-cache:
-  v2: false
-```
-
-Those actions refuse any host they do not take for GitHub, so the runner edits that check out of the bundle on its way into the job and puts the shared copy back afterwards. A bundle it does not recognise is left alone. The same edit lets the stock `actions/upload-artifact` and `actions/download-artifact` work from `v4.4.0` on, without the `gitea-upload-artifact` fork, so it is made whatever `v2` says. Set `runner.patch_actions: false` to leave bundles as shipped; the artifact actions then refuse and the cache client keeps to v1.
-
-With v2 the job's artifact calls go via the cache server, so jobs need to reach it to upload artifacts, not just to cache. `v2: false` sends them to Gitea directly.
-
-**Shared cache across multiple runners**
-
-Run one dedicated `gitea-runner cache-server` that all runners point at.
-
-1. Create a config file for the cache server host:
-
-   ```yaml
-   cache:
-     dir: /data/actcache
-     port: 8088
-     external_secret: "replace-with-a-strong-random-secret"
-     # external_secret_file: /path/to/secret # secret can also be passed via a file
-   ```
-
-2. Start the server:
-
-   ```bash
-   gitea-runner -c cache-server-config.yaml cache-server
-   ```
-
-3. On every runner:
-
-   ```yaml
-   cache:
-     external_server: "http://<cache-server-host>:8088/"
-     external_secret: "replace-with-a-strong-random-secret"  # must match the server
-     # external_secret_file: /path/to/secret # secret can also be passed via a file
-   ```
-
-Jobs reach the cache server at `external_server`, so when a reverse proxy fronts the server, point `external_server` at the proxy. The cache server itself needs no extra configuration.
-
-Alternatively, mount the same NFS/CIFS share on every runner and point `cache.dir` at it — simpler, but with weaker isolation between repositories.
-
-**S3 / MinIO** — mount object storage as a FUSE filesystem (e.g. [s3fs](https://github.com/s3fs-fuse/s3fs-fuse) or [goofys](https://github.com/kahing/goofys)) and set `cache.dir` to the mount point.
-
-Flags `--dir`, `--host`, and `--port` on `cache-server` override the corresponding `cache.*` YAML keys; all other settings, including `external_secret`, require the config file.
+With v2, artifact calls also go through the cache server, so jobs must be able to reach it. `cache.v2: false` sends them to Gitea directly, unless the Gitea URL has a path or `runner.insecure` is set with HTTPS.
 
 #### Official Docker image
 

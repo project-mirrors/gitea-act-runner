@@ -771,7 +771,7 @@ func TestHandler_gcCache(t *testing.T) {
 				Key:       "test_key_3",
 				Version:   "test_version",
 				Complete:  true,
-				UsedAt:    now.Add(-(testRetention + time.Second)).Unix(),
+				UsedAt:    now.Add(-(testRetention + touchStale + time.Second)).Unix(),
 				CreatedAt: now.Add(-(testRetention + time.Hour)).Unix(),
 			},
 			Kept: false,
@@ -1044,6 +1044,26 @@ func TestHandler_gcCacheInterval(t *testing.T) {
 	handler.gcAt = time.Now().Add(-45 * time.Minute) // past the configured interval, still inside the default
 	handler.gcCache()
 	assert.Empty(t, keptKeys(t, handler, []*Cache{cache}))
+}
+
+func TestHandler_touchCacheSkipsFreshCompletedEntries(t *testing.T) {
+	fresh := &Cache{Repo: testRepo, Key: "fresh", Version: "v", Complete: true, UsedAt: time.Now().Unix()}
+	pending := &Cache{Repo: testRepo, Key: "pending", Version: "v", UsedAt: time.Now().Add(-time.Second).Unix()}
+	handler := newTestHandler(t, Policy{}, fresh, pending)
+	txID := func() int {
+		db, err := handler.openDB()
+		require.NoError(t, err)
+		defer db.Close()
+		var id int
+		require.NoError(t, db.Bolt().View(func(tx *bbolt.Tx) error { id = tx.ID(); return nil }))
+		return id
+	}
+
+	before := txID()
+	require.NoError(t, handler.touchCache(fresh.ID, false))
+	assert.Equal(t, before, txID())
+	require.NoError(t, handler.touchCache(pending.ID, false))
+	assert.Greater(t, txID(), before)
 }
 
 // newTestHandler starts a handler with testToken registered, seeded with entries.

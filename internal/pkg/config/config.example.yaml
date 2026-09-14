@@ -177,9 +177,9 @@ cache:
   # A moved tag (e.g. a re-tagged "v6") or an updated branch stays at the cached commit
   # until its cache entry expires or is manually removed.
   #offline_mode: false
-  # Serve the actions cache service v2 API. The actions that use it refuse any host they do not
-  # take for GitHub, so reaching it means editing that check out of their own bundle, put back
-  # after the copy into the job. That edit is made either way, this only governs the API
+  # Serve the actions cache service v2 API. The actions that use it fall back to v1 on any host
+  # they do not take for GitHub, so reaching it means editing that check out of their own bundle,
+  # put back after the copy into the job. That edit is made either way, this only governs the API
   # advertised. A bundle that does not match is left alone. With v2, uploads need a reachable cache.
   #v2: true
   # How the cache server discards entries, ignored when external_server is set since that
