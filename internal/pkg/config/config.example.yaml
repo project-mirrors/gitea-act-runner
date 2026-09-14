@@ -180,7 +180,8 @@ cache:
   # Serve the actions cache service v2 API. The actions that use it fall back to v1 on any host
   # they do not take for GitHub, so reaching it means editing that check out of their own bundle,
   # put back after the copy into the job. That edit is made either way, this only governs the API
-  # advertised. A bundle that does not match is left alone. With v2, uploads need a reachable cache.
+  # advertised. A bundle that does not match is left alone. With v2, artifact uploads go via the
+  # cache server unless container jobs cannot reach its Docker network.
   #v2: true
   # How the cache server discards entries, ignored when external_server is set since that
   # server applies its own. Leave a setting out for its default; 0s or 0 turns the three

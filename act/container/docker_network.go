@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -171,4 +172,48 @@ func NewDockerNetworkRemoveExecutor(name string) common.Executor {
 
 		return errors.Join(errs...)
 	}
+}
+
+func IsolatedNetwork(ctx context.Context, addr netip.Addr, jobNetwork string) (string, error) {
+	cli, err := GetDockerClient(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer cli.Close()
+	return isolatedNetwork(ctx, cli, addr, jobNetwork)
+}
+
+func isolatedNetwork(ctx context.Context, cli client.APIClient, addr netip.Addr, jobNetwork string) (string, error) {
+	if jobNetwork == "host" || strings.HasPrefix(jobNetwork, "container:") {
+		return "", nil
+	}
+	containers, err := cli.ContainerList(ctx, client.ContainerListOptions{})
+	if err != nil {
+		return "", err
+	}
+	var holderID string
+	for _, summary := range containers.Items {
+		if summary.NetworkSettings == nil {
+			continue
+		}
+		for _, endpoint := range summary.NetworkSettings.Networks {
+			if endpoint != nil && (endpoint.IPAddress == addr || endpoint.GlobalIPv6Address == addr) {
+				holderID = endpoint.NetworkID
+			}
+		}
+	}
+	if holderID == "" {
+		return "", nil
+	}
+	holder, err := cli.NetworkInspect(ctx, holderID, client.NetworkInspectOptions{})
+	if err != nil || holder.Network.Driver != "bridge" {
+		return "", err
+	}
+	if jobNetwork != "" {
+		job, err := cli.NetworkInspect(ctx, jobNetwork, client.NetworkInspectOptions{})
+		if err != nil || job.Network.ID == holderID {
+			return "", err
+		}
+	}
+	return holder.Network.Name, nil
 }

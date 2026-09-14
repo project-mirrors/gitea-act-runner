@@ -360,6 +360,6 @@ func (f *GiteaFixture) Close(ctx context.Context) error {
 	if f.id == "" {
 		return f.cli.Close()
 	}
-	_, removeErr := f.cli.ContainerRemove(ctx, f.id, mobyclient.ContainerRemoveOptions{Force: true})
+	_, removeErr := f.cli.ContainerRemove(ctx, f.id, mobyclient.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 	return errors.Join(removeErr, f.cli.Close())
 }

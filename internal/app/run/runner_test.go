@@ -24,6 +24,7 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/ver"
 
 	"connectrpc.com/connect"
+	"gitea.dev/actionslib/pkg/model"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -336,6 +337,14 @@ func TestNewRunnerCacheServiceV2(t *testing.T) {
 		r.setResultsService(envs, resultsURL)
 		assert.Equal(t, resultsURL, envs["ACTIONS_RESULTS_URL"], instance)
 		assert.Empty(t, envs[runner.CacheServiceV2Env])
+	}
+
+	workflow, err := model.ReadWorkflow(strings.NewReader(`jobs: {native: {runs-on: native}, linux: {runs-on: linux}, containerized: {runs-on: native, container: alpine}, empty: {runs-on: native, container: ""}}`))
+	require.NoError(t, err)
+	r.isolatedCacheNetwork = func() string { return "compose" }
+	pickPlatform := func(runsOn []string) string { return map[string]string{"native": labels.SelfHostedPlatform}[runsOn[0]] }
+	for job, isolated := range map[string]bool{"native": false, "linux": true, "containerized": true, "empty": false} {
+		assert.Equal(t, isolated, r.cacheIsolatedFrom(workflow.GetJob(job), pickPlatform), job)
 	}
 }
 

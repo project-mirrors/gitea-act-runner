@@ -6,15 +6,49 @@ package container
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"testing"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestIsolatedNetwork(t *testing.T) {
+	ctx := context.Background()
+	cache, lan := netip.MustParseAddr("172.18.0.3"), netip.MustParseAddr("192.168.1.20")
+	client := &mockDockerClient{}
+	client.On("ContainerList", ctx, mobyclient.ContainerListOptions{}).Return(mobyclient.ContainerListResult{Items: []container.Summary{{}, {
+		NetworkSettings: &container.NetworkSettingsSummary{Networks: map[string]*network.EndpointSettings{
+			"compose": {NetworkID: "c0ffee", IPAddress: cache},
+			"lan":     {NetworkID: "beef", IPAddress: lan},
+		}},
+	}}}, nil)
+	for ref, inspected := range map[string]network.Network{
+		"c0ffee": {ID: "c0ffee", Name: "compose", Driver: "bridge"},
+		"beef":   {ID: "beef", Name: "lan", Driver: "macvlan"},
+		"c0f":    {ID: "c0ffee"},
+		"jobs":   {ID: "f00d"},
+	} {
+		client.On("NetworkInspect", ctx, ref, mobyclient.NetworkInspectOptions{}).
+			Return(mobyclient.NetworkInspectResult{Network: network.Inspect{Network: inspected}}, nil)
+	}
+	check := func(addr netip.Addr, jobNetwork, want string) {
+		got, err := isolatedNetwork(ctx, client, addr, jobNetwork)
+		require.NoError(t, err)
+		assert.Equal(t, want, got, jobNetwork)
+	}
+	check(cache, "", "compose")
+	check(cache, "jobs", "compose")
+	check(cache, "c0f", "")
+	check(cache, "host", "")
+	check(lan, "", "")
+	check(netip.MustParseAddr("10.0.0.5"), "", "")
+}
 
 func TestIsAddressPoolExhausted(t *testing.T) {
 	assert.True(t, isAddressPoolExhausted(cerrdefs.ErrInvalidArgument.WithMessage("Error response from daemon: all predefined address pools have been fully subnetted")))
