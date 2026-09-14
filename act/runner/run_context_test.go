@@ -641,6 +641,30 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, container.DefaultToolCache, gotmount[sharedToolCacheVolume])
 	})
+
+	t.Run("DaemonMountsAboveOwnerRepo", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("container paths are linux paths")
+		}
+		rc := &RunContext{
+			Run:    &model.Run{JobID: "job1", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job1": {}}}},
+			Config: &Config{BindWorkdir: true, Workdir: "/workspace/1/owner/repo", PresetGitHubContext: &model.GithubContext{}},
+		}
+
+		gotbind, _, err := rc.GetBindsAndMounts()
+		require.NoError(t, err)
+		assert.True(t, slices.ContainsFunc(gotbind, func(bind string) bool { return strings.HasPrefix(bind, "/workspace/1:/workspace/1") }), gotbind)
+
+		rc.Config.BindWorkdir = false
+		_, gotmount, err := rc.GetBindsAndMounts()
+		require.NoError(t, err)
+		assert.Equal(t, "/workspace/1", gotmount[rc.jobContainerName()])
+
+		require.NoError(t, rc.Run.Job().RawContainer.Encode(map[string][]string{"volumes": {"claimed:/workspace/1"}}))
+		_, gotmount, err = rc.GetBindsAndMounts()
+		require.NoError(t, err)
+		assert.Equal(t, "/workspace/1/owner/repo", gotmount[rc.jobContainerName()])
+	})
 }
 
 func TestRunContextValidVolumes(t *testing.T) {
@@ -669,6 +693,8 @@ func TestRunContextValidVolumes(t *testing.T) {
 	assert.NotContains(t, rc.validVolumes(), rc.Config.Workdir)
 	rc.Config.BindWorkdir = true
 	assert.Contains(t, rc.validVolumes(), rc.Config.Workdir)
+	rc.Config.PresetGitHubContext = &model.GithubContext{}
+	assert.Contains(t, rc.validVolumes(), filepath.FromSlash("/workspace/1"))
 }
 
 func TestCleanupJobResourcesCleansServicesWithoutJobContainer(t *testing.T) {
@@ -1523,7 +1549,7 @@ func TestCaptureJobContainerInfoExportsDockerWorkspace(t *testing.T) {
 	job := &containerMock{}
 	job.On("Inspect", mock.Anything).Return(&container.Info{
 		ID:     "job-container-id",
-		Mounts: map[string]string{"/workspace/owner/repo": "/var/lib/docker/volumes/job/_data"},
+		Mounts: map[string]string{"/workspace": "/var/lib/docker/volumes/job/_data"},
 	}, nil)
 	rc := &RunContext{
 		Config:       &Config{Workdir: "/workspace/owner/repo/"},
@@ -1534,7 +1560,7 @@ func TestCaptureJobContainerInfoExportsDockerWorkspace(t *testing.T) {
 	require.NoError(t, rc.captureJobContainerInfo()(context.Background()))
 
 	assert.Equal(t, "job-container-id", rc.jobContainerID)
-	assert.Equal(t, "/var/lib/docker/volumes/job/_data", rc.Env["GITEA_DOCKER_WORKSPACE"])
+	assert.Equal(t, "/var/lib/docker/volumes/job/_data/owner/repo", rc.Env["GITEA_DOCKER_WORKSPACE"])
 
 	rc.Config.Workdir = "/elsewhere"
 	rc.Env = map[string]string{}

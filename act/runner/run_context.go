@@ -18,6 +18,7 @@ import (
 	maps0 "maps"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -255,7 +256,7 @@ func (rc *RunContext) validVolumes() []string {
 		volumes = append(volumes, sharedToolCacheVolume)
 	}
 	if rc.Config.BindWorkdir {
-		volumes = append(volumes, rc.Config.Workdir)
+		volumes = append(volumes, rc.Config.Workdir, rc.workdirMountRoot())
 	}
 	if rc.dockerProxy != nil {
 		volumes = append(volumes, rc.dockerProxy.Socket)
@@ -263,6 +264,13 @@ func (rc *RunContext) validVolumes() []string {
 	// TODO: add a new configuration to control whether the docker daemon can be mounted
 	return append(volumes, name, name+"-env",
 		getDockerDaemonSocketMountPath(rc.containerDaemonSocket()))
+}
+
+func (rc *RunContext) workdirMountRoot() string {
+	if rc.Config.PresetGitHubContext != nil {
+		return filepath.Dir(filepath.Dir(rc.Config.Workdir)) // only the daemon presets, its workdir is <parent>/<owner>/<repo>
+	}
+	return rc.Config.Workdir
 }
 
 func (rc *RunContext) jobDockerSocket() string {
@@ -359,6 +367,11 @@ func (rc *RunContext) GetBindsAndMounts() ([]string, map[string]string, error) {
 	mounts[name+"-env"] = ext.GetActPath() // runner-internal, never overridable
 
 	if workdir := ext.ToContainerPath(rc.Config.Workdir); !claimed[workdir] {
+		source := rc.workdirMountRoot()
+		target := ext.ToContainerPath(source)
+		if claimed[target] {
+			source, target = rc.Config.Workdir, workdir
+		}
 		if rc.Config.BindWorkdir {
 			bindModifiers := ""
 			if runtime.GOOS == "darwin" {
@@ -367,9 +380,9 @@ func (rc *RunContext) GetBindsAndMounts() ([]string, map[string]string, error) {
 			if selinux.GetEnabled() {
 				bindModifiers = ":z"
 			}
-			binds = append(binds, fmt.Sprintf("%s:%s%s", rc.Config.Workdir, workdir, bindModifiers))
+			binds = append(binds, fmt.Sprintf("%s:%s%s", source, target, bindModifiers))
 		} else {
-			mounts[name] = workdir
+			mounts[name] = target
 		}
 	}
 
@@ -979,8 +992,12 @@ func (rc *RunContext) captureJobContainerInfo() common.Executor {
 			return nil
 		}
 		rc.jobContainerID = info.ID
-		if source := info.Mounts[rc.githubWorkspace()]; source != "" {
-			rc.Env["GITEA_DOCKER_WORKSPACE"] = source
+		workspace := rc.githubWorkspace()
+		for dir := workspace; dir != "/" && dir != "."; dir = path.Dir(dir) {
+			if source := info.Mounts[dir]; source != "" {
+				rc.Env["GITEA_DOCKER_WORKSPACE"] = path.Join(source, strings.TrimPrefix(workspace, dir))
+				break
+			}
 		}
 		return nil
 	}
