@@ -372,6 +372,19 @@ jobs:
 	require.Empty(t, redis.WorkingDir)
 }
 
+// A whole-value `services:` expression only reaches the typed field through DecodeRaw.
+func TestStartJobContainerGivesServicesTheirVolumesFromExpression(t *testing.T) {
+	redis := startJobContainerInputs(t, `
+jobs:
+  job:
+    services: ${{ fromJSON('{"redis":{"image":"redis:latest","volumes":["data:/data"]}}') }}
+`, &Config{ValidVolumes: []string{"data"}})[0]
+
+	require.Equal(t, "redis:latest", redis.Image)
+	require.Equal(t, []string{"data"}, redis.ValidVolumes)
+	require.Equal(t, map[string]string{"data": "/data"}, redis.Mounts)
+}
+
 // Only the workflow's options may be stripped later, so the two sources have to reach the
 // container apart from each other.
 func TestStartJobContainerKeepsRunnerOptionsApartFromWorkflowOptions(t *testing.T) {
@@ -825,6 +838,20 @@ func TestInterpolateOutputsIsPerMatrixCombo(t *testing.T) {
 
 	// Last combo wins (matching GitHub) instead of being frozen to combo A's "a".
 	require.Equal(t, "b", job.Outputs["o"])
+}
+
+// A whole-value `outputs:` expression only reaches the typed field through DecodeRaw.
+func TestInterpolateOutputsFromExpression(t *testing.T) {
+	var rawOutputs yaml.Node
+	require.NoError(t, rawOutputs.Encode(`${{ fromJSON('{"o":"resolved"}') }}`))
+
+	job := &model.Job{RawOutputs: rawOutputs}
+	run := &model.Run{JobID: "j", Workflow: &model.Workflow{Name: "w", Jobs: map[string]*model.Job{"j": job}}}
+	rc, err := (&runnerImpl{config: &Config{}}).newRunContext(t.Context(), run, nil)
+	require.NoError(t, err)
+
+	require.NoError(t, rc.interpolateOutputs()(t.Context()))
+	require.Equal(t, "resolved", job.Outputs["o"])
 }
 
 func TestGetGitHubContext(t *testing.T) {

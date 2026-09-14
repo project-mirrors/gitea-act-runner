@@ -17,7 +17,7 @@ import (
 func TestCompositeActionParity(t *testing.T) {
 	t.Run("inherits contexts without leaking inputs", func(t *testing.T) {
 		ctx := t.Context()
-		strategy := &model.Strategy{MaxParallel: 3}
+		strategy := &model.Strategy{MaxParallelString: "3"}
 		parent := &RunContext{
 			Config:        &Config{},
 			Matrix:        map[string]any{"os": "linux"},

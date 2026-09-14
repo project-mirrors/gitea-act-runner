@@ -4,6 +4,7 @@
 package runner
 
 import (
+	"strings"
 	"testing"
 
 	"gitea.dev/actionslib/pkg/model"
@@ -34,9 +35,14 @@ func TestMaxParallelStrategy(t *testing.T) {
 			expectedMaxParallel: 4,
 		},
 		{
-			name:                "max-parallel-10",
+			name:                "max-parallel-10-clamped-to-combinations",
 			maxParallelString:   "10",
-			expectedMaxParallel: 10,
+			expectedMaxParallel: 5,
+		},
+		{
+			name:                "max-parallel-invalid-falls-back-to-default",
+			maxParallelString:   "tow",
+			expectedMaxParallel: 4,
 		},
 	}
 
@@ -61,9 +67,29 @@ func TestMaxParallelStrategy(t *testing.T) {
 			assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 			assert.NotNil(t, matrixes)
 			assert.Len(t, matrixes, 5)
-			assert.Equal(t, tt.expectedMaxParallel, job.Strategy.MaxParallel)
+			assert.Equal(t, tt.expectedMaxParallel, maxParallelFor(job.Strategy, len(matrixes)))
 		})
 	}
+
+	t.Run("deferred strategy", func(t *testing.T) {
+		workflow, err := model.ReadWorkflow(strings.NewReader(`
+jobs:
+  test:
+    if: false
+    strategy: ${{ fromJSON('{"max-parallel":2,"fail-fast":false,"matrix":{"os":["ubuntu","windows"]}}') }}
+`))
+		require.NoError(t, err)
+		job := workflow.Jobs["test"]
+		rawStrategy := model.CloneYamlNode(job.RawStrategy)
+		require.NoError(t, (&runnerImpl{config: &Config{}}).NewPlanExecutor(&model.Plan{Stages: []*model.Stage{{Runs: []*model.Run{{Workflow: workflow, JobID: "test"}}}}})(t.Context()))
+		require.NotNil(t, job.Strategy)
+		assert.False(t, job.Strategy.GetFailFast())
+		assert.Equal(t, 2, maxParallelFor(job.Strategy, 5))
+		matrixes, err := job.GetMatrixes()
+		require.NoError(t, err)
+		assert.Equal(t, []map[string]any{{"os": "ubuntu"}, {"os": "windows"}}, matrixes)
+		assert.Equal(t, rawStrategy, job.RawStrategy)
+	})
 }
 
 func TestNewPlanExecutorInvalidMatrix(t *testing.T) {
@@ -81,4 +107,15 @@ func TestNewPlanExecutorInvalidMatrix(t *testing.T) {
 	runner := &runnerImpl{config: &Config{}}
 
 	require.ErrorContains(t, runner.NewPlanExecutor(plan)(t.Context()), "could not get job matrix:")
+
+	for _, strategy := range []string{
+		`${{ fromJSON('invalid') }}`,
+		`${{ '${{ inputs.unresolved }}' }}`,
+	} {
+		t.Run(strategy, func(t *testing.T) {
+			workflow, err := model.ReadWorkflow(strings.NewReader("jobs:\n  test:\n    strategy: " + strategy))
+			require.NoError(t, err)
+			require.Error(t, runner.NewPlanExecutor(&model.Plan{Stages: []*model.Stage{{Runs: []*model.Run{{Workflow: workflow, JobID: "test"}}}}})(t.Context()))
+		})
+	}
 }

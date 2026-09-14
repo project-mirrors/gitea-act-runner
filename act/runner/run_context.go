@@ -495,8 +495,11 @@ func (rc *RunContext) startJobContainer() common.Executor {
 		networkName, createAndDeleteNetwork := rc.networkNameForGitea()
 		rc.cleanUpJobContainer = rc.cleanupJobResources(networkName, createAndDeleteNetwork, false)
 
-		// add service containers
-		for serviceID, spec := range rc.Run.Job().Services {
+		services := rc.Run.Job().Services
+		if err := decodeDeferred(ctx, rc.ExprEval, "job services", rc.Run.Job().RawServices, &services); err != nil {
+			return err
+		}
+		for serviceID, spec := range services {
 			// GitHub compatibility: skip services whose image evaluates to an
 			// empty string, enabling conditional services via expressions
 			serviceImage, err := rc.ExprEval.Interpolate(ctx, spec.Image)
@@ -1022,6 +1025,15 @@ func (rc *RunContext) interpolateOutputs() common.Executor {
 		// with its own resolved values (last wins, as on GitHub) instead of the first combo's
 		// resolved values freezing the shared template against later combos.
 		// Resolved up front so one failure publishes none of them, as GitHub does.
+		var deferredOutputs map[string]string
+		if err := decodeDeferred(ctx, ee, "job outputs", job.RawOutputs, &deferredOutputs); err != nil {
+			return err
+		}
+		if deferredOutputs != nil {
+			defer lockJob(job)()
+			job.Outputs = deferredOutputs
+			return nil
+		}
 		outputs := make(map[string]string, len(rc.outputTemplate))
 		var err error
 		for k, v := range rc.outputTemplate {

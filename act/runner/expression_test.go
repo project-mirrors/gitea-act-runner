@@ -89,7 +89,7 @@ func TestEvaluateRunContext(t *testing.T) {
 		out     any
 		errMesg string
 	}{
-		{" 1 ", 1, ""},
+		{" 1 ", 1.0, ""},
 		// {"1 + 3", "4", ""},
 		// {"(1 + 3) * -2", "-8", ""},
 		{"'my text'", "my text", ""},
@@ -266,7 +266,6 @@ func TestInterpolate(t *testing.T) {
 		{"${{ null }}", ""},
 		{"${{ fromJSON('[1,2]') }}", "Array"},
 		{"${{ fromJSON('{\"a\":1}') }}", "Object"},
-		{"${{ 1", "${{ 1"},
 	}
 
 	for _, table := range tables {
@@ -277,7 +276,7 @@ func TestInterpolate(t *testing.T) {
 		})
 	}
 
-	for _, in := range []string{"${{ 1) && (2 }}", "run ${{ 1) && (2 }} now"} {
+	for _, in := range []string{"${{ 1) && (2 }}", "run ${{ 1) && (2 }} now", "${{ 1"} {
 		_, err := ee.Interpolate(context.Background(), in)
 		assert.Error(t, err, in)
 	}
@@ -360,6 +359,32 @@ on:
 			})
 		}
 	}
+
+	t.Run("deferred workflow call inputs", func(t *testing.T) {
+		workflow, err := model.ReadWorkflow(strings.NewReader(workflows["workflow_call"] + `
+jobs:
+  test: {}
+  call:
+    uses: ./reuse.yml
+    with: ${{ fromJSON(matrix.args) }}
+`))
+		require.NoError(t, err)
+		workflow.GetJob("test")
+		job := workflow.GetJob("call")
+		rawWith := model.CloneYamlNode(job.RawWith)
+		for _, value := range []string{"true", "false"} {
+			t.Run(value, func(t *testing.T) {
+				t.Parallel()
+				parent, err := (&runnerImpl{config: &Config{}}).newRunContext(t.Context(), &model.Run{Workflow: workflow, JobID: "call"}, map[string]any{"args": `{"flag":` + value + `,"name":"runner"}`})
+				require.NoError(t, err)
+				child, err := (&runnerImpl{config: &Config{}, caller: &caller{runContext: parent}}).newRunContext(t.Context(), &model.Run{Workflow: workflow, JobID: "test"}, nil)
+				require.NoError(t, err)
+				assert.Equal(t, map[string]any{"flag": value == "true", "name": "runner"}, child.workflowCallInputs)
+				assert.Equal(t, rawWith, job.RawWith)
+				assert.Nil(t, job.With)
+			})
+		}
+	})
 }
 
 func TestJobNameMasksSecrets(t *testing.T) {

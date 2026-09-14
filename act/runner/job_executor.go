@@ -417,6 +417,14 @@ func setJobResult(ctx context.Context, info jobInfo, rc *RunContext, success boo
 // evaluateJobEnvAndDefaults resolves the job's env and defaults.run once, as GitHub does at job setup.
 func evaluateJobEnvAndDefaults(ctx context.Context, rc *RunContext) error {
 	rc.ExprEval = rc.NewExpressionEvaluator(ctx)
+	var workflowEnv map[string]string
+	if err := decodeDeferred(ctx, rc.ExprEval, "workflow env", rc.Run.Workflow.RawEnv, &workflowEnv); err != nil {
+		return err
+	}
+	if workflowEnv != nil {
+		rc.Env = mergeMaps(workflowEnv, rc.GetEnv())
+		rc.ExprEval = rc.NewExpressionEvaluator(ctx)
+	}
 	var err error
 	for k, v := range rc.GetEnv() {
 		if rc.Env[k], err = rc.ExprEval.Interpolate(ctx, v); err != nil {

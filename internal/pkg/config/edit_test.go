@@ -75,6 +75,13 @@ func TestEditValues(t *testing.T) {
 			},
 		},
 		{
+			name: "set map entry starting with a newline before an indented line",
+			edit: func(file string) error { return SetValue(file, "runner.envs.ADDED", "\n  indented\nplain\n") },
+			assert: func(t *testing.T, cfg *Config, _ string) {
+				assert.Equal(t, "\n  indented\nplain\n", cfg.Runner.Envs["ADDED"])
+			},
+		},
+		{
 			name: "set replaces a list",
 			edit: func(file string) error { return SetValue(file, "runner.labels", "one", "two") },
 			assert: func(t *testing.T, cfg *Config, _ string) {

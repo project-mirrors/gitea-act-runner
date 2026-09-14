@@ -19,6 +19,7 @@ import (
 	"gitea.dev/actionslib/pkg/model"
 	docker_container "github.com/moby/moby/api/types/container"
 	log "github.com/sirupsen/logrus"
+	"go.yaml.in/yaml/v4"
 )
 
 // Config contains the config for a new runner
@@ -155,6 +156,18 @@ func (runner *runnerImpl) configure() (*runnerImpl, error) {
 	return runner, nil
 }
 
+func maxParallelFor(strategy *model.Strategy, combinations int) int {
+	maxParallel := 4 // actionslib has no default for an undeclared max-parallel
+	if strategy != nil {
+		if limit, declared, err := strategy.ParseMaxParallel(); err != nil {
+			log.Errorf("Ignoring invalid max-parallel: %v", err)
+		} else if declared {
+			maxParallel = limit
+		}
+	}
+	return min(maxParallel, combinations)
+}
+
 // NewPlanExecutor ...
 func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 	maxJobNameLen := 0
@@ -191,21 +204,24 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 				log.Debugf("Job.With: %v", job.With)
 				log.Debugf("Job.Result: %v", job.Result)
 
-				if job.Strategy != nil {
-					log.Debugf("Job.Strategy.FailFast: %v", job.Strategy.FailFast)
-					log.Debugf("Job.Strategy.MaxParallel: %v", job.Strategy.MaxParallel)
-					log.Debugf("Job.Strategy.FailFastString: %v", job.Strategy.FailFastString)
-					log.Debugf("Job.Strategy.MaxParallelString: %v", job.Strategy.MaxParallelString)
-					log.Debugf("Job.Strategy.RawMatrix: %v", job.Strategy.RawMatrix)
-
+				if job.Strategy != nil || job.RawStrategy.Kind == yaml.ScalarNode {
 					strategyRc, err := runner.newRunContext(ctx, run, nil)
 					if err != nil {
 						return err
 					}
-					// Resolve template expressions in the matrix node before Matrix() is called.
-					// On failure the literal string is kept and normalizeMatrixValue wraps it as a fallback.
-					if err := strategyRc.NewExpressionEvaluator(ctx).EvaluateYamlNode(ctx, &job.Strategy.RawMatrix); err != nil {
-						log.Errorf("Error while evaluating matrix: %v", err)
+					if job.RawStrategy.Kind == yaml.ScalarNode {
+						if err := decodeDeferred(ctx, strategyRc.ExprEval, "job strategy", job.RawStrategy, &job.Strategy); err != nil {
+							return err
+						}
+					} else {
+						log.Debugf("Job.Strategy.FailFast: %v", job.Strategy.GetFailFast())
+						log.Debugf("Job.Strategy.FailFastString: %v", job.Strategy.FailFastString)
+						log.Debugf("Job.Strategy.MaxParallelString: %v", job.Strategy.MaxParallelString)
+						log.Debugf("Job.Strategy.RawMatrix: %v", job.Strategy.RawMatrix)
+						// An unevaluated expression is left in place, which GetMatrixes below rejects.
+						if err := strategyRc.NewExpressionEvaluator(ctx).EvaluateYamlNode(ctx, &job.Strategy.RawMatrix); err != nil {
+							log.Errorf("Error while evaluating matrix: %v", err)
+						}
 					}
 				}
 
@@ -215,20 +231,7 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 				}
 				log.Debugf("Job Matrices: %v", matrixes)
 
-				maxParallel := 4
-				if job.Strategy != nil {
-					// Ensure GetMaxParallel() is called if MaxParallel is still 0
-					if job.Strategy.MaxParallel == 0 {
-						job.Strategy.MaxParallel = job.Strategy.GetMaxParallel()
-					}
-					maxParallel = job.Strategy.MaxParallel
-					log.Debugf("Using job.Strategy.MaxParallel: %d", maxParallel)
-				}
-
-				if len(matrixes) < maxParallel {
-					log.Debugf("Adjusting maxParallel from %d to %d (number of matrix combinations)", maxParallel, len(matrixes))
-					maxParallel = len(matrixes)
-				}
+				maxParallel := maxParallelFor(job.Strategy, len(matrixes))
 
 				log.Infof("Running job with maxParallel=%d for %d matrix combinations", maxParallel, len(matrixes))
 

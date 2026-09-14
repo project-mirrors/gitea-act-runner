@@ -391,10 +391,10 @@ func warnUnknownKeys(file string, content []byte) {
 	decoder := yaml.NewDecoder(bytes.NewReader(content))
 	decoder.KnownFields(true)
 
-	var typeErr *yaml.TypeError
-	if err := decoder.Decode(&Config{}); errors.As(err, &typeErr) {
-		for _, message := range typeErr.Errors {
-			log.Warnf("config file %q: %s, it will be ignored", file, message)
+	var loadErrs *yaml.LoadErrors
+	if err := decoder.Decode(&Config{}); errors.As(err, &loadErrs) {
+		for _, loadErr := range loadErrs.Errors {
+			log.Warnf("config file %q: %s, it will be ignored", file, loadErr)
 		}
 	}
 }
