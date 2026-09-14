@@ -125,14 +125,14 @@ if [ "$default_tests" = true ]; then
   tar -C "$test_dir" -cf - runner.test -C "$PWD/act/runner" testdata/docker-proxy | \
     docker -H "$host_docker" exec -i "$name" tar -x -C /tmp/gitea-runner-proxy-test
   socket="unix:///var/run/docker.sock"
-  users=(0)
+  users=(0 1000:2375)
   if [ "$target" = dind-rootless ]; then
     socket="unix:///run/user/1000/docker.sock"
     users=(1000 0)
   fi
   for user in "${users[@]}"; do
     proxy_mode="proxy"
-    if [ "$user" != 0 ]; then
+    if [ "$user" = 1000:2375 ]; then
       proxy_mode="direct"
     fi
     echo "==> Running mounted Docker job inside ${target} as UID ${user}, expecting ${proxy_mode} access"
@@ -140,4 +140,7 @@ if [ "$default_tests" = true ]; then
       -e DOCKER_HOST="$socket" -e ACT_TEST_DOCKER_PROXY="$proxy_mode" -e ACT_TEST_IMAGE="$job_image" \
       "$name" ./runner.test -test.v -test.run '^TestDockerProxyMountedJob$' -test.timeout 3m
   done
+  echo "==> Running mounted Docker job in a container given the ${target} socket, expecting proxy access"
+  docker -H "$host_docker" exec -e DOCKER_HOST="$socket" "$name" docker run --rm -v "${socket#unix://}:/var/run/docker.sock" -v /tmp/gitea-runner-proxy-test:/data -w /data \
+    -e ACT_TEST_DOCKER_PROXY=proxy -e ACT_TEST_IMAGE="$job_image" "$job_image" ./runner.test -test.v -test.run '^TestDockerProxyMountedJob$' -test.timeout 3m
 fi

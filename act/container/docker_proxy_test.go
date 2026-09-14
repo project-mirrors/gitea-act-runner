@@ -27,6 +27,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/volume"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
@@ -111,6 +112,7 @@ func TestDockerProxy(t *testing.T) {
 	proxy, err := StartDockerProxy(daemonSocket, shortTempDir(t), "job-1")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
+	proxy.SetMounts(map[string]string{"/workspace/o/r": "/volumes/job/_data", "/workspace/o/r/tmp": "", "/var/run/docker.sock": "/tmp/p/docker.sock", "/volumes": "/daemon/volumes"})
 	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", proxy.Socket)
 	}}}
@@ -148,12 +150,36 @@ func TestDockerProxy(t *testing.T) {
 				`{"Image":"alpine","Unknown":{"enabled":true},"Labels":{"own":"1","com.gitea.runner.job":"job-1"}}`,
 			},
 			{
+				"/containers/create", `{"HostConfig":{"Binds":["/workspace/o/r:/src:ro","/workspace/o/r/../r/sub/:/sub","workspace/o/r:/relative","/workspace/o/rest:/rest","/workspace/o/r/tmp/x:/tmp","named:/named","/anonymous","/workspace/o/r:ro","/volumes/job/_data/x:/daemon-path"]},"DriverOpts":{"o":"bind","device":"/workspace/o/r"},"Labels":{"Foo":"1","foo":"2"}}`,
+				`{"HostConfig":{"Binds":["/volumes/job/_data:/src:ro","/volumes/job/_data/sub:/sub","workspace/o/r:/relative","/workspace/o/rest:/rest","/workspace/o/r/tmp/x:/tmp","named:/named","/anonymous","/workspace/o/r:ro","/volumes/job/_data/x:/daemon-path"]},"DriverOpts":{"o":"bind","device":"/workspace/o/r"},"Labels":{"Foo":"1","foo":"2","com.gitea.runner.job":"job-1"}}`,
+			},
+			{
+				"/containers/create", `{"HostConfig":{"Mounts":[{"Type":"bind","Source":"/var/run/docker.sock","Target":"/var/run/docker.sock"},{"type":"bind","source":"/workspace/o/r/sub/","target":"/m"},{"Type":"bind","Source":"/workspace/o/r/sub/../data","Target":"/dotted"},{"Type":"bind","Source":"/workspace/o/r/../r","Target":"/escaping"},{"Type":"BIND","Source":"/workspace/o/r"},{"Type":"volume","Source":"/workspace/o/r"}]}}`,
+				`{"HostConfig":{"Mounts":[{"Type":"bind","Source":"/tmp/p/docker.sock","Target":"/var/run/docker.sock"},{"Type":"bind","Source":"/volumes/job/_data/sub/","target":"/m"},{"Type":"bind","Source":"/volumes/job/_data/sub/../data","Target":"/dotted"},{"Type":"bind","Source":"/volumes/job/_data","Target":"/escaping"},{"Type":"BIND","Source":"/workspace/o/r"},{"Type":"volume","Source":"/workspace/o/r"}]},"Labels":{"com.gitea.runner.job":"job-1"}}`,
+			},
+			{
+				"/containers/create", `{"HostConfig":{"Mounts":[{"Type":"volume","VolumeOptions":{"DriverConfig":{"Options":{"o":"bind","device":"/workspace/o/r/data"}}}},{"Type":"volume","VolumeOptions":{"DriverConfig":{"Options":{"o":"unbindable","device":"/workspace/o/r"}}}},{"Type":"volume","VolumeOptions":{"DriverConfig":{"Options":{"o":"bind,remount","device":"/workspace/o/r"}}}},{"Type":"volume","VolumeOptions":{"DriverConfig":{"Name":"plugin","Options":{"o":"bind","device":"/workspace/o/r"}}}}]}}`,
+				`{"HostConfig":{"Mounts":[{"Type":"volume","VolumeOptions":{"DriverConfig":{"Options":{"o":"bind","device":"/volumes/job/_data/data"}}}},{"Type":"volume","VolumeOptions":{"DriverConfig":{"Options":{"o":"unbindable","device":"/workspace/o/r"}}}},{"Type":"volume","VolumeOptions":{"DriverConfig":{"Options":{"o":"bind,remount","device":"/workspace/o/r"}}}},{"Type":"volume","VolumeOptions":{"DriverConfig":{"Name":"plugin","Options":{"o":"bind","device":"/workspace/o/r"}}}}]},"Labels":{"com.gitea.runner.job":"job-1"}}`,
+			},
+			{
+				"/containers/create", `{"HostConfig":{"privileged":true,"Privileged":false,"Binds":["/workspace/o/r:/src"]},"hoſtconfig":null}`,
+				`{"HostConfig":{"privileged":true,"Privileged":false,"Binds":["/workspace/o/r:/src"]},"hoſtconfig":null,"Labels":{"com.gitea.runner.job":"job-1"}}`,
+			},
+			{
 				"/networks/create", `{"Name":"n"}`,
 				`{"Name":"n","Labels":{"com.gitea.runner.job":"job-1"}}`,
 			},
 			{
-				"/volumes/create", `{"Name":"v","labels":null}`,
-				`{"Name":"v","Labels":{"com.gitea.runner.job":"job-1"}}`,
+				"/volumes/create", `{"Name":"v","labels":null,"DriverOpts":{"type":"none","o":"rbind,ro","device":"/workspace/o/r/"},"HostConfig":{"Binds":["/workspace/o/r:/src"]}}`,
+				`{"Name":"v","Labels":{"com.gitea.runner.job":"job-1"},"DriverOpts":{"type":"none","o":"rbind,ro","device":"/volumes/job/_data/"},"HostConfig":{"Binds":["/workspace/o/r:/src"]}}`,
+			},
+			{
+				"/volumes/create", `{"Name":"d","DriverOpts":{"o":"bind","device":1,"device":"/workspace/o/r"}}`,
+				`{"Name":"d","DriverOpts":{"o":"bind","device":1,"device":"/workspace/o/r"},"Labels":{"com.gitea.runner.job":"job-1"}}`,
+			},
+			{
+				"/volumes/create", `{"Name":"p","Driver":"plugin","DriverOpts":{"o":"bind","device":"/workspace/o/r"}}`,
+				`{"Name":"p","Driver":"plugin","DriverOpts":{"o":"bind","device":"/workspace/o/r"},"Labels":{"com.gitea.runner.job":"job-1"}}`,
 			},
 			{
 				"/volumes/create", "",
@@ -267,7 +293,9 @@ func TestRemoveLabelledRemovesContainersNetworksAndVolumes(t *testing.T) {
 	cli.On("ContainerKill", ctx, "c1", mock.Anything).Return(mobyclient.ContainerKillResult{}, nil).Once()
 	cli.On("ContainerRemove", ctx, "c1", mobyclient.ContainerRemoveOptions{RemoveVolumes: true, Force: true}).
 		Return(mobyclient.ContainerRemoveResult{}, containerFailure).Once()
-	cli.On("NetworkList", ctx, mobyclient.NetworkListOptions{Filters: filters}).Return(mobyclient.NetworkListResult{}, listFailure).Once()
+	cli.On("NetworkList", ctx, mobyclient.NetworkListOptions{Filters: filters}).
+		Return(mobyclient.NetworkListResult{Items: []network.Summary{{ID: "n1", Name: "stack_default", Scope: "swarm"}}}, listFailure).Once()
+	cli.On("NetworkRemove", ctx, "n1", mobyclient.NetworkRemoveOptions{}).Return(mobyclient.NetworkRemoveResult{}, cerrdefs.ErrInvalidArgument).Once()
 	cli.On("VolumeList", ctx, mobyclient.VolumeListOptions{Filters: filters}).
 		Return(mobyclient.VolumeListResult{Items: []volume.Volume{{Name: "app_data"}}}, nil).Once()
 	cli.On("VolumeRemove", ctx, "app_data", mobyclient.VolumeRemoveOptions{}).Return(mobyclient.VolumeRemoveResult{}, volumeFailure).Once()
@@ -276,6 +304,7 @@ func TestRemoveLabelledRemovesContainersNetworksAndVolumes(t *testing.T) {
 	require.ErrorIs(t, err, containerFailure)
 	require.ErrorIs(t, err, listFailure)
 	require.ErrorIs(t, err, volumeFailure)
+	require.NotErrorIs(t, err, cerrdefs.ErrInvalidArgument)
 	require.ErrorContains(t, err, "failed to remove container c1")
 	require.ErrorContains(t, err, "failed to remove volume app_data")
 	cli.AssertExpectations(t)
@@ -289,7 +318,7 @@ func TestDockerProxyWithDaemon(t *testing.T) {
 	require.NoError(t, err)
 	defer direct.Close()
 	dir := shortTempDir(t)
-	seen, err := daemonSeesDir(ctx, direct, dir)
+	seen, err := daemonSeesDir(ctx, direct, dir, dir)
 	require.NoError(t, err)
 	t.Logf("daemon sees the runner's filesystem: %v", seen)
 
@@ -457,7 +486,7 @@ func TestDaemonSeesDir(t *testing.T) {
 					return mobyclient.ContainerRemoveResult{}, testCase.removeErr
 				},
 			}
-			seen, err := daemonSeesDir(ctx, cli, dir)
+			seen, err := daemonSeesDir(ctx, cli, dir, dir)
 			require.ErrorIs(t, err, testCase.removeErr)
 			assert.Equal(t, !testCase.private && testCase.removeErr == nil, seen)
 			assert.Equal(t, !testCase.private, removed)

@@ -6,3 +6,51 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./action
+      - if: env.PROXY_TEST_MODE == 'proxy'
+        run: |
+          docker run -d --restart always --network "$PROXY_TEST_RESOURCE" --name "$PROXY_TEST_RESOURCE-detached" "$PROXY_TEST_IMAGE" sleep infinity
+          echo "{services: {app: {image: $PROXY_TEST_IMAGE, command: sleep infinity, volumes: [named:/named]}}, volumes: {named: {}}}" | docker compose -f - up -d
+  binds:
+    needs: proxy
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          test -z "$(docker ps -aq -f name="$PROXY_TEST_RESOURCE-detached" -f name="$PROXY_TEST_RESOURCE-app"; docker volume ls -q -f name="${PROXY_TEST_RESOURCE}_named"; docker network ls -q -f name="${PROXY_TEST_RESOURCE}_default")"
+          mkdir data && echo from-job > data/marker
+      - id: run
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/src:ro" -v "$PWD:$PWD" -v ./data/created:/created -v "$GITHUB_OUTPUT:/output" \
+            --mount "type=bind,src=$PWD/data/../data,dst=/spelled,readonly" \
+            --mount "type=volume,dst=/device,volume-opt=type=none,volume-opt=o=bind,volume-opt=device=$PWD/data" \
+            "$PROXY_TEST_IMAGE" sh -c 'cat /src/data/marker "$0/data/marker" /spelled/marker /device/marker | grep -c from-job | grep -qx 4 && echo from-nested > /created/file && echo value=from-nested >> /output' "$PWD"
+          grep -qx from-nested data/created/file
+      - run: |
+          test "${{ steps.run.outputs.value }}" = from-nested
+          cat > compose.yaml <<'EOF'
+          services:
+            app:
+              image: ${PROXY_TEST_IMAGE}
+              command: cat /short/marker /long/marker /named/marker
+              volumes:
+                - ./data:/short
+                - type: bind
+                  source: ./data
+                  target: /long
+                  bind:
+                    create_host_path: false
+                - named:/named
+          volumes:
+            named:
+              driver: local
+              driver_opts:
+                type: none
+                o: bind
+                device: ./data
+          EOF
+          test "$(docker compose run --rm app | grep -c from-job)" = 3
+          docker compose down --volumes
+      - run: |
+          docker run --rm --user 1001 --group-add 2375 -v /var/run/docker.sock:/var/run/docker.sock -v /usr/local/bin/docker:/usr/local/bin/docker:ro -v "${GITEA_DOCKER_WORKSPACE:?}/data:/data:ro" \
+            "$PROXY_TEST_IMAGE" sh -c 'grep -qx from-job /data/marker && docker volume create "$0"' "$PROXY_TEST_RESOURCE-nested"
+          test "$(docker volume inspect -f '{{ index .Labels "com.gitea.runner.job" }}' "$PROXY_TEST_RESOURCE-nested")" = "$JOB_CONTAINER_NAME"
+          echo "docker binds verified"

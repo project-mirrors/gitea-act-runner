@@ -49,12 +49,17 @@ func TestDockerProxyMountedJob(t *testing.T) {
 		ContainerNamePrefix:   resourceName,
 		ContainerDaemonSocket: dockerClient.DaemonHost(),
 		ContainerMaxLifetime:  2 * time.Minute,
-		Env:                   map[string]string{"PROXY_TEST_RESOURCE": resourceName, "PROXY_TEST_MODE": mode},
+		ContainerOptions:      "-v /usr/local/bin/docker:/usr/local/bin/docker:ro -v /usr/local/libexec/docker/cli-plugins:/usr/local/libexec/docker/cli-plugins:ro",
+		ValidVolumes:          []string{"/usr/local/bin/docker", "/usr/local/libexec/docker/cli-plugins"},
+		Env:                   map[string]string{"PROXY_TEST_RESOURCE": resourceName, "PROXY_TEST_MODE": mode, "PROXY_TEST_IMAGE": baseImage, "COMPOSE_PROJECT_NAME": resourceName},
 	})
 	require.NoError(t, err)
 	planner, err := model.NewWorkflowPlanner(filepath.Join(fixtureDir, "push.yml"), true)
 	require.NoError(t, err)
 	plan, err := planner.PlanEvent("push")
+	if mode == "direct" {
+		plan, err = planner.PlanJob("proxy")
+	}
 	require.NoError(t, err)
 	runContext, err := runner.newRunContext(ctx, plan.Stages[0].Runs[0], nil)
 	require.NoError(t, err)
@@ -85,6 +90,9 @@ func TestDockerProxyMountedJob(t *testing.T) {
 		messages = append(messages, strings.TrimSpace(entry.Message))
 	}
 	require.Contains(t, messages, "docker proxy post verified")
+	if mode == "proxy" {
+		require.Contains(t, messages, "docker binds verified")
+	}
 	_, err = dockerClient.ContainerInspect(ctx, jobName, client.ContainerInspectOptions{})
 	assert.True(t, cerrdefs.IsNotFound(err), "job container survived cleanup: %v", err)
 	_, err = dockerClient.NetworkInspect(ctx, resourceName, client.NetworkInspectOptions{})

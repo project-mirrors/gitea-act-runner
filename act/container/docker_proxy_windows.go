@@ -10,6 +10,6 @@ import (
 	"os"
 )
 
-func copyDockerSocketPermissions(_ string, _ os.FileInfo) error {
+func copyDockerSocketPermissions(_, _ string, _ os.FileInfo) error {
 	return errors.New("docker socket ownership cannot be preserved on Windows")
 }

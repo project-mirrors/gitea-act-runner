@@ -992,6 +992,9 @@ func (rc *RunContext) captureJobContainerInfo() common.Executor {
 			return nil
 		}
 		rc.jobContainerID = info.ID
+		if rc.dockerProxy != nil {
+			rc.dockerProxy.SetMounts(info.Mounts)
+		}
 		workspace := rc.githubWorkspace()
 		for dir := workspace; dir != "/" && dir != "."; dir = path.Dir(dir) {
 			if source := info.Mounts[dir]; source != "" {

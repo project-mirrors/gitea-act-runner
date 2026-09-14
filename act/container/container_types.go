@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"gitea.com/gitea/runner/act/common"
 
@@ -82,6 +83,11 @@ type DockerProxy struct {
 	close     func(context.Context) error
 	closeOnce sync.Once
 	closeErr  error
+	mounts    atomic.Value
+}
+
+func (p *DockerProxy) SetMounts(mounts map[string]string) {
+	p.mounts.Store(mounts)
 }
 
 func (p *DockerProxy) Close(ctx context.Context) error {

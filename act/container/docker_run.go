@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -256,6 +257,27 @@ func containerInfoFromInspect(inspect container.InspectResponse) *Info {
 	}
 	for _, mountPoint := range inspect.Mounts {
 		info.Mounts[mountPoint.Destination] = mountPoint.Source
+	}
+	if hostConfig := inspect.HostConfig; hostConfig != nil { // Mounts omits --tmpfs targets and subpaths
+		for target := range hostConfig.Tmpfs {
+			info.Mounts[path.Clean(target)] = ""
+		}
+		for _, spec := range hostConfig.Mounts {
+			subpath := ""
+			if spec.VolumeOptions != nil {
+				subpath = spec.VolumeOptions.Subpath
+			} else if spec.ImageOptions != nil {
+				subpath = spec.ImageOptions.Subpath
+			}
+			if target := path.Clean(spec.Target); subpath != "" && info.Mounts[target] != "" {
+				info.Mounts[target] = path.Join(info.Mounts[target], subpath)
+			}
+		}
+	}
+	for _, target := range []string{"/etc/hosts", "/etc/hostname", "/etc/resolv.conf"} { // specific to the job's network namespace
+		if _, mounted := info.Mounts[target]; !mounted {
+			info.Mounts[target] = ""
+		}
 	}
 
 	if state := inspect.State; state != nil {

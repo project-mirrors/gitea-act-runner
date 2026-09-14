@@ -261,7 +261,8 @@ container:
   #docker_timeout: 0s
   # Mount the workspace from a host directory instead of a Docker volume, so jobs
   # can bind-mount it by its own path into sibling containers (".:/app" in docker
-  # compose). Not needed when workflows use the GITEA_DOCKER_WORKSPACE variable.
+  # compose). Not needed when jobs get the Docker proxy or workflows use the
+  # GITEA_DOCKER_WORKSPACE variable.
   # The workspace parent directory must be mounted into the runner container.
   #bind_workdir: false
   # How long a job waits for a service container that declares a healthcheck to become

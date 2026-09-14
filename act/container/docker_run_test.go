@@ -814,12 +814,23 @@ func TestContainerInfoFromInspect(t *testing.T) {
 			Mounts: []container.MountPoint{
 				{Type: mount.TypeVolume, Name: "job", Source: "/var/lib/docker/volumes/job/_data", Destination: "/workspace/owner/repo"},
 				{Type: mount.TypeBind, Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock"},
+				{Type: mount.TypeVolume, Name: "cache", Source: "/var/lib/docker/volumes/cache/_data", Destination: "/cache"},
+				{Type: mount.TypeBind, Source: "/custom/resolv.conf", Destination: "/etc/resolv.conf"},
+			},
+			HostConfig: &container.HostConfig{
+				Tmpfs:  map[string]string{"/workspace/owner/repo//tmp/": "size=1m"},
+				Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: "cache", Target: "/cache/", VolumeOptions: &mount.VolumeOptions{Subpath: "project"}}},
 			},
 		})
 
 		assert.Equal(t, map[string]string{
-			"/workspace/owner/repo": "/var/lib/docker/volumes/job/_data",
-			"/var/run/docker.sock":  "/var/run/docker.sock",
+			"/workspace/owner/repo":     "/var/lib/docker/volumes/job/_data",
+			"/workspace/owner/repo/tmp": "",
+			"/var/run/docker.sock":      "/var/run/docker.sock",
+			"/cache":                    "/var/lib/docker/volumes/cache/_data/project",
+			"/etc/resolv.conf":          "/custom/resolv.conf",
+			"/etc/hosts":                "",
+			"/etc/hostname":             "",
 		}, info.Mounts)
 	})
 }
