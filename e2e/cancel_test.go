@@ -51,23 +51,29 @@ func testRunCancellation(t *testing.T) {
 
 func waitForRunningJobLog(t *testing.T, api *GiteaAPI, repo string, runID int64, substr string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	// The budget covers scheduling and the container start, which a loaded runner makes slow.
+	ctx, cancel := context.WithTimeout(t.Context(), runTimeout)
 	defer cancel()
 
+	status := "none"
 	for {
 		jobs, err := api.Jobs(ctx, repo, runID)
 		if err != nil {
 			t.Fatalf("list jobs: %v", err)
 		}
-		if len(jobs) > 0 && jobs[0].Status == "in_progress" {
-			logs, err := api.JobLogs(ctx, repo, jobs[0].ID)
-			if err == nil && commandRow(logs, substr) == substr {
-				return
+		if len(jobs) > 0 {
+			status = jobs[0].Status
+			if status == "in_progress" {
+				logs, err := api.JobLogs(ctx, repo, jobs[0].ID)
+				if err == nil && commandRow(logs, substr) == substr {
+					return
+				}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("running job for run %d never logged %q", runID, substr)
+			dumpRunLogs(t, api, repo, runID)
+			t.Fatalf("job of run %d is %q and never logged %q", runID, status, substr)
 		case <-time.After(pollInterval):
 		}
 	}

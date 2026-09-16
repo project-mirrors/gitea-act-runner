@@ -6,4 +6,4 @@ jobs:
     steps:
       - run: |
           echo e2e-live-log-marker
-          timeout 2s tail -f /dev/null || true
+          timeout 10s tail -f /dev/null || true
