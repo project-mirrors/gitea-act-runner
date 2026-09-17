@@ -18,7 +18,6 @@ import (
 	maps0 "maps"
 	"net"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -995,12 +994,8 @@ func (rc *RunContext) captureJobContainerInfo() common.Executor {
 		if rc.dockerProxy != nil {
 			rc.dockerProxy.SetMounts(info.Mounts)
 		}
-		workspace := rc.githubWorkspace()
-		for dir := workspace; dir != "/" && dir != "."; dir = path.Dir(dir) {
-			if source := info.Mounts[dir]; source != "" {
-				rc.Env["GITEA_DOCKER_WORKSPACE"] = path.Join(source, strings.TrimPrefix(workspace, dir))
-				break
-			}
+		if source := info.DaemonPath(rc.githubWorkspace()); source != "" {
+			rc.Env["GITEA_DOCKER_WORKSPACE"] = source
 		}
 		return nil
 	}

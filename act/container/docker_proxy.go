@@ -66,15 +66,11 @@ func NewDockerProxy(ctx context.Context, job string) *DockerProxy {
 	if info, err := os.Stat(daemonSocket); err != nil || info.Mode()&os.ModeSocket == 0 {
 		return nil
 	}
-	dir, err := filepath.Abs(os.TempDir())
-	if err != nil {
-		common.Logger(ctx).Infof("docker proxy probe failed, jobs get the daemon socket directly: %v", err)
-		return nil
-	}
-	daemonDir := dir
-	seen, err := daemonSeesDir(probeCtx, cli, dir, daemonDir)
-	if err == nil && !seen {
-		if dir, daemonDir = runnerContainerWorkdir(probeCtx, cli); daemonDir != "" {
+	dir, daemonDir := runnerContainerWorkdir(probeCtx, cli)
+	seen := daemonDir != ""
+	if !seen {
+		if dir, err = filepath.Abs(os.TempDir()); err == nil {
+			daemonDir = dir
 			seen, err = daemonSeesDir(probeCtx, cli, dir, daemonDir)
 		}
 	}
@@ -109,18 +105,16 @@ func runnerContainerWorkdir(ctx context.Context, cli client.APIClient) (workdir,
 	if err != nil {
 		return "", ""
 	}
-	destination := ""
-	for _, point := range self.Container.Mounts {
-		if rel, err := filepath.Rel(point.Destination, workdir); err == nil && filepath.IsLocal(rel) && len(point.Destination) > len(destination) {
-			destination, daemonDir = point.Destination, filepath.Join(point.Source, rel)
-		}
+	if daemonDir = containerInfoFromInspect(self.Container).DaemonPath(workdir); daemonDir == "" {
+		return "", ""
+	}
+	if seen, _ := containerSeesMarker(ctx, cli, workdir, self.Container.ID, workdir); !seen { // the hostname may name another container
+		return "", ""
 	}
 	return workdir, daemonDir
 }
 
-// daemonSeesDir reports whether the daemon opens the files the runner writes in dir by their path in daemonDir,
-// which is what a job's proxy socket mounted from there needs.
-func daemonSeesDir(ctx context.Context, cli client.APIClient, dir, daemonDir string) (bool, error) {
+func containerSeesMarker(ctx context.Context, cli client.APIClient, dir, id, containerDir string) (bool, error) {
 	marker, err := os.CreateTemp(dir, "gitea-runner-probe-")
 	if err != nil {
 		return false, err
@@ -133,6 +127,16 @@ func daemonSeesDir(ctx context.Context, cli client.APIClient, dir, daemonDir str
 	if err := marker.Close(); err != nil {
 		return false, err
 	}
+	_, err = cli.ContainerStatPath(ctx, id, client.ContainerStatPathOptions{Path: path.Join(containerDir, filepath.Base(marker.Name()))})
+	if cerrdefs.IsNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// daemonSeesDir reports whether the daemon opens the files the runner writes in dir by their path in daemonDir,
+// which is what a job's proxy socket mounted from there needs.
+func daemonSeesDir(ctx context.Context, cli client.APIClient, dir, daemonDir string) (bool, error) {
 	images, err := cli.ImageList(ctx, client.ImageListOptions{})
 	if err != nil {
 		return false, err
@@ -143,7 +147,7 @@ func daemonSeesDir(ctx context.Context, cli client.APIClient, dir, daemonDir str
 	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{Image: images.Items[0].ID, Cmd: []string{"true"}},
 		HostConfig: &container.HostConfig{Mounts: []mount.Mount{
-			{Type: mount.TypeBind, Source: filepath.Join(daemonDir, filepath.Base(marker.Name())), Target: "/gitea-runner-probe", ReadOnly: true},
+			{Type: mount.TypeBind, Source: daemonDir, Target: "/gitea-runner-probe", ReadOnly: true}, // not the marker itself, podman creates a missing bind source where docker rejects it
 		}},
 	})
 	if cerrdefs.IsInvalidArgument(err) {
@@ -152,12 +156,13 @@ func daemonSeesDir(ctx context.Context, cli client.APIClient, dir, daemonDir str
 	if err != nil {
 		return false, err
 	}
+	seen, err := containerSeesMarker(ctx, cli, dir, created.ID, "/gitea-runner-probe")
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dockerProxyProbeTimeout)
 	defer cancel()
-	if _, err := cli.ContainerRemove(cleanupCtx, created.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
-		return false, fmt.Errorf("removing the docker proxy probe container failed: %w", err)
+	if _, removeErr := cli.ContainerRemove(cleanupCtx, created.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); removeErr != nil {
+		return false, fmt.Errorf("removing the docker proxy probe container failed: %w", removeErr)
 	}
-	return true, nil
+	return seen, err
 }
 
 // StartDockerProxy serves a job's docker socket in dir, labelling what the job creates through it.

@@ -53,6 +53,8 @@ jobs:
       # after `make test` so the images it needs are already present on the host daemon.
       - name: test against dind image
         run: make test-dind
+      - name: test against podman
+        run: make test-dind TARGET=podman
       - name: coverage report
         run: |
           make coverage-report

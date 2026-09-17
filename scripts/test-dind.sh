@@ -8,9 +8,10 @@
 # It is deliberately generic: point it at any package/test to exercise the dind daemon.
 #
 # Usage: scripts/test-dind.sh [target] [-- go-test-args...]
-#   target:        dind (default) or dind-rootless
+#   target:        dind (default), dind-rootless, or podman to run PODMAN_TEST_IMAGE's API service instead
 #   go-test-args:  passed verbatim to `go test`. Defaults cover image env extraction,
-#                  symlink copying and a mounted Docker job using cached images.
+#                  symlink copying and a mounted Docker job using cached images, or the
+#                  Docker proxy probe for podman.
 #
 # Env:
 #   DIND_TEST_PORT     host port for the daemon (default 32375)
@@ -20,18 +21,13 @@ set -euo pipefail
 
 target="dind"
 case "${1:-}" in
-  dind|dind-rootless) target="$1"; shift ;;
+  dind|dind-rootless|podman) target="$1"; shift ;;
 esac
 [ "${1:-}" = "--" ] && shift
 default_tests=false
-if [ $# -eq 0 ]; then
-  default_tests=true
-  set -- -count=1 -race -run '^TestDocker$' ./act/container/
-fi
 
 port="${DIND_TEST_PORT:-32375}"
 name="gitea-runner-dind-test-$$"
-image="${DIND_TEST_IMAGE:-gitea-runner-${target}:dind-test}"
 # The host daemon endpoint, captured before DOCKER_HOST is pointed at the fresh dind daemon.
 host_docker="${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}"
 test_dir=""
@@ -44,14 +40,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [ -z "${DIND_TEST_IMAGE:-}" ]; then
-  echo "==> Building ${target} image"
-  docker build --target "$target" -t "$image" .
+if [ "$target" = podman ]; then
+  image="${PODMAN_TEST_IMAGE:?}"
+  daemon_args=("$image" podman system service --time=0 tcp://0.0.0.0:2375)
+  [ $# -gt 0 ] || set -- -count=1 -race -run '^TestDockerProxyWithDaemon$' ./act/container/
+else
+  image="${DIND_TEST_IMAGE:-gitea-runner-${target}:dind-test}"
+  if [ -z "${DIND_TEST_IMAGE:-}" ]; then
+    echo "==> Building ${target} image"
+    docker build --target "$target" -t "$image" .
+  fi
+  # Override the image entrypoint (s6) and run only dockerd, exposed over insecure TCP.
+  # We are testing the daemon the image ships, not the runner supervision tree.
+  daemon_args=(-e DOCKER_TLS_CERTDIR= --entrypoint dockerd-entrypoint.sh "$image" --host=tcp://0.0.0.0:2375)
+  if [ $# -eq 0 ]; then
+    default_tests=true
+    set -- -count=1 -race -run '^TestDocker$' ./act/container/
+  fi
 fi
 
-# Override the image entrypoint (s6) and run only dockerd, exposed over insecure TCP.
-# We are testing the daemon the image ships, not the runner supervision tree.
-#
 # How the test process reaches the daemon depends on where it runs:
 #   - plain host: publish 2375 on loopback and connect to 127.0.0.1.
 #   - inside a container (CI), the daemon is a sibling container, so its published port is on
@@ -66,8 +73,8 @@ if [ -n "$self_container" ]; then
 fi
 
 # The two cases differ only in how the daemon is exposed and addressed; everything else
-# (privileged, name, TLS-off entrypoint, image, --host) is shared, so collect just the
-# differing run args and the resulting DOCKER_HOST here.
+# (privileged, name, daemon_args) is shared, so collect just the differing run args and the
+# resulting DOCKER_HOST here.
 if [ -n "$self_network" ]; then
   echo "==> Starting ${target} daemon on network ${self_network} (reached as ${name}:2375)"
   run_args=(--network "$self_network")
@@ -79,10 +86,7 @@ else
 fi
 # Create the dind container on the host daemon first, then repoint DOCKER_HOST at it: exporting
 # DOCKER_HOST before `docker run` would make this `docker run` target the not-yet-existent dind.
-docker -H "$host_docker" run -d --privileged --name "$name" "${run_args[@]}" \
-  -e DOCKER_TLS_CERTDIR= \
-  --entrypoint dockerd-entrypoint.sh \
-  "$image" --host=tcp://0.0.0.0:2375 >/dev/null
+docker -H "$host_docker" run -d --privileged --name "$name" "${run_args[@]}" "${daemon_args[@]}" >/dev/null
 export DOCKER_HOST="$daemon_host"
 
 echo "==> Waiting for daemon"
@@ -109,7 +113,7 @@ for img in $preload; do
   fi
 done
 
-echo "==> Running tests against dind daemon"
+echo "==> Running tests against ${target} daemon"
 go test "$@"
 
 if [ "$default_tests" = true ]; then

@@ -321,6 +321,9 @@ func TestDockerProxyWithDaemon(t *testing.T) {
 	seen, err := daemonSeesDir(ctx, direct, dir, dir)
 	require.NoError(t, err)
 	t.Logf("daemon sees the runner's filesystem: %v", seen)
+	seen, err = daemonSeesDir(ctx, direct, dir, shortTempDir(t))
+	require.NoError(t, err)
+	assert.False(t, seen)
 
 	job := "proxy-test-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	proxy, err := StartDockerProxy(daemonSocketPath(t, direct), dir, job)
@@ -425,6 +428,12 @@ type probeClient struct {
 	mobyclient.APIClient
 	create func(mobyclient.ContainerCreateOptions) (mobyclient.ContainerCreateResult, error)
 	remove func(context.Context, string, mobyclient.ContainerRemoveOptions) (mobyclient.ContainerRemoveResult, error)
+	stat   func(string) error
+	mounts []container.MountPoint
+}
+
+func (c *probeClient) ContainerInspect(context.Context, string, mobyclient.ContainerInspectOptions) (mobyclient.ContainerInspectResult, error) {
+	return mobyclient.ContainerInspectResult{Container: container.InspectResponse{Mounts: c.mounts}}, nil
 }
 
 func (c *probeClient) ImageList(context.Context, mobyclient.ImageListOptions) (mobyclient.ImageListResult, error) {
@@ -439,42 +448,46 @@ func (c *probeClient) ContainerRemove(ctx context.Context, id string, opts mobyc
 	return c.remove(ctx, id, opts)
 }
 
+func (c *probeClient) ContainerStatPath(_ context.Context, _ string, opts mobyclient.ContainerStatPathOptions) (mobyclient.ContainerStatPathResult, error) {
+	return mobyclient.ContainerStatPathResult{}, c.stat(opts.Path)
+}
+
 func TestDaemonSeesDir(t *testing.T) {
 	dir := t.TempDir()
 	markers := make(map[string]bool)
 	for _, testCase := range []struct {
 		name      string
-		private   bool
+		daemonDir string
 		removeErr error
+		seen      bool
+		removed   bool
 	}{
-		{name: "cleanup after cancellation"},
-		{name: "private filesystem with stale marker", private: true},
-		{name: "cleanup error after cancellation", removeErr: errors.New("cleanup failed")},
+		{name: "cleanup after cancellation", daemonDir: dir, seen: true, removed: true},
+		{name: "daemon without the directory", daemonDir: filepath.Join(dir, "missing")},
+		{name: "daemon with a different directory at that path", daemonDir: t.TempDir(), removed: true},
+		{name: "cleanup error after cancellation", daemonDir: dir, removeErr: errors.New("cleanup failed"), removed: true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			daemonDir := dir
-			if testCase.private {
-				daemonDir = t.TempDir()
-				require.NoError(t, os.WriteFile(filepath.Join(daemonDir, "probe"), []byte("stale"), 0o600))
-			}
 			removed := false
 			cli := &probeClient{
 				create: func(opts mobyclient.ContainerCreateOptions) (mobyclient.ContainerCreateResult, error) {
-					require.Len(t, opts.HostConfig.Mounts, 1)
-					marker := opts.HostConfig.Mounts[0].Source
-					assert.Equal(t, mount.Mount{Type: mount.TypeBind, Source: marker, Target: "/gitea-runner-probe", ReadOnly: true}, opts.HostConfig.Mounts[0])
-					assert.False(t, markers[marker])
-					markers[marker] = true
-					info, err := os.Stat(marker)
-					require.NoError(t, err)
-					assert.True(t, info.Mode().IsRegular())
+					assert.Equal(t, []mount.Mount{{Type: mount.TypeBind, Source: testCase.daemonDir, Target: "/gitea-runner-probe", ReadOnly: true}}, opts.HostConfig.Mounts)
 					cancel()
-					if _, err := os.Stat(filepath.Join(daemonDir, filepath.Base(marker))); errors.Is(err, os.ErrNotExist) {
+					if _, err := os.Stat(testCase.daemonDir); err != nil {
 						return mobyclient.ContainerCreateResult{}, cerrdefs.ErrInvalidArgument
 					}
 					return mobyclient.ContainerCreateResult{ID: "probe"}, nil
+				},
+				stat: func(path string) error {
+					marker := strings.TrimPrefix(path, "/gitea-runner-probe/")
+					assert.False(t, markers[marker])
+					markers[marker] = true
+					if _, err := os.Stat(filepath.Join(testCase.daemonDir, marker)); err != nil {
+						return cerrdefs.ErrNotFound
+					}
+					return nil
 				},
 				remove: func(ctx context.Context, id string, opts mobyclient.ContainerRemoveOptions) (mobyclient.ContainerRemoveResult, error) {
 					removed = true
@@ -486,13 +499,45 @@ func TestDaemonSeesDir(t *testing.T) {
 					return mobyclient.ContainerRemoveResult{}, testCase.removeErr
 				},
 			}
-			seen, err := daemonSeesDir(ctx, cli, dir, dir)
+			seen, err := daemonSeesDir(ctx, cli, dir, testCase.daemonDir)
 			require.ErrorIs(t, err, testCase.removeErr)
-			assert.Equal(t, !testCase.private && testCase.removeErr == nil, seen)
-			assert.Equal(t, !testCase.private, removed)
+			assert.Equal(t, testCase.seen, seen)
+			assert.Equal(t, testCase.removed, removed)
 			entries, err := os.ReadDir(dir)
 			require.NoError(t, err)
 			assert.Empty(t, entries)
 		})
 	}
+}
+
+func TestRunnerContainerWorkdir(t *testing.T) {
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+	volume := container.MountPoint{Type: mount.TypeVolume, Source: "/daemon/_data", Destination: filepath.Dir(workdir)}
+	for _, testCase := range []struct {
+		name      string
+		mount     container.MountPoint
+		foreign   bool
+		daemonDir string
+	}{
+		{name: "volume above the working directory", mount: volume, daemonDir: filepath.Join(volume.Source, filepath.Base(workdir))},
+		{name: "tmpfs", mount: container.MountPoint{Type: mount.TypeTmpfs, Destination: volume.Destination}},
+		{name: "hostname of another container", mount: volume, foreign: true},
+	} {
+		cli := &probeClient{
+			mounts: []container.MountPoint{testCase.mount},
+			stat: func(path string) error {
+				if _, err := os.Stat(path); err != nil || testCase.foreign {
+					return cerrdefs.ErrNotFound
+				}
+				return nil
+			},
+		}
+		dir, daemonDir := runnerContainerWorkdir(t.Context(), cli)
+		assert.Equal(t, testCase.daemonDir, daemonDir, testCase.name)
+		assert.Equal(t, testCase.daemonDir != "", dir == workdir, testCase.name)
+	}
+	entries, err := os.ReadDir(workdir)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
 }
