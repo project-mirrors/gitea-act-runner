@@ -9,7 +9,7 @@ XGO_VERSION := go-1.27.x
 GXZ_PACKAGE ?= github.com/ulikunitz/xz/cmd/gxz@v0.5.16 # renovate: datasource=go
 
 PODMAN_TEST_IMAGE ?= quay.io/containers/podman:v5.8.4-immutable@sha256:90405e3c6a86f33c5a6f8dbdfa8e02a98143a8ba4337b84bdaec5336d2ef008a # renovate: datasource=docker
-E2E_JOB_IMAGE ?= node:24-bookworm@sha256:6dac556d980b7f0e5498d08f08cee0ca67798b4ad6c23964a9214920e67758d0 # renovate: datasource=docker
+E2E_JOB_IMAGE ?= node:24-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4 # renovate: datasource=docker
 SERVICE_IMAGE ?= nginx:1.31.4-alpine@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913 # renovate: datasource=docker
 E2E_GITEA_IMAGE ?= gitea/gitea:main-nightly
 

@@ -30,8 +30,8 @@ jobs:
       # daemon retains them between runs, so this is usually a fast manifest re-check.
       - name: pre-pull test images
         env:
-          TEST_JOB_IMAGE: node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 # renovate: datasource=docker
-          TEST_SERVICE_IMAGE: nginx:alpine@sha256:72ba65eb42c10344912a84ff42408db7d34f2feb642204570ab8fc5ffd29f1d3 # renovate: datasource=docker
+          TEST_JOB_IMAGE: node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 # renovate: datasource=docker
+          TEST_SERVICE_IMAGE: nginx:alpine@sha256:62ff2089abf5a9ed33bd232895bef5e22f7bb4b200675cec49a5ebc48e3d4ac8 # renovate: datasource=docker
         run: |
           for image in "$TEST_JOB_IMAGE" "$TEST_SERVICE_IMAGE"; do
             for attempt in 1 2 3; do
