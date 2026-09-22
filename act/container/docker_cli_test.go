@@ -2,7 +2,7 @@
 // Copyright 2022 The nektos/act Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-// This file is exact copy of https://github.com/docker/cli/blob/dfc4efb1e2ab8c06d70d2a1366ad448d2f917e90/cli/command/container/opts_test.go with:
+// This file is exact copy of https://github.com/docker/cli/blob/4a63305d74332de5ceba7fcbccbc3cbb7412f5ba/cli/command/container/opts_test.go with:
 // * appended with license information
 // * added tests for the locally changed parseDevice, validateDevice and invalidParameter
 //
@@ -165,6 +165,19 @@ func TestParseRunLinks(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseRunWithoutUmask(t *testing.T) {
+	_, hostConfig, _, err := parseRun([]string{"ubuntu", "bash"})
+	assert.NilError(t, err)
+	assert.Assert(t, hostConfig.Umask == nil)
+}
+
+func TestParseRunUmask(t *testing.T) {
+	_, hostConfig, _, err := parseRun([]string{"--umask", "0022", "ubuntu", "bash"})
+	assert.NilError(t, err)
+	assert.Assert(t, hostConfig.Umask != nil)
+	assert.Equal(t, uint32(0o22), *hostConfig.Umask)
 }
 
 func TestParseRunAttach(t *testing.T) {

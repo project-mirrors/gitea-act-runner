@@ -4,9 +4,10 @@
 
 //go:build !(WITHOUT_DOCKER || !(linux || darwin || windows || netbsd))
 
-// This file is exact copy of https://github.com/docker/cli/blob/dfc4efb1e2ab8c06d70d2a1366ad448d2f917e90/cli/command/container/opts.go with:
+// This file is exact copy of https://github.com/docker/cli/blob/4a63305d74332de5ceba7fcbccbc3cbb7412f5ba/cli/command/container/opts.go with:
 // * appended with license information
 // * regexp and loader.ParseVolume in place of the import-restricted internal/lazyregexp and internal/volumespec
+// * jsontext in place of json.Compact for the seccomp profile
 // * invalidParameter from the package's errors.go, and convertPortSet/convertPortMap for the callers in docker_run.go
 //
 // docker/cli is licensed under the Apache License, Version 2.0.
@@ -152,6 +153,7 @@ type containerOptions struct {
 	runtime             string
 	autoRemove          bool
 	init                bool
+	umask               opts.UmaskOpt
 	annotations         *opts.MapOpts
 
 	Image string
@@ -326,6 +328,9 @@ func addFlags(flags *pflag.FlagSet) *containerOptions {
 	flags.Var(&copts.shmSize, "shm-size", "Size of /dev/shm")
 	flags.StringVar(&copts.utsMode, "uts", "", "UTS namespace to use")
 	flags.StringVar(&copts.runtime, "runtime", "", "Runtime to use for this container")
+	flags.Var(&copts.umask, "umask", "Set umask for the container")
+	flags.SetAnnotation("umask", "version", []string{"1.56"})
+	flags.SetAnnotation("umask", "ostype", []string{"linux"})
 
 	flags.BoolVar(&copts.init, "init", false, "Run an init inside the container that forwards signals and reaps processes")
 	flags.SetAnnotation("init", "version", []string{"1.25"})
@@ -721,6 +726,7 @@ func parse(flags *pflag.FlagSet, copts *containerOptions, serverOS string) (*con
 		MaskedPaths:    maskedPaths,
 		ReadonlyPaths:  readonlyPaths,
 		Annotations:    copts.annotations.GetAll(),
+		Umask:          copts.umask.Value(),
 	}
 
 	if copts.autoRemove && !hostConfig.RestartPolicy.IsNone() {
