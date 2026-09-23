@@ -12,7 +12,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"gitea.com/gitea/runner/act/common"
@@ -58,13 +57,8 @@ func (sar *stepActionRemote) prepareActionExecutor() common.Executor {
 		sar.Step.Uses = uses
 
 		github := sar.getGithubContext(ctx) // read before remoteAction is set, so `$/` resolves against the enclosing action
-		if strings.HasPrefix(sar.Step.Uses, selfRepoPrefix) {
-			sar.remoteAction = newSelfRepoAction(sar.Step.Uses, github)
-		} else {
-			sar.remoteAction = newRemoteAction(sar.Step.Uses)
-		}
-		if sar.remoteAction == nil {
-			return fmt.Errorf("expected format {org}/{repo}[/path]@ref or %s{path}. Actual '%s' Input string was not in a correct format", selfRepoPrefix, sar.Step.Uses)
+		if sar.remoteAction, err = newRemoteAction(sar.Step.Uses, github, sar.RunContext.Config.GitHubInstance); err != nil {
+			return err
 		}
 
 		if sar.remoteAction.IsCheckout() && isLocalCheckout(github, sar.Step) && !sar.RunContext.Config.NoSkipCheckout {
@@ -164,11 +158,7 @@ func (sar *stepActionRemote) main() common.Executor {
 					common.Logger(ctx).Debugf("Skipping local actions/checkout because you bound your workspace")
 					return nil
 				}
-				checkoutPath, err := sar.RunContext.NewExpressionEvaluator(ctx).Interpolate(ctx, sar.Step.With["path"])
-				if err != nil {
-					return fmt.Errorf("unable to interpolate with.path: %w", err)
-				}
-				copyToPath := path.Join(sar.RunContext.JobContainer.ToContainerPath(sar.RunContext.Config.Workdir), checkoutPath)
+				copyToPath := path.Join(sar.RunContext.JobContainer.ToContainerPath(sar.RunContext.Config.Workdir), sar.Step.With["path"])
 				return sar.RunContext.JobContainer.CopyDir(copyToPath, sar.RunContext.Config.Workdir+string(filepath.Separator)+".", sar.RunContext.Config.UseGitIgnore, false)(ctx)
 			}
 
@@ -324,61 +314,34 @@ func (ra *remoteAction) IsCheckout() bool {
 	return false
 }
 
-// newSelfRepoAction resolves `$/{path}` against the enclosing composite action, falling back to the workflow's own repo and commit.
-func newSelfRepoAction(action string, github *model.GithubContext) *remoteAction {
-	subPath := strings.TrimLeft(strings.TrimPrefix(action, selfRepoPrefix), "/")
-	if subPath == "" || strings.Contains(subPath, "@") || path.Clean("/"+subPath) != "/"+subPath { // rooted, so a leading ".." is rejected too
-		return nil
+// newRemoteAction resolves `self:` on instanceURL and `$/` in the enclosing composite action, else the workflow's repo and commit.
+func newRemoteAction(action string, github *model.GithubContext, instanceURL string) (*remoteAction, error) {
+	uses, err := model.ParseActionUses(action)
+	if err != nil {
+		return nil, err
 	}
-	repo, ref := github.ActionRepository, github.ActionRef
-	if repo == "" || ref == "" {
-		repo, ref = github.Repository, github.Sha
-	}
-	org, name, _ := strings.Cut(repo, "/")
-	if org == "" || name == "" || ref == "" {
-		return nil
-	}
-	return &remoteAction{URL: github.ServerURL, Org: org, Repo: name, Path: subPath, Ref: ref}
-}
-
-func newRemoteAction(action string) *remoteAction {
-	// support http(s)://host/owner/repo@v3
-	for _, schema := range []string{"https://", "http://", "ssh://"} {
-		if after, ok := strings.CutPrefix(action, schema); ok {
-			splits := strings.SplitN(after, "/", 2)
-			if len(splits) != 2 {
-				return nil
-			}
-			ret := parseAction(splits[1])
-			if ret == nil {
-				return nil
-			}
-			ret.URL = schema + splits[0]
-			return ret
+	ra := &remoteAction{URL: uses.URL, Org: uses.Owner, Repo: uses.Repo, Path: uses.Path, Ref: uses.Ref}
+	switch uses.Kind {
+	case model.ActionUsesInstance:
+		if instanceURL == "" {
+			return nil, fmt.Errorf("unable to resolve %q without a Gitea instance", action)
+		}
+		ra.URL = instanceURL
+		if !strings.Contains(instanceURL, "://") {
+			ra.URL = "https://" + instanceURL
+		}
+	case model.ActionUsesSelfRepo:
+		repo, ref := github.ActionRepository, github.ActionRef
+		if repo == "" || ref == "" {
+			repo, ref = github.Repository, github.Sha
+		}
+		ra.Org, ra.Repo, _ = strings.Cut(repo, "/")
+		ra.URL, ra.Ref = github.ServerURL, ref
+		if ra.Org == "" || ra.Repo == "" || ra.Ref == "" {
+			return nil, fmt.Errorf("unable to resolve %q without a repository and commit", action)
 		}
 	}
-
-	return parseAction(action)
-}
-
-func parseAction(action string) *remoteAction {
-	// GitHub's document[^] describes:
-	// > We strongly recommend that you include the version of
-	// > the action you are using by specifying a Git ref, SHA, or Docker tag number.
-	// Actually, the workflow stops if there is the uses directive that hasn't @ref.
-	// [^]: https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions
-	r := regexp.MustCompile(`^([^/@]+)/([^/@]+)(/([^@]*))?(@(.*))?$`)
-	matches := r.FindStringSubmatch(action)
-	if len(matches) < 7 || matches[6] == "" {
-		return nil
-	}
-	return &remoteAction{
-		Org:  matches[1],
-		Repo: matches[2],
-		Path: matches[4],
-		Ref:  matches[6],
-		URL:  "",
-	}
+	return ra, nil
 }
 
 func safeFilename(s string) string {

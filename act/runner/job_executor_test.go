@@ -479,8 +479,7 @@ func TestNewJobExecutor(t *testing.T) {
 				Config: &Config{},
 			}
 			if tt.output != "" {
-				rc.Run.Job().Outputs = map[string]string{"bad": tt.output}
-				rc.outputTemplate = map[string]string{"bad": tt.output}
+				require.NoError(t, rc.Run.Job().RawOutputs.Encode(map[string]string{"bad": tt.output}))
 			}
 			rc.ExprEval = rc.NewExpressionEvaluator(ctx)
 			executorOrder := make([]string, 0)
@@ -1082,6 +1081,7 @@ func TestApplyJobTimeout(t *testing.T) {
 	}{
 		{"empty", "runs-on: ubuntu-latest", false},
 		{"integer", "timeout-minutes: 5\nruns-on: ubuntu-latest", true},
+		{"zero ignored", "timeout-minutes: 0\nruns-on: ubuntu-latest", false},
 		{"non-numeric ignored", "timeout-minutes: abc\nruns-on: ubuntu-latest", false},
 	}
 	for _, tc := range cases {

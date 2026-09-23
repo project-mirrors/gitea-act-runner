@@ -7,6 +7,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ var (
 	logLevel  = log.DebugLevel
 	workdir   = "testdata"
 	secrets   map[string]string
+	testRunID = strings.ToLower(rand.Text()[:8]) // keeps docker names apart from concurrent test processes on one daemon
 )
 
 func mapPlatformPicker(platforms map[string]string) func([]string) string {
@@ -216,7 +218,7 @@ func (j *TestJobFileInfo) runTest(ctx context.Context, t *testing.T, cfg *Config
 		EventPath:      cfg.EventPath,
 		PlatformPicker: mapPlatformPicker(j.platforms),
 		// fixtures reuse workflow and job names, so parallel tests would collide without this
-		ContainerNamePrefix: strings.ReplaceAll(t.Name(), "/", "-"),
+		ContainerNamePrefix: strings.ReplaceAll(t.Name(), "/", "-") + "-" + testRunID,
 		// 0 would run jobs runtime.NumCPU()-wide, making the network peak machine-dependent
 		MaxParallel:           2,
 		ForceRebuild:          true,
@@ -346,7 +348,7 @@ func TestRunEvent(t *testing.T) {
 
 			config := &Config{
 				Secrets: table.secrets,
-				Env:     map[string]string{"GITHUB_REPOSITORY": t.Name()},
+				Env:     map[string]string{"GITHUB_REPOSITORY": t.Name() + "-" + testRunID},
 			}
 
 			eventFile := filepath.Join(workdir, table.workflowPath, "event.json")

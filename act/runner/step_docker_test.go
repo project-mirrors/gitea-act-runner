@@ -145,7 +145,7 @@ func TestStepDockerNewStepContainerAllocatePTY(t *testing.T) {
 			}
 			sd.RunContext.ExprEval = sd.RunContext.NewExpressionEvaluator(ctx)
 
-			_, _ = newStepContainer(ctx, sd, "node:14", []string{"echo", "hi"}, nil, "")
+			newStepContainer(ctx, sd, "node:14", []string{"echo", "hi"}, nil, "")
 			assert.Equal(t, tc.allocPTY, captured.AllocatePTY)
 		})
 	}
@@ -214,7 +214,7 @@ func TestStepDockerNewStepContainerNetworkMode(t *testing.T) {
 			require.NoError(t, sd.RunContext.resolvePlatformImage(ctx))
 			assert.Equal(t, tc.expectDefault, sd.RunContext.IsHostEnv(), "IsHostEnv mismatch for platform %q", tc.platform)
 
-			_, _ = newStepContainer(ctx, sd, "alpine:3.20", []string{"echo", "hello"}, nil, "")
+			newStepContainer(ctx, sd, "alpine:3.20", []string{"echo", "hello"}, nil, "")
 
 			if tc.expectDefault {
 				assert.Equal(t, "default", captured.NetworkMode,

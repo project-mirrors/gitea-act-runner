@@ -18,7 +18,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -414,49 +413,45 @@ func setJobResult(ctx context.Context, info jobInfo, rc *RunContext, success boo
 	logger.WithField("jobResult", jobResult).Infof("Job %s", jobResultMessage)
 }
 
-// evaluateJobEnvAndDefaults resolves the job's env and defaults.run once, as GitHub does at job setup.
+// evaluateJobEnvAndDefaults resolves the job's env, defaults.run and container env once, as GitHub does at job setup.
 func evaluateJobEnvAndDefaults(ctx context.Context, rc *RunContext) error {
 	rc.ExprEval = rc.NewExpressionEvaluator(ctx)
+	env := rc.GetEnv()
 	var workflowEnv map[string]string
-	if err := decodeDeferred(ctx, rc.ExprEval, "workflow env", rc.Run.Workflow.RawEnv, &workflowEnv); err != nil {
-		return err
+	if rc.Run.Workflow.Env == nil {
+		if err := model.DecodeEvaluated("workflow env", rc.Run.Workflow.RawEnv, rc.ExprEval.shared(ctx).EvaluateYamlNode, &workflowEnv); err != nil {
+			return err
+		}
 	}
 	if workflowEnv != nil {
-		rc.Env = mergeMaps(workflowEnv, rc.GetEnv())
+		rc.Env = mergeMaps(workflowEnv, env)
 		rc.ExprEval = rc.NewExpressionEvaluator(ctx)
 	}
 	var err error
-	for k, v := range rc.GetEnv() {
+	for k, v := range env {
 		if rc.Env[k], err = rc.ExprEval.Interpolate(ctx, v); err != nil {
 			return fmt.Errorf("unable to interpolate env %s: %w", k, err)
 		}
 	}
-	defaults := rc.Run.Job().Defaults.Run
-	if rc.jobRunDefaults.Shell, err = rc.ExprEval.Interpolate(ctx, defaults.Shell); err != nil {
-		return fmt.Errorf("unable to interpolate defaults.run.shell: %w", err)
+	var defaults model.Defaults
+	if err := model.DecodeEvaluated("defaults", rc.Run.Job().RawDefaults, rc.ExprEval.shared(ctx).EvaluateYamlNode, &defaults); err != nil {
+		return err
 	}
-	if rc.jobRunDefaults.WorkingDirectory, err = rc.ExprEval.Interpolate(ctx, defaults.WorkingDirectory); err != nil {
-		return fmt.Errorf("unable to interpolate defaults.run.working-directory: %w", err)
+	rc.jobRunDefaults = defaults.Run
+	if rc.containerSpec.Image == "" {
+		return nil
 	}
-	return nil
+	_, containerEnv := splitContainerEnv(rc.Run.Job().RawContainer)
+	return model.DecodeEvaluated("container env", containerEnv, rc.ExprEval.shared(ctx).EvaluateYamlNode, &rc.containerSpec.Env)
 }
 
 func setJobOutputs(ctx context.Context, rc *RunContext) error {
 	if rc.caller == nil {
 		return nil
 	}
-	outputs := rc.Run.Workflow.WorkflowCallConfig().Outputs
-	callerOutputs := make(map[string]string, len(outputs))
-	ee := sync.OnceValue(func() *expressionEvaluator { return rc.NewExpressionEvaluator(ctx) })
-	for k, v := range outputs {
-		value := v.Value
-		for range 2 { // two passes, the value resolves through a job output
-			var err error
-			if value, err = ee().Interpolate(ctx, value); err != nil {
-				return fmt.Errorf("unable to interpolate workflow output %s: %w", k, err)
-			}
-		}
-		callerOutputs[k] = value
+	callerOutputs, err := rc.NewExpressionEvaluator(ctx).shared(ctx).EvaluateWorkflowCallOutputs(rc.Run.Workflow.WorkflowCallConfig())
+	if err != nil {
+		return fmt.Errorf("unable to interpolate workflow %w", err)
 	}
 
 	// Matrix combinations of a reusable-workflow caller share the caller's *model.Job;
@@ -474,7 +469,7 @@ func applyJobTimeout(ctx context.Context, rc *RunContext, job *model.Job) (conte
 	if err != nil {
 		common.Logger(ctx).Errorf("An error occurred when attempting to determine the job timeout: %s", err)
 	} else if timeout != "" {
-		if timeoutMinutes, err := strconv.ParseInt(timeout, 10, 64); err == nil {
+		if timeoutMinutes, err := strconv.ParseInt(timeout, 10, 64); err == nil && timeoutMinutes > 0 {
 			return context.WithTimeout(ctx, time.Duration(timeoutMinutes)*time.Minute)
 		}
 	}

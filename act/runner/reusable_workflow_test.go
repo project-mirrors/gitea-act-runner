@@ -5,6 +5,7 @@ package runner
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,6 +104,22 @@ func TestNewReusableWorkflowExecutorHoldsCloneLock(t *testing.T) {
 		require.Error(t, err)
 	case <-time.After(time.Second):
 		t.Fatal("executor did not return after lock was released")
+	}
+}
+
+func TestNewLocalReusableWorkflowExecutorFindsSameRepositoryPaths(t *testing.T) {
+	workdir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(workdir, ".gitea", "workflows"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workdir, ".gitea", "workflows", "reusable.yml"), []byte(":"), 0o644))
+
+	for _, uses := range []string{"./.gitea/workflows/reusable.yml", "$/.gitea/workflows/reusable.yml"} {
+		rc := &RunContext{
+			Config: &Config{Workdir: workdir},
+			Run:    &model.Run{JobID: "job", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job": {Uses: uses}}}},
+		}
+		err := newLocalReusableWorkflowExecutor(rc)(t.Context())
+		require.Error(t, err)
+		require.NotErrorIs(t, err, fs.ErrNotExist)
 	}
 }
 

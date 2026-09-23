@@ -7,7 +7,6 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"maps"
 	"path"
 	"strings"
 
@@ -51,11 +50,7 @@ func (rc *RunContext) runJobHook(ctx context.Context, hookPath, name string) err
 		rawLogger.Infof("shell: %s", shell)
 	}
 
-	env := map[string]string{}
-	if jobContainer := rc.Run.Job().Container(); jobContainer != nil {
-		maps.Copy(env, jobContainer.Env)
-	}
-	maps.Copy(env, rc.GetEnv())
+	env := mergeMaps(rc.containerSpec.Env, rc.GetEnv())
 	rc.withGithubEnv(ctx, rc.getGithubContext(ctx), env)
 	rc.ApplyExtraPath(ctx, &env)
 

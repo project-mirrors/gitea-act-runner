@@ -11,7 +11,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
@@ -19,7 +18,6 @@ import (
 
 	"gitea.dev/actionslib/pkg/exprparser"
 	"gitea.dev/actionslib/pkg/model"
-	"go.yaml.in/yaml/v4"
 )
 
 type step interface {
@@ -88,6 +86,9 @@ func runStepExecutor(step step, stage stepStage, executor common.Executor) commo
 		var runStep bool
 		if err == nil {
 			runStep, err = isStepEnabled(ctx, ifExpression, step, stage)
+		}
+		if err == nil && runStep {
+			err = setupInputs(ctx, step)
 		}
 		if err != nil {
 			stepResult.Conclusion = model.StepStatusFailure
@@ -240,51 +241,39 @@ func setupEnv(ctx context.Context, step step) error {
 	rc := step.getRunContext()
 
 	mergeEnv(ctx, step)
-	// merge step env last, since it should not be overwritten
-	mergeIntoMap(step, step.getEnv(), step.getStepModel().GetEnv())
 
 	var err error
 	exprEval := rc.NewExpressionEvaluator(ctx)
-	for k, v := range *step.getEnv() {
-		if !strings.HasPrefix(k, "INPUT_") {
-			if (*step.getEnv())[k], err = exprEval.Interpolate(ctx, v); err != nil {
-				return fmt.Errorf("unable to interpolate env %s: %w", k, err)
-			}
+	stepEnv := step.getStepModel().Environment()
+	for k, v := range stepEnv {
+		if stepEnv[k], err = exprEval.Interpolate(ctx, v); err != nil {
+			return fmt.Errorf("unable to interpolate env %s: %w", k, err)
 		}
 	}
-	// after we have an evaluated step context, update the expressions evaluator with a new env context
-	// you can use step level env in the with property of a uses construct
-	inputEval := sync.OnceValue(func() *expressionEvaluator { return rc.NewExpressionEvaluatorWithEnv(ctx, *step.getEnv()) })
-	for k, v := range *step.getEnv() {
-		if strings.HasPrefix(k, "INPUT_") {
-			if (*step.getEnv())[k], err = inputEval().Interpolate(ctx, v); err != nil {
-				return fmt.Errorf("unable to interpolate env %s: %w", k, err)
-			}
-		}
+	// merge step env last, since it should not be overwritten
+	mergeIntoMap(step, step.getEnv(), stepEnv)
+	return nil
+}
+
+// setupInputs evaluates `with` once the condition passed, as GitHub does, so every consumer reads the evaluated With.
+func setupInputs(ctx context.Context, step step) error {
+	stepModel := step.getStepModel()
+	if stepModel.RawWith.Kind == 0 {
+		return nil
 	}
-	if step.getStepModel().RawWith.Kind == yaml.ScalarNode {
-		decoded := &model.Step{}
-		if err := decodeDeferred(ctx, inputEval(), "with", step.getStepModel().RawWith, &decoded.With); err != nil {
-			return err
-		}
-		step.getStepModel().With = decoded.With
-		mergeIntoMap(step, step.getEnv(), decoded.GetEnv())
+	if err := model.DecodeEvaluated("with", stepModel.RawWith, step.getRunContext().NewStepExpressionEvaluator(ctx, step).shared(ctx).EvaluateYamlNode, &stepModel.With); err != nil {
+		return err
 	}
+	mergeIntoMap(step, step.getEnv(), (&model.Step{With: stepModel.With}).GetEnv())
 	return nil
 }
 
 func mergeEnv(ctx context.Context, step step) {
 	env := step.getEnv()
 	rc := step.getRunContext()
-	job := rc.Run.Job()
 
-	c := job.Container()
-	if c != nil {
-		// container env is the image's baseline, which job env and $GITHUB_ENV override
-		mergeIntoMap(step, env, c.Env, rc.GetEnv())
-	} else {
-		mergeIntoMap(step, env, rc.GetEnv())
-	}
+	// container env is the image's baseline, which job env and $GITHUB_ENV override
+	mergeIntoMap(step, env, rc.containerSpec.Env, rc.GetEnv())
 
 	rc.withGithubEnv(ctx, step.getGithubContext(ctx), *env)
 }

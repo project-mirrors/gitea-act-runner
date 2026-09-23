@@ -242,7 +242,7 @@ func TestActionRunner(t *testing.T) {
 
 			tt.step.getRunContext().JobContainer = cm
 
-			err := runActionImpl(tt.step, "dir", newRemoteAction("org/repo/path@ref"))(ctx)
+			err := runActionImpl(tt.step, "dir", mustNewRemoteAction(t, "org/repo/path@ref"))(ctx)
 
 			assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 			cm.AssertExpectations(t)
@@ -316,7 +316,7 @@ func TestNewStepContainerDoesNotUseDockerSecrets(t *testing.T) {
 	step.On("getStepModel").Return(&model.Step{ID: "action"})
 	step.On("getEnv").Return(&env)
 
-	_, _ = newStepContainer(ctx, step, "registry.example.com/action:tag", nil, nil, "")
+	newStepContainer(ctx, step, "registry.example.com/action:tag", nil, nil, "")
 
 	// DOCKER_USERNAME/DOCKER_PASSWORD should not be injected as pull credentials for docker action containers.
 	assert.Empty(t, captured.Username)
@@ -461,18 +461,11 @@ func TestExecAsDockerHoldsCloneLockForRemoteUncached(t *testing.T) {
 	case <-innerEntered:
 	case err := <-done:
 		t.Fatalf("execAsDocker returned without entering inner: %v", err)
-	case <-time.After(time.Second):
-		t.Fatal("inner build executor not entered after lock released")
 	}
 
 	cancel()
 	releaseOnce()
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("execAsDocker did not return after inner was released and ctx was canceled")
-	}
+	<-done
 }
 
 func TestDockerActionImageTag(t *testing.T) {

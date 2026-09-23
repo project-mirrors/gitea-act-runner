@@ -149,11 +149,8 @@ func TestSetupEnv(t *testing.T) {
 		},
 		JobContainer: cm,
 	}
-	step := &model.Step{
-		With: map[string]string{
-			"STEP_WITH": "with-value",
-		},
-	}
+	step := &model.Step{}
+	require.NoError(t, step.RawWith.Encode(map[string]string{"STEP_WITH": "with-value", "ID": "${{ fromJSON('1234567') }}"}))
 	env := map[string]string{}
 
 	sm.On("getRunContext").Return(rc)
@@ -162,6 +159,7 @@ func TestSetupEnv(t *testing.T) {
 	sm.On("getEnv").Return(&env)
 
 	require.NoError(t, setupEnv(context.Background(), sm))
+	require.NoError(t, setupInputs(context.Background(), sm))
 
 	// These are commit or system specific
 	delete(env, "GITHUB_REF")
@@ -198,6 +196,7 @@ func TestSetupEnv(t *testing.T) {
 		"GITHUB_RUN_NUMBER":        "1",
 		"GITHUB_SERVER_URL":        "https://",
 		"GITHUB_WORKFLOW":          "",
+		"INPUT_ID":                 "1234567",
 		"INPUT_STEP_WITH":          "with-value",
 		"RC_KEY":                   "rcvalue",
 		"RUNNER_ENVIRONMENT":       "self-hosted",
@@ -214,7 +213,13 @@ env: ${{ fromJSON(matrix.env) }}
 jobs:
   test:
     env:
-      PRIORITY: job
+      PRIORITY: ${{ matrix.priority }}
+    defaults:
+      run: ${{ fromJSON(matrix.defaults) }}
+    container:
+      image: node:20
+      env:
+        CONTAINER: ${{ env.PRIORITY }}
     steps:
       - uses: ./act
         env:
@@ -228,16 +233,22 @@ jobs:
 			for _, value := range []string{"first", "second"} {
 				t.Run(value, func(t *testing.T) {
 					t.Parallel()
-					rc, err := (&runnerImpl{config: &Config{}}).newRunContext(t.Context(), &model.Run{Workflow: workflow, JobID: "test"}, map[string]any{"env": `{"WORKFLOW":"` + value + `","PRIORITY":"workflow"}`})
+					rc, err := (&runnerImpl{config: &Config{}}).newRunContext(t.Context(), &model.Run{Workflow: workflow, JobID: "test"}, map[string]any{"env": `{"WORKFLOW":"` + value + `${{ github.job }}","PRIORITY":"workflow"}`, "priority": "${{ github.job }}", "defaults": `{"shell":"` + value + `"}`})
 					require.NoError(t, err)
-					rc.workflowCallInputs = map[string]any{"args": `{"name":"` + value + `","fetch-depth":2}`}
+					rc.workflowCallInputs = map[string]any{"args": `{"name":"` + value + `${{ github.job }}","fetch-depth":1234567}`}
+					enabled, err := rc.isEnabled(t.Context())
+					require.NoError(t, err)
+					require.True(t, enabled)
 					require.NoError(t, evaluateJobEnvAndDefaults(t.Context(), rc))
+					assert.Equal(t, model.RunDefaults{Shell: value}, rc.jobRunDefaults)
 					step := &stepRun{RunContext: rc, Step: job.Steps[0].Clone(), env: map[string]string{}}
 					require.NoError(t, setupEnv(t.Context(), step))
-					assert.Equal(t, map[string]string{"ARGS": `${{ inputs.args }}`, "INPUT_NAME": value, "INPUT_FETCH-DEPTH": "2"}, step.Step.GetEnv())
-					assert.Equal(t, value, step.env["INPUT_NAME"])
-					assert.Equal(t, value, step.env["WORKFLOW"])
-					assert.Equal(t, "job", step.env["PRIORITY"])
+					require.NoError(t, setupInputs(t.Context(), step))
+					assert.Equal(t, map[string]string{"ARGS": `${{ inputs.args }}`, "INPUT_NAME": value + "${{ github.job }}", "INPUT_FETCH-DEPTH": "1234567"}, step.Step.GetEnv())
+					assert.Equal(t, value+"${{ github.job }}", step.env["INPUT_NAME"])
+					assert.Equal(t, value+"${{ github.job }}", step.env["WORKFLOW"])
+					assert.Equal(t, "${{ github.job }}", step.env["PRIORITY"])
+					assert.Equal(t, "${{ github.job }}", step.env["CONTAINER"])
 					assert.Equal(t, rawEnv, workflow.RawEnv)
 					assert.Equal(t, rawWith, job.Steps[0].RawWith)
 					assert.Nil(t, workflow.Env)
@@ -253,7 +264,7 @@ jobs:
 		rc, err := (&runnerImpl{config: &Config{}}).newRunContext(t.Context(), &model.Run{Workflow: workflow, JobID: "test"}, nil)
 		require.NoError(t, err)
 		rc.workflowCallInputs = map[string]any{"args": "${{ inputs.unresolved }}"}
-		require.ErrorContains(t, setupEnv(t.Context(), &stepRun{RunContext: rc, Step: workflow.Jobs["test"].Steps[0].Clone(), env: map[string]string{}}), "with:")
+		require.ErrorContains(t, setupInputs(t.Context(), &stepRun{RunContext: rc, Step: workflow.Jobs["test"].Steps[0].Clone(), env: map[string]string{}}), "with:")
 	})
 }
 

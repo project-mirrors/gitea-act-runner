@@ -41,6 +41,7 @@ import (
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	docker_container "github.com/moby/moby/api/types/container"
 	log "github.com/sirupsen/logrus"
+	"go.yaml.in/yaml/v4"
 )
 
 // CapabilityCancelling tells the server this runner understands the
@@ -414,7 +415,9 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 
 	// Added per task because this job's service containers must be reached directly, and
 	// act reaches them by their workflow key.
-	proxyEnv := JobProxyEnv(envs, r.builtInCacheURL(), slices.Sorted(maps.Keys(job.Services)))
+	var services map[string]yaml.Node
+	_ = job.RawServices.Decode(&services) // a whole-value expression names no service before evaluation
+	proxyEnv := JobProxyEnv(envs, r.builtInCacheURL(), slices.Sorted(maps.Keys(services)))
 	maps.Copy(envs, proxyEnv)
 
 	if r.capabilities != "" {
@@ -428,24 +431,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		r.getDefaultActionsURL(task),
 		r.client.Address())
 
-	preset := &model.GithubContext{
-		Event:           taskContext["event"].GetStructValue().AsMap(),
-		RunID:           taskContext["run_id"].GetStringValue(),
-		RunNumber:       taskContext["run_number"].GetStringValue(),
-		RunAttempt:      taskContext["run_attempt"].GetStringValue(),
-		Actor:           taskContext["actor"].GetStringValue(),
-		Repository:      taskContext["repository"].GetStringValue(),
-		EventName:       taskContext["event_name"].GetStringValue(),
-		Sha:             taskContext["sha"].GetStringValue(),
-		Ref:             taskContext["ref"].GetStringValue(),
-		RefName:         taskContext["ref_name"].GetStringValue(),
-		RefType:         taskContext["ref_type"].GetStringValue(),
-		HeadRef:         taskContext["head_ref"].GetStringValue(),
-		BaseRef:         taskContext["base_ref"].GetStringValue(),
-		Token:           taskContext["token"].GetStringValue(),
-		RepositoryOwner: taskContext["repository_owner"].GetStringValue(),
-		RetentionDays:   taskContext["retention_days"].GetStringValue(),
-	}
+	preset := model.GithubContextFromMap(task.Context.AsMap())
 	if t := task.Secrets["GITEA_TOKEN"]; t != "" {
 		preset.Token = t
 	} else if t := task.Secrets["GITHUB_TOKEN"]; t != "" {

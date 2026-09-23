@@ -7,7 +7,6 @@ package runner
 import (
 	"context"
 	"fmt"
-	"maps"
 	"os"
 	"runtime"
 	"sync"
@@ -159,9 +158,9 @@ func (runner *runnerImpl) configure() (*runnerImpl, error) {
 func maxParallelFor(strategy *model.Strategy, combinations int) int {
 	maxParallel := 4 // actionslib has no default for an undeclared max-parallel
 	if strategy != nil {
-		if limit, declared, err := strategy.ParseMaxParallel(); err != nil {
+		if limit, err := strategy.MaxParallel(); err != nil {
 			log.Errorf("Ignoring invalid max-parallel: %v", err)
-		} else if declared {
+		} else if limit > 0 {
 			maxParallel = limit
 		}
 	}
@@ -210,7 +209,7 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 						return err
 					}
 					if job.RawStrategy.Kind == yaml.ScalarNode {
-						if err := decodeDeferred(ctx, strategyRc.ExprEval, "job strategy", job.RawStrategy, &job.Strategy); err != nil {
+						if err := model.DecodeEvaluated("job strategy", job.RawStrategy, strategyRc.ExprEval.shared(ctx).EvaluateYamlNode, &job.Strategy); err != nil {
 							return err
 						}
 					} else {
@@ -221,6 +220,11 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 						// An unevaluated expression is left in place, which GetMatrixes below rejects.
 						if err := strategyRc.NewExpressionEvaluator(ctx).EvaluateYamlNode(ctx, &job.Strategy.RawMatrix); err != nil {
 							log.Errorf("Error while evaluating matrix: %v", err)
+						}
+						for _, value := range []*string{&job.Strategy.FailFastString, &job.Strategy.MaxParallelString} {
+							if evaluated, err := strategyRc.ExprEval.Interpolate(ctx, *value); err == nil {
+								*value = evaluated
+							}
 						}
 					}
 				}
@@ -236,7 +240,16 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 				log.Infof("Running job with maxParallel=%d for %d matrix combinations", maxParallel, len(matrixes))
 
 				for i, matrix := range matrixes {
-					rc, err := runner.newRunContext(ctx, run, matrix)
+					index, total := i, len(matrixes)
+					if runner.caller == nil && runner.config.PresetGitHubContext != nil && len(matrix) > 0 {
+						var expanded struct {
+							Index int `yaml:"job-index"`
+							Total int `yaml:"job-total"`
+						}
+						_ = job.RawStrategy.Decode(&expanded) // Gitea expanded the combination, a version writing neither leaves them unknown
+						index, total = expanded.Index, expanded.Total
+					}
+					rc, err := runner.newCombinationRunContext(ctx, run, matrix, index, total)
 					if err != nil {
 						return err
 					}
@@ -325,6 +338,10 @@ func handleFailure(plan *model.Plan) common.Executor {
 }
 
 func (runner *runnerImpl) newRunContext(ctx context.Context, run *model.Run, matrix map[string]any) (*RunContext, error) {
+	return runner.newCombinationRunContext(ctx, run, matrix, 0, 1)
+}
+
+func (runner *runnerImpl) newCombinationRunContext(ctx context.Context, run *model.Run, matrix map[string]any, index, total int) (*RunContext, error) {
 	rc := &RunContext{
 		Config:      runner.config,
 		Run:         run,
@@ -332,16 +349,16 @@ func (runner *runnerImpl) newRunContext(ctx context.Context, run *model.Run, mat
 		StepResults: make(map[string]*model.StepResult),
 		Matrix:      matrix,
 		caller:      runner.caller,
+		jobIndex:    index,
+		jobTotal:    total,
 	}
 	if err := rc.resolveWorkflowCall(ctx); err != nil {
 		return nil, err
 	}
 	rc.ExprEval = rc.NewExpressionEvaluator(ctx)
 	rc.Name = rc.maskSecrets(rc.ExprEval.InterpolateName(ctx, run.String()))
-	// Snapshot the job's pristine output expressions now, before any matrix combo runs and
-	// rewrites the shared Job.Outputs (see interpolateOutputs).
-	if job := run.Job(); job != nil {
-		rc.outputTemplate = maps.Clone(job.Outputs)
+	if job := run.Job(); job != nil && job.RawOutputs.Kind != 0 {
+		job.Outputs = nil // a job no combination ran for reads "" as on GitHub, a Gitea needs placeholder has no RawOutputs and keeps its outputs
 	}
 
 	return rc, nil

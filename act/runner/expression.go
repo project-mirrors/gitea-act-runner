@@ -13,7 +13,6 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
@@ -27,29 +26,6 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
-// setStrategyContext leaves `max-parallel` unset when the job declares none, as GitHub does.
-func setStrategyContext(strategy map[string]any, jobStrategy *model.Strategy) {
-	strategy["fail-fast"] = jobStrategy.GetFailFast()
-	if limit, declared, err := jobStrategy.ParseMaxParallel(); declared && err == nil {
-		strategy["max-parallel"] = limit
-	}
-}
-
-// decodeDeferred decodes a whole-value `${{ }}` parked in a Raw* field, evaluating a clone since the node is shared across matrix combinations.
-func decodeDeferred[T any](ctx context.Context, eval *expressionEvaluator, name string, raw yaml.Node, out *T) error {
-	if raw.Kind != yaml.ScalarNode {
-		return nil
-	}
-	node := model.CloneYamlNode(raw)
-	if err := eval.EvaluateYamlNode(ctx, &node); err != nil {
-		return fmt.Errorf("unable to evaluate %s: %w", name, err)
-	}
-	if err := node.Decode(out); err != nil {
-		return fmt.Errorf("unable to decode %s: %w", name, err)
-	}
-	return nil
-}
-
 // NewExpressionEvaluator creates a new evaluator
 func (rc *RunContext) NewExpressionEvaluator(ctx context.Context) *ExpressionEvaluator {
 	return rc.NewExpressionEvaluatorWithEnv(ctx, rc.GetEnv())
@@ -59,23 +35,9 @@ func (rc *RunContext) NewExpressionEvaluatorWithEnv(ctx context.Context, env map
 	var workflowCallResult map[string]*model.WorkflowCallResult
 
 	// todo: cleanup EvaluationEnvironment creation
-	using := make(map[string]exprparser.Needs)
 	strategy := make(map[string]any)
 	if rc.Run != nil {
-		job := rc.Run.Job()
-		if job != nil && job.Strategy != nil {
-			setStrategyContext(strategy, job.Strategy)
-		}
-
-		jobs := rc.Run.Workflow.Jobs
-		jobNeeds := rc.Run.Job().Needs()
-
-		for _, needs := range jobNeeds {
-			using[needs] = exprparser.Needs{
-				Outputs: jobs[needs].Outputs,
-				Result:  jobs[needs].NeedsResult(),
-			}
-		}
+		strategy = exprparser.StrategyContext(rc.Run.Job().Strategy, rc.jobIndex, rc.jobTotal)
 
 		// only setup jobs context in case of workflow_call
 		// and existing expression evaluator (this means, jobs are at
@@ -83,7 +45,7 @@ func (rc *RunContext) NewExpressionEvaluatorWithEnv(ctx context.Context, env map
 		if rc.caller != nil && rc.ExprEval != nil {
 			workflowCallResult = map[string]*model.WorkflowCallResult{}
 
-			for jobName, job := range jobs {
+			for jobName, job := range rc.Run.Workflow.Jobs {
 				result := model.WorkflowCallResult{
 					Outputs: map[string]string{},
 				}
@@ -108,7 +70,7 @@ func (rc *RunContext) NewExpressionEvaluatorWithEnv(ctx context.Context, env map
 		Vars:      getWorkflowVars(ctx, rc),
 		Strategy:  strategy,
 		Matrix:    rc.Matrix,
-		Needs:     using,
+		Needs:     exprparser.NeedsContext(rc.Run),
 		Inputs:    inputs,
 		HashFiles: getHashFilesFunction(ctx, rc),
 	}
@@ -137,23 +99,6 @@ func (rc *RunContext) NewActionInputsExpressionEvaluator(ctx context.Context, st
 
 func (rc *RunContext) newStepExpressionEvaluator(ctx context.Context, step step, stepInputs map[string]any, jobContext *model.JobContext) *ExpressionEvaluator {
 	// todo: cleanup EvaluationEnvironment creation
-	job := rc.Run.Job()
-	strategy := make(map[string]any)
-	if job.Strategy != nil {
-		setStrategyContext(strategy, job.Strategy)
-	}
-
-	jobs := rc.Run.Workflow.Jobs
-	jobNeeds := rc.Run.Job().Needs()
-
-	using := make(map[string]exprparser.Needs)
-	for _, needs := range jobNeeds {
-		using[needs] = exprparser.Needs{
-			Outputs: jobs[needs].Outputs,
-			Result:  jobs[needs].NeedsResult(),
-		}
-	}
-
 	ee := &exprparser.EvaluationEnvironment{
 		Github:   step.getGithubContext(ctx),
 		Env:      *step.getEnv(),
@@ -161,9 +106,9 @@ func (rc *RunContext) newStepExpressionEvaluator(ctx context.Context, step step,
 		Steps:    rc.getStepsContext(),
 		Secrets:  getWorkflowSecrets(rc),
 		Vars:     getWorkflowVars(ctx, rc),
-		Strategy: strategy,
+		Strategy: exprparser.StrategyContext(rc.Run.Job().Strategy, rc.jobIndex, rc.jobTotal),
 		Matrix:   rc.Matrix,
-		Needs:    using,
+		Needs:    exprparser.NeedsContext(rc.Run),
 		// todo: should be unavailable
 		// but required to interpolate/evaluate the inputs in actions/composite
 		Inputs:    getEvaluatorInputs(rc, stepInputs, rc.getGithubContext(ctx)),
@@ -306,45 +251,30 @@ func getEvaluatorInputs(rc *RunContext, stepInputs map[string]any, ghc *model.Gi
 	maps.Copy(inputs, rc.workflowCallInputs)
 	maps.Copy(inputs, stepInputs)
 
-	if ghc.EventName == "workflow_dispatch" {
-		config := rc.Run.Workflow.WorkflowDispatchConfig()
-		if config != nil && config.Inputs != nil {
-			for k, v := range config.Inputs {
-				value := nestedMapLookup(ghc.Event, "inputs", k)
-				if value == nil {
-					value = v.Default
+	switch ghc.EventName {
+	case "workflow_dispatch":
+		if config := rc.Run.Workflow.WorkflowDispatchConfig(); config != nil {
+			for name, input := range config.Inputs {
+				if input.Type == "number" {
+					input.Type = "string" // boolean is the only typed dispatch input, as in Gitea
 				}
-				inputs[k] = coerceInputValue(value, v.Type)
+				setEvaluatorInput(inputs, ghc, name, model.WorkflowCallInput{Type: input.Type, Default: input.Default})
 			}
 		}
-	}
-
-	if ghc.EventName == "workflow_call" {
-		config := rc.Run.Workflow.WorkflowCallConfig()
-		if config != nil && config.Inputs != nil {
-			for k, v := range config.Inputs {
-				value := nestedMapLookup(ghc.Event, "inputs", k)
-				if value == nil {
-					value = v.Default
-				}
-				inputs[k] = coerceInputValue(value, v.Type)
-			}
+	case "workflow_call":
+		for name, input := range rc.Run.Workflow.WorkflowCallConfig().Inputs {
+			setEvaluatorInput(inputs, ghc, name, input)
 		}
 	}
 	return inputs
 }
 
-// coerceInputValue converts an input value to the type declared by the workflow.
-// The event payload carries natively typed JSON values on newer Gitea versions,
-// while defaults and older servers provide strings.
-func coerceInputValue(value any, inputType string) any {
-	if inputType != "boolean" {
-		return value
+func setEvaluatorInput(inputs map[string]any, ghc *model.GithubContext, name string, input model.WorkflowCallInput) {
+	value := model.NestedMapLookup(ghc.Event, "inputs", name)
+	if value == nil {
+		value, _ = input.DefaultValue()
 	}
-	if b, ok := value.(bool); ok {
-		return b
-	}
-	return value == "true"
+	inputs[name] = model.CoerceInputValue(value, input.Type)
 }
 
 // resolveWorkflowCall evaluates the caller's with: and secrets: once, as the server does before dispatching a called workflow.
@@ -352,40 +282,32 @@ func (rc *RunContext) resolveWorkflowCall(ctx context.Context) error {
 	if rc.caller == nil {
 		return nil
 	}
+	logger := common.Logger(ctx)
 	callerJob := rc.caller.runContext.Run.Job()
-	callerEval := rc.caller.runContext.ExprEval
-	callerWith := callerJob.With
-	if err := decodeDeferred(ctx, callerEval, "workflow inputs", callerJob.RawWith, &callerWith); err != nil {
+	callerEval := rc.caller.runContext.ExprEval.shared(ctx)
+	var callerWith map[string]any
+	if err := model.DecodeEvaluated("workflow inputs", callerJob.RawWith, callerEval.EvaluateYamlNode, &callerWith); err != nil {
 		return err
 	}
-	calleeEval := sync.OnceValue(func() *expressionEvaluator { return rc.NewExpressionEvaluator(ctx) })
+	if !rc.Run.Workflow.IsWorkflowCall() {
+		logger.Warn("workflow_call key is not defined in the referenced workflow")
+	}
 	config := rc.Run.Workflow.WorkflowCallConfig()
-
-	rc.workflowCallInputs = make(map[string]any, len(config.Inputs))
-	for name, input := range config.Inputs {
-		value, eval, label := callerWith[name], callerEval, "input"
-		if value == nil {
-			value, eval, label = input.Default, calleeEval(), "the default of input"
-		}
-		if str, ok := value.(string); ok {
-			var err error
-			if value, err = eval.Interpolate(ctx, str); err != nil {
-				return fmt.Errorf("unable to interpolate %s %s: %w", label, name, err)
-			}
-		}
-		rc.workflowCallInputs[name] = coerceInputValue(value, input.Type)
+	var err error
+	if rc.workflowCallInputs, err = callerEval.ResolveWorkflowCallInputs(config, callerWith); err != nil {
+		logger.Warn(err)
 	}
 
+	if callerJob.InheritSecrets() {
+		rc.workflowCallSecrets = getWorkflowSecrets(rc.caller.runContext)
+		return nil
+	}
 	secrets := callerJob.Secrets()
-	if secrets == nil && callerJob.InheritSecrets() {
-		secrets = rc.caller.runContext.Config.Secrets
+	if err := config.ValidateSecrets(secrets); err != nil {
+		logger.Warn(err)
 	}
-	rc.workflowCallSecrets = make(map[string]string, len(secrets))
-	for k, v := range secrets {
-		var err error
-		if rc.workflowCallSecrets[k], err = callerEval.Interpolate(ctx, v); err != nil {
-			return fmt.Errorf("unable to interpolate secret %s: %w", k, err)
-		}
+	if rc.workflowCallSecrets, err = callerEval.EvaluateCallerSecrets(secrets); err != nil {
+		return fmt.Errorf("unable to interpolate %w", err)
 	}
 	return nil
 }

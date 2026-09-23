@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -353,12 +354,7 @@ func execAsDocker(ctx context.Context, step actionStep, actionName, actionDir, b
 			logger.Debugf("image '%s' for architecture '%s' already exists", image, rc.Config.ContainerArchitecture)
 		}
 	}
-	eval := rc.NewActionInputsExpressionEvaluator(ctx, step)
-	args, err := eval.Interpolate(ctx, step.getStepModel().With["args"])
-	if err != nil {
-		return fmt.Errorf("unable to interpolate with.args: %w", err)
-	}
-	cmd, err := shellquote.Split(args)
+	cmd, err := shellquote.Split(step.getStepModel().With["args"])
 	if err != nil {
 		return err
 	}
@@ -375,14 +371,11 @@ func execAsDocker(ctx context.Context, step actionStep, actionName, actionDir, b
 			}
 		}
 	}
-	entrypoint, err := dockerEntrypoint(ctx, step, eval, stage)
+	entrypoint, err := dockerEntrypoint(step, stage)
 	if err != nil {
 		return err
 	}
-	stepContainer, err := newStepContainer(ctx, step, image, cmd, entrypoint, rc.Config.ContainerOptions)
-	if err != nil {
-		return err
-	}
+	stepContainer := newStepContainer(ctx, step, image, cmd, entrypoint, rc.Config.ContainerOptions)
 	return common.NewPipelineExecutor(
 		prepImage,
 		stepContainer.Pull(forcePull),
@@ -394,7 +387,7 @@ func execAsDocker(ctx context.Context, step actionStep, actionName, actionDir, b
 
 // dockerEntrypoint returns the entrypoint the action's image runs with for the given
 // stage. Only the main stage honours the `entrypoint` input.
-func dockerEntrypoint(ctx context.Context, step actionStep, eval *expressionEvaluator, stage stepStage) ([]string, error) {
+func dockerEntrypoint(step actionStep, stage stepStage) ([]string, error) {
 	runs := step.getActionModel().Runs
 
 	var entrypoint string
@@ -406,11 +399,7 @@ func dockerEntrypoint(ctx context.Context, step actionStep, eval *expressionEval
 	default:
 		entrypoint = runs.Entrypoint
 		if entrypoint == "" {
-			withEntrypoint, err := eval.Interpolate(ctx, step.getStepModel().With["entrypoint"])
-			if err != nil {
-				return nil, fmt.Errorf("unable to interpolate with.entrypoint: %w", err)
-			}
-			if fields := strings.Fields(withEntrypoint); len(fields) > 0 {
+			if fields := strings.Fields(step.getStepModel().With["entrypoint"]); len(fields) > 0 {
 				return fields, nil
 			}
 		}
@@ -425,7 +414,6 @@ func dockerEntrypoint(ctx context.Context, step actionStep, eval *expressionEval
 // evalDockerEnv returns an evaluator bound to the environment it installed.
 func evalDockerEnv(ctx context.Context, step step, action *model.Action) (*expressionEvaluator, error) {
 	rc := step.getRunContext()
-	stepModel := step.getStepModel()
 
 	var err error
 	inputs := make(map[string]string)
@@ -436,27 +424,20 @@ func evalDockerEnv(ctx context.Context, step step, action *model.Action) (*expre
 			return nil, fmt.Errorf("unable to interpolate the default of input %s: %w", k, err)
 		}
 	}
-	for k, v := range stepModel.With {
-		if inputs[k], err = eval.Interpolate(ctx, v); err != nil {
-			return nil, fmt.Errorf("unable to interpolate with.%s: %w", k, err)
-		}
-	}
-	mergeIntoMap(step, step.getEnv(), inputs)
-
-	env := make(map[string]string, len(action.Runs.Env)+len(*step.getEnv()))
-	mergeIntoMap(step, &env, action.Runs.Env, *step.getEnv())
-	*step.getEnv() = env
+	mergeIntoMap(step, step.getEnv(), inputs, step.getStepModel().With)
 
 	ee := rc.NewActionInputsExpressionEvaluator(ctx, step)
-	for k, v := range *step.getEnv() {
-		if (*step.getEnv())[k], err = ee.Interpolate(ctx, v); err != nil {
+	runsEnv := make(map[string]string, len(action.Runs.Env))
+	for k, v := range action.Runs.Env {
+		if runsEnv[k], err = ee.Interpolate(ctx, v); err != nil {
 			return nil, fmt.Errorf("unable to interpolate env %s: %w", k, err)
 		}
 	}
+	mergeIntoMap(step, step.getEnv(), runsEnv, maps.Clone(*step.getEnv()))
 	return ee, nil
 }
 
-func newStepContainer(ctx context.Context, step step, image string, cmd, entrypoint []string, runnerOptions string) (container.Container, error) {
+func newStepContainer(ctx context.Context, step step, image string, cmd, entrypoint []string, runnerOptions string) container.Container {
 	rc := step.getRunContext()
 	logWriter := rc.commandLogWriter(ctx)
 	envList := make([]string, 0)
@@ -466,10 +447,7 @@ func newStepContainer(ctx context.Context, step step, image string, cmd, entrypo
 
 	envList = append(envList, rc.runnerEnv(ctx)...)
 
-	binds, mounts, err := rc.GetBindsAndMounts()
-	if err != nil {
-		return nil, err
-	}
+	binds, mounts := rc.GetBindsAndMounts()
 	networkMode := "container:" + rc.jobContainerName()
 	if rc.IsHostEnv() {
 		networkMode = "default"
@@ -493,7 +471,7 @@ func newStepContainer(ctx context.Context, step step, image string, cmd, entrypo
 		AutoRemove:    true,
 		ValidVolumes:  rc.validVolumes(),
 		AllocatePTY:   rc.Config.AllocatePTY,
-	}), nil
+	})
 }
 
 func populateEnvsFromSavedState(env *map[string]string, step actionStep, rc *RunContext) {

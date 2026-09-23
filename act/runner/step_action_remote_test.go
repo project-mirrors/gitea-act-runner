@@ -216,7 +216,7 @@ func TestStepActionRemote(t *testing.T) {
 				sarm.On("readAction", sar.Step, actionDirSuffix(sar.Step.UsesHash()), "", mock.Anything, mock.Anything).Return(&model.Action{}, nil)
 			}
 			if tt.mocks.run {
-				sarm.On("runAction", sar, actionDirSuffix(sar.Step.UsesHash()), newRemoteAction(sar.Step.Uses)).Return(func(ctx context.Context) error { return tt.runError })
+				sarm.On("runAction", sar, actionDirSuffix(sar.Step.UsesHash()), mustNewRemoteAction(t, sar.Step.Uses)).Return(func(ctx context.Context) error { return tt.runError })
 
 				cm.On("Copy", "/var/run/act", mock.AnythingOfType("[]*container.FileEntry")).Return(noopExecutor)
 
@@ -249,7 +249,7 @@ func TestStepActionRemote(t *testing.T) {
 			RunContext:   &RunContext{Config: &Config{ActionCacheDir: t.TempDir()}, Run: &model.Run{JobID: "job", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job": {}}}}, JobContainer: &jobContainerMock{}},
 			action:       &model.Action{Inputs: map[string]model.Input{"shared": {}}},
 			env:          map[string]string{},
-			remoteAction: newRemoteAction("org/composite@v1"),
+			remoteAction: mustNewRemoteAction(t, "org/composite@v1"),
 		}
 
 		for _, value := range []string{"first", "second"} {
@@ -464,7 +464,7 @@ func TestStepActionRemotePost(t *testing.T) {
 				Step:   tt.stepModel,
 				action: tt.actionModel,
 				// post only ever runs after prepareActionExecutor resolved the action
-				remoteAction: newRemoteAction(tt.stepModel.Uses),
+				remoteAction: mustNewRemoteAction(t, tt.stepModel.Uses),
 			}
 			sar.RunContext.ExprEval = sar.RunContext.NewExpressionEvaluator(ctx)
 
@@ -611,10 +611,21 @@ func Test_newRemoteAction(t *testing.T) {
 			action: "ssh://gitea.com/onlyonesegment@main", // missing org/repo after the host
 			want:   nil,
 		},
+		{
+			action: "self:owner/repo/sub@v1",
+			want: &remoteAction{
+				URL:  "https://gitea.example.com",
+				Org:  "owner",
+				Repo: "repo",
+				Path: "sub",
+				Ref:  "v1",
+			},
+			wantCloneURL: "https://gitea.example.com/owner/repo",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.action, func(t *testing.T) {
-			got := newRemoteAction(tt.action)
+			got, _ := newRemoteAction(tt.action, nil, "gitea.example.com")
 			assert.Equalf(t, tt.want, got, "newRemoteAction(%v)", tt.action)
 			cloneURL := ""
 			if got != nil {
@@ -623,9 +634,18 @@ func Test_newRemoteAction(t *testing.T) {
 			assert.Equalf(t, tt.wantCloneURL, cloneURL, "newRemoteAction(%v).CloneURL()", tt.action)
 		})
 	}
+	_, err := newRemoteAction("self:owner/repo@v1", nil, "")
+	require.ErrorContains(t, err, "without a Gitea instance")
 }
 
-func Test_newSelfRepoAction(t *testing.T) {
+func mustNewRemoteAction(t *testing.T, uses string) *remoteAction {
+	t.Helper()
+	action, err := newRemoteAction(uses, nil, "")
+	require.NoError(t, err)
+	return action
+}
+
+func Test_newRemoteActionSelfRepo(t *testing.T) {
 	workflow := &model.GithubContext{
 		ServerURL:  "https://gitea.example.com",
 		Repository: "owner/workflow-repo",
@@ -674,7 +694,8 @@ func Test_newSelfRepoAction(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, newSelfRepoAction(tt.action, tt.github))
+			got, _ := newRemoteAction(tt.action, tt.github, "")
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -704,7 +725,7 @@ func Test_remoteActionReference(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.uses, func(t *testing.T) {
-			assert.Equal(t, tt.want, newRemoteAction(tt.uses).Reference())
+			assert.Equal(t, tt.want, mustNewRemoteAction(t, tt.uses).Reference())
 		})
 	}
 }
@@ -761,7 +782,7 @@ func TestStepActionRemotePreResolvesDownloadedCommit(t *testing.T) {
 func TestStepActionRemoteActionDownloadInfo(t *testing.T) {
 	t.Run("reports the action and its resolved commit", func(t *testing.T) {
 		sar := &stepActionRemote{
-			remoteAction: newRemoteAction("actions/checkout@v7"),
+			remoteAction: mustNewRemoteAction(t, "actions/checkout@v7"),
 			action:       &model.Action{},
 			resolvedSha:  "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
 		}
@@ -775,7 +796,7 @@ func TestStepActionRemoteActionDownloadInfo(t *testing.T) {
 
 	t.Run("reports nothing when no action was downloaded", func(t *testing.T) {
 		// The local checkout of the workflow's own repository resolves no action.
-		sar := &stepActionRemote{remoteAction: newRemoteAction("actions/checkout@v7")}
+		sar := &stepActionRemote{remoteAction: mustNewRemoteAction(t, "actions/checkout@v7")}
 
 		_, _, ok := sar.actionDownloadInfo()
 

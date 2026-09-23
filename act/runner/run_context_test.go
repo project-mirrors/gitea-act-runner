@@ -185,38 +185,6 @@ func TestRunContext_EvalBool(t *testing.T) {
 	}
 }
 
-func TestRunContextHandleCredentialsDoesNotUseDockerSecrets(t *testing.T) {
-	workflow, err := model.ReadWorkflow(strings.NewReader(`
-name: test
-on: push
-jobs:
-  job:
-    runs-on: ubuntu-latest
-    steps: []
-`))
-	require.NoError(t, err)
-
-	rc := &RunContext{
-		Config: &Config{
-			Secrets: map[string]string{
-				"DOCKER_USERNAME": "docker-user",
-				"DOCKER_PASSWORD": "docker-password",
-			},
-			Env: map[string]string{},
-		},
-		Run: &model.Run{
-			JobID:    "job",
-			Workflow: workflow,
-		},
-	}
-
-	// DOCKER_USERNAME/DOCKER_PASSWORD secrets should not be used as implicit job container pull credentials.
-	username, password, err := rc.handleCredentials(t.Context())
-	require.NoError(t, err)
-	assert.Empty(t, username)
-	assert.Empty(t, password)
-}
-
 // fakeContainer turns every container operation into a no-op, so startJobContainer
 // runs without a Docker daemon. The embedded interface is nil, so any method the
 // test does not exercise panics rather than silently doing the wrong thing.
@@ -370,19 +338,28 @@ jobs:
 	require.Equal(t, map[string]string{"data": "/data"}, redis.Mounts)
 	require.Empty(t, redis.Binds) // the docker socket is the job container's alone
 	require.Empty(t, redis.WorkingDir)
+	require.Nil(t, redis.Entrypoint)
+	require.Nil(t, redis.Cmd)
 }
 
-// A whole-value `services:` expression only reaches the typed field through DecodeRaw.
-func TestStartJobContainerGivesServicesTheirVolumesFromExpression(t *testing.T) {
-	redis := startJobContainerInputs(t, `
+func TestStartJobContainerEvaluatesContainersOnce(t *testing.T) {
+	inputs := startJobContainerInputs(t, `
 jobs:
   job:
-    services: ${{ fromJSON('{"redis":{"image":"redis:latest","volumes":["data:/data"]}}') }}
-`, &Config{ValidVolumes: []string{"data"}})[0]
+    container: ${{ fromJSON('{"image":"node:20","options":"--label ${{ github.job }}","credentials":{"username":"user","password":"${{ vars.TITLE }}"}}') }}
+    services: ${{ fromJSON('{"redis":{"image":"redis:latest","volumes":["data:/data"],"env":{"TITLE":"${{ github.job }}"},"credentials":{"username":"user","password":"${{ github.job }}"},"entrypoint":"/entry.sh","command":"redis-server --port 6380"}}') }}
+`, &Config{})
+	redis, job := inputs[0], inputs[1]
 
 	require.Equal(t, "redis:latest", redis.Image)
-	require.Equal(t, []string{"data"}, redis.ValidVolumes)
 	require.Equal(t, map[string]string{"data": "/data"}, redis.Mounts)
+	require.Equal(t, []string{"TITLE=${{ github.job }}"}, redis.Env)
+	require.Equal(t, "${{ github.job }}", redis.Password)
+	require.Equal(t, []string{"/entry.sh"}, redis.Entrypoint)
+	require.Equal(t, []string{"redis-server", "--port", "6380"}, redis.Cmd)
+	require.Equal(t, "node:20", job.Image)
+	require.Equal(t, "--label ${{ github.job }}", job.WorkflowOptions)
+	require.Equal(t, "${{ vars.TITLE }}", job.Password)
 }
 
 // Only the workflow's options may be stripped later, so the two sources have to reach the
@@ -506,8 +483,7 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 					config := testcase.rc.Config
 					config.Workdir = testcase.name
 					config.BindWorkdir = bindWorkDir
-					gotbind, gotmount, err := rctemplate.GetBindsAndMounts()
-					require.NoError(t, err)
+					gotbind, gotmount := rctemplate.GetBindsAndMounts()
 
 					// Name binds/mounts are either/or
 					if config.BindWorkdir {
@@ -543,8 +519,9 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 
 		t.Run("InterpolatedContainerVolumes", func(t *testing.T) {
 			job := &model.Job{}
-			err := job.RawContainer.Encode(map[string][]string{
-				"volumes": {"${{ secrets.MAME }}:/root/.mame/roms:ro"},
+			err := job.RawContainer.Encode(map[string]any{
+				"image":   "node:20",
+				"volumes": []string{"${{ secrets.MAME }}:/root/.mame/roms:ro"},
 			})
 			require.NoError(t, err)
 
@@ -565,9 +542,9 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 			rc.Run.JobID = "job1"
 			rc.Run.Workflow.Jobs = map[string]*model.Job{"job1": job}
 			rc.ExprEval = rc.NewExpressionEvaluator(context.Background())
+			require.NoError(t, rc.resolvePlatformImage(context.Background()))
 
-			gotbind, gotmount, err := rc.GetBindsAndMounts()
-			require.NoError(t, err)
+			gotbind, gotmount := rc.GetBindsAndMounts()
 			assert.Contains(t, gotbind, "/host/mame/roms:/root/.mame/roms:ro")
 			assert.NotContains(t, gotbind, "${{ secrets.MAME }}")
 			assert.NotContains(t, gotmount, "${{ secrets.MAME }}")
@@ -575,12 +552,6 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 
 		for _, testcase := range tests {
 			t.Run(testcase.name, func(t *testing.T) {
-				job := &model.Job{}
-				err := job.RawContainer.Encode(map[string][]string{
-					"volumes": testcase.volumes,
-				})
-				assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
-
 				rc := &RunContext{
 					Name: "TestRCName",
 					Run: &model.Run{
@@ -592,12 +563,11 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 						BindWorkdir:     false,
 						SharedToolCache: true, // so OverridesToolCache has a mount to displace
 					},
+					containerSpec: model.ContainerSpec{Volumes: testcase.volumes},
 				}
 				rc.Run.JobID = "job1"
-				rc.Run.Workflow.Jobs = map[string]*model.Job{"job1": job}
 
-				gotbind, gotmount, err := rc.GetBindsAndMounts()
-				require.NoError(t, err)
+				gotbind, gotmount := rc.GetBindsAndMounts()
 
 				if len(testcase.wantbind) > 0 {
 					assert.Contains(t, gotbind, testcase.wantbind)
@@ -632,13 +602,11 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 			Config: &Config{},
 		}
 
-		_, gotmount, err := rc.GetBindsAndMounts()
-		require.NoError(t, err)
+		_, gotmount := rc.GetBindsAndMounts()
 		assert.NotContains(t, gotmount, sharedToolCacheVolume)
 
 		rc.Config.SharedToolCache = true
-		_, gotmount, err = rc.GetBindsAndMounts()
-		require.NoError(t, err)
+		_, gotmount = rc.GetBindsAndMounts()
 		assert.Equal(t, container.DefaultToolCache, gotmount[sharedToolCacheVolume])
 	})
 
@@ -651,18 +619,15 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 			Config: &Config{BindWorkdir: true, Workdir: "/workspace/1/owner/repo", PresetGitHubContext: &model.GithubContext{}},
 		}
 
-		gotbind, _, err := rc.GetBindsAndMounts()
-		require.NoError(t, err)
+		gotbind, _ := rc.GetBindsAndMounts()
 		assert.True(t, slices.ContainsFunc(gotbind, func(bind string) bool { return strings.HasPrefix(bind, "/workspace/1:/workspace/1") }), gotbind)
 
 		rc.Config.BindWorkdir = false
-		_, gotmount, err := rc.GetBindsAndMounts()
-		require.NoError(t, err)
+		_, gotmount := rc.GetBindsAndMounts()
 		assert.Equal(t, "/workspace/1", gotmount[rc.jobContainerName()])
 
-		require.NoError(t, rc.Run.Job().RawContainer.Encode(map[string][]string{"volumes": {"claimed:/workspace/1"}}))
-		_, gotmount, err = rc.GetBindsAndMounts()
-		require.NoError(t, err)
+		rc.containerSpec.Volumes = []string{"claimed:/workspace/1"}
+		_, gotmount = rc.GetBindsAndMounts()
 		assert.Equal(t, "/workspace/1/owner/repo", gotmount[rc.jobContainerName()])
 	})
 }
@@ -845,25 +810,30 @@ func TestCleanupJobResourcesContinuesAfterFailure(t *testing.T) {
 	}
 }
 
-// TestInterpolateOutputsIsPerMatrixCombo guards the matrix-output fix: combinations share one
-// *model.Job, so each must interpolate from its own pristine snapshot. Otherwise the first
-// combo's resolved value freezes the shared template and later combos can't resolve their own.
-func TestInterpolateOutputsIsPerMatrixCombo(t *testing.T) {
+func TestInterpolateOutputsIsPerMatrixComboKeepingNeedsOutputs(t *testing.T) {
 	job := &model.Job{Outputs: map[string]string{"o": "${{ matrix.v }}"}}
-	run := &model.Run{JobID: "j", Workflow: &model.Workflow{Name: "w", Jobs: map[string]*model.Job{"j": job}}}
+	require.NoError(t, job.RawOutputs.Encode(job.Outputs))
+	needed := &model.Job{Outputs: map[string]string{"o": "from-gitea"}}
+	run := &model.Run{JobID: "j", Workflow: &model.Workflow{Name: "w", Jobs: map[string]*model.Job{"j": job, "needed": needed}}}
 	r := &runnerImpl{config: &Config{}}
 	ctx := context.Background()
 
+	_, err := r.newRunContext(ctx, &model.Run{JobID: "needed", Workflow: run.Workflow}, nil)
+	require.NoError(t, err)
 	rcA, err := r.newRunContext(ctx, run, map[string]any{"v": "a"})
 	require.NoError(t, err)
 	rcB, err := r.newRunContext(ctx, run, map[string]any{"v": "b"})
 	require.NoError(t, err)
+	rcEmpty, err := r.newRunContext(ctx, run, map[string]any{"v": ""})
+	require.NoError(t, err)
+	require.Empty(t, job.Outputs)
 
 	require.NoError(t, rcA.interpolateOutputs()(ctx))
 	require.NoError(t, rcB.interpolateOutputs()(ctx))
+	require.NoError(t, rcEmpty.interpolateOutputs()(ctx))
 
-	// Last combo wins (matching GitHub) instead of being frozen to combo A's "a".
-	require.Equal(t, "b", job.Outputs["o"])
+	require.Equal(t, map[string]string{"o": "b"}, job.Outputs)
+	require.Equal(t, map[string]string{"o": "from-gitea"}, needed.Outputs)
 }
 
 // A whole-value `outputs:` expression only reaches the typed field through DecodeRaw.
@@ -936,6 +906,12 @@ func TestGetGitHubContext(t *testing.T) {
 	assert.Equal(t, ghc.RunnerPerflog, "/dev/null") //nolint:testifylint // pre-existing issue from nektos/act
 	assert.Equal(t, ghc.Token, rc.Config.Secrets["GITHUB_TOKEN"])
 	assert.Equal(t, ghc.Job, "job1") //nolint:testifylint // pre-existing issue from nektos/act
+
+	rc.Config.PresetGitHubContext = &model.GithubContext{Actor: "preset-actor", TriggeringActor: "triggerer", Job: "preset-job"}
+	ghc = rc.getGithubContext(context.Background())
+	assert.Equal(t, "preset-actor", ghc.Actor)
+	assert.Equal(t, "triggerer", ghc.TriggeringActor)
+	assert.Equal(t, "job1", ghc.Job)
 }
 
 func TestGetGithubContextRef(t *testing.T) {

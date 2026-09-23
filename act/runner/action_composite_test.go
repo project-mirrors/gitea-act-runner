@@ -12,18 +12,21 @@ import (
 	"gitea.dev/actionslib/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v4"
 )
 
 func TestCompositeActionParity(t *testing.T) {
 	t.Run("inherits contexts without leaking inputs", func(t *testing.T) {
 		ctx := t.Context()
-		strategy := &model.Strategy{MaxParallelString: "3"}
+		strategy := &model.Strategy{MaxParallelString: "3", RawMatrix: yaml.Node{Kind: yaml.MappingNode}}
 		parent := &RunContext{
 			Config:        &Config{},
 			Matrix:        map[string]any{"os": "linux"},
 			Run:           &model.Run{JobID: "job", Workflow: &model.Workflow{Name: "workflow", Jobs: map[string]*model.Job{"job": {Strategy: strategy}}}},
 			JobContainer:  &jobContainerMock{},
 			platformImage: "-self-hosted",
+			jobIndex:      1,
+			jobTotal:      4,
 		}
 		composite, err := newCompositeRunContext(ctx, parent, &stepActionRemote{
 			Step:       &model.Step{With: map[string]string{"SHARED": "outer"}},
@@ -36,9 +39,9 @@ func TestCompositeActionParity(t *testing.T) {
 		assert.Same(t, strategy, composite.Run.Job().Strategy)
 		assert.True(t, composite.IsHostEnv())
 		interpolated, err := composite.NewExpressionEvaluator(ctx).Interpolate(ctx,
-			"${{ matrix.os }}|${{ strategy.max-parallel }}|${{ inputs.shared }}")
+			"${{ matrix.os }}|${{ strategy.max-parallel }}|${{ strategy.job-index }}|${{ inputs.shared }}")
 		require.NoError(t, err)
-		assert.Equal(t, "linux|3|outer", interpolated)
+		assert.Equal(t, "linux|3|1|outer", interpolated)
 		assert.NotContains(t, composite.Env, "INPUT_SHARED")
 
 		nestedEnv := composite.GetEnv()
