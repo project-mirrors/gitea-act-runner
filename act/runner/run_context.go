@@ -1339,21 +1339,26 @@ func trimToLen(s string, l int) string {
 	return s
 }
 
-func (rc *RunContext) getJobContext() *model.JobContext {
-	jobStatus := "success"
+// ownStatus is the result of this context's own steps, which for a composite action is its action status
+func (rc *RunContext) ownStatus() string {
 	if rc.jobFailed {
-		jobStatus = "failure"
+		return "failure"
 	}
 	for _, stepStatus := range rc.StepResults {
 		if stepStatus.Conclusion == model.StepStatusFailure {
-			jobStatus = "failure"
-			break
+			return "failure"
 		}
 	}
+	return "success"
+}
+
+func (rc *RunContext) getJobContext() *model.JobContext {
+	job := rc.topLevelRunContext()
+	jobStatus := job.ownStatus()
 	// A cancelled run takes precedence over success/failure so cancelled() is true and
 	// success()/failure() are false, matching GitHub Actions: on cancellation only
 	// always() and cancelled() steps run.
-	if rc.jobCancelled {
+	if job.jobCancelled {
 		jobStatus = "cancelled"
 	}
 
@@ -1361,17 +1366,17 @@ func (rc *RunContext) getJobContext() *model.JobContext {
 		Status:   jobStatus,
 		Services: map[string]model.JobService{}, // an empty map, never null
 	}
-	if rc.jobContainerID != "" {
-		jobContext.Container.ID = rc.jobContainerID
-		jobContext.Container.Network = rc.jobNetworkName
+	if job.jobContainerID != "" {
+		jobContext.Container.ID = job.jobContainerID
+		jobContext.Container.Network = job.jobNetworkName
 	}
-	for _, svc := range rc.serviceContainers {
+	for _, svc := range job.serviceContainers {
 		if svc.info == nil {
 			continue
 		}
 		jobContext.Services[svc.name] = model.JobService{
 			ID:      svc.info.ID,
-			Network: rc.jobNetworkName,
+			Network: job.jobNetworkName,
 			Ports:   svc.info.Ports,
 		}
 	}

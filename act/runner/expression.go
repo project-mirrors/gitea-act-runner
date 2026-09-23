@@ -127,15 +127,15 @@ var hashfiles string
 
 // NewStepExpressionEvaluator creates a new evaluator with the `inputs` of the enclosing workflow or composite action
 func (rc *RunContext) NewStepExpressionEvaluator(ctx context.Context, step step) *ExpressionEvaluator {
-	return rc.newStepExpressionEvaluator(ctx, step, rc.actionInputs)
+	return rc.newStepExpressionEvaluator(ctx, step, rc.actionInputs, rc.getJobContext())
 }
 
 // NewActionInputsExpressionEvaluator creates a new evaluator with the step's own with: values as `inputs`
 func (rc *RunContext) NewActionInputsExpressionEvaluator(ctx context.Context, step step) *ExpressionEvaluator {
-	return rc.newStepExpressionEvaluator(ctx, step, inputsFromEnv(*step.getEnv()))
+	return rc.newStepExpressionEvaluator(ctx, step, inputsFromEnv(*step.getEnv()), rc.getJobContext())
 }
 
-func (rc *RunContext) newStepExpressionEvaluator(ctx context.Context, step step, stepInputs map[string]any) *ExpressionEvaluator {
+func (rc *RunContext) newStepExpressionEvaluator(ctx context.Context, step step, stepInputs map[string]any, jobContext *model.JobContext) *ExpressionEvaluator {
 	// todo: cleanup EvaluationEnvironment creation
 	job := rc.Run.Job()
 	strategy := make(map[string]any)
@@ -157,7 +157,7 @@ func (rc *RunContext) newStepExpressionEvaluator(ctx context.Context, step step,
 	ee := &exprparser.EvaluationEnvironment{
 		Github:   step.getGithubContext(ctx),
 		Env:      *step.getEnv(),
-		Job:      rc.getJobContext(),
+		Job:      jobContext,
 		Steps:    rc.getStepsContext(),
 		Secrets:  getWorkflowSecrets(rc),
 		Vars:     getWorkflowVars(ctx, rc),

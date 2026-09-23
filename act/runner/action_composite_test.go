@@ -117,3 +117,51 @@ func TestAppendUniqueMasksNoExponentialGrowth(t *testing.T) {
 
 	assert.Equal(t, []string{"secret"}, parentMasks)
 }
+
+func TestCompositeStepIfReadsJobStatusExceptInItsOwnMainSteps(t *testing.T) {
+	failStep := func(rc *RunContext) {
+		rc.StepResults["failed"] = &model.StepResult{Conclusion: model.StepStatusFailure}
+	}
+	tests := []struct {
+		name   string
+		setup  func(job, composite *RunContext)
+		nested bool
+		stage  stepStage
+		want   map[string]bool
+	}{
+		{"post-if reads the failed job", func(job, _ *RunContext) { failStep(job) }, false, stepStagePost, map[string]bool{"success()": false, "failure()": true, "job.status == 'failure'": true}},
+		{"main if ignores the failed job", func(job, _ *RunContext) { failStep(job) }, false, stepStageMain, map[string]bool{"success()": true, "failure()": false}},
+		{"main if reads the composite's own failure", func(_, composite *RunContext) { failStep(composite) }, false, stepStageMain, map[string]bool{"success()": false, "failure()": true}},
+		{"nested main if ignores the outer composite's failure", func(_, composite *RunContext) { failStep(composite) }, true, stepStageMain, map[string]bool{"success()": true}},
+		{"main if sees the cancelled job", func(job, _ *RunContext) { job.markCancelled() }, false, stepStageMain, map[string]bool{"cancelled()": true, "success()": false}},
+		{"post-if sees the cancelled job", func(job, _ *RunContext) { job.markCancelled() }, false, stepStagePost, map[string]bool{"cancelled()": true, "success()": false}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			job := makeTestRC(t, "runs-on: ubuntu-latest")
+			composite := newTestCompositeRunContext(t, job)
+			rc := composite
+			if tt.nested {
+				rc = newTestCompositeRunContext(t, composite)
+			}
+			tt.setup(job, composite)
+			step := &stepRun{RunContext: rc}
+			for expr, want := range tt.want {
+				enabled, err := isStepEnabled(t.Context(), expr, step, tt.stage)
+				require.NoError(t, err)
+				assert.Equal(t, want, enabled, expr)
+			}
+		})
+	}
+}
+
+func newTestCompositeRunContext(t *testing.T, parent *RunContext) *RunContext {
+	composite, err := newCompositeRunContext(t.Context(), parent, &stepActionRemote{
+		Step:       &model.Step{},
+		RunContext: parent,
+		action:     &model.Action{},
+		env:        map[string]string{},
+	}, "/action")
+	require.NoError(t, err)
+	return composite
+}
