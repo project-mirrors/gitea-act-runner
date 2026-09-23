@@ -32,6 +32,8 @@ COPY scripts/s6 /etc/s6
 
 VOLUME /data
 
+ENV TINI_SUBREAPER=1
+
 ENTRYPOINT ["s6-svscan","/etc/s6"]
 
 ### DIND-ROOTLESS VARIANT
@@ -56,6 +58,7 @@ VOLUME /data
 RUN mkdir -p /data && chown -R rootless:rootless /etc/s6 /data
 
 ENV DOCKER_HOST=unix:///run/user/1000/docker.sock
+ENV TINI_SUBREAPER=1
 
 USER rootless
 ENTRYPOINT ["s6-svscan","/etc/s6"]
