@@ -31,6 +31,11 @@ depending on the prefix:
 - Command *properties* also escape `%3A` and `%2C`, which the UI never decodes, so the reporter
   decodes exactly those two when folding a location into an annotation.
 
+## Built-in actions
+
+Each lives in `internal/pkg/action/<name>` and is registered in `builtinActions` in
+`act/runner/step_action_builtin.go`.
+
 ## End-to-end compatibility tests
 
 `make test-e2e` runs the runner against `E2E_GITEA_IMAGE`. It defaults to the nightly image.

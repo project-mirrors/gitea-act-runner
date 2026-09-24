@@ -57,6 +57,16 @@ func TestStepFactoryNewStep(t *testing.T) {
 				return ok
 			},
 		},
+		{
+			name: "StepBuiltinAction",
+			model: &model.Step{
+				Uses: "builtin:checkout",
+			},
+			check: func(s step) bool {
+				_, ok := s.(*stepActionBuiltin)
+				return ok
+			},
+		},
 	}
 
 	for _, tt := range table {
@@ -72,14 +82,11 @@ func TestStepFactoryNewStep(t *testing.T) {
 }
 
 func TestStepFactoryInvalidStep(t *testing.T) {
-	model := &model.Step{
-		Uses: "remote/action@v1",
-		Run:  "cmd",
+	for _, stepModel := range []*model.Step{
+		{Uses: "remote/action@v1", Run: "cmd"},
+		{Uses: "builtin:unknown"},
+	} {
+		_, err := (&stepFactoryImpl{}).newStep(stepModel, &RunContext{})
+		assert.Error(t, err, stepModel.Uses)
 	}
-
-	sf := &stepFactoryImpl{}
-
-	_, err := sf.newStep(model, &RunContext{})
-
-	assert.Error(t, err)
 }

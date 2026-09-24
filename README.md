@@ -306,6 +306,10 @@ Dockerfile actions are built with these variables as build arguments, so their `
 
 A password in a proxy URL is hidden in job logs. Any step can still read it, because the step is given the proxy URL in its environment.
 
+#### Built-in actions (`uses: builtin:<name>`)
+
+Use `uses: builtin:checkout` to check out a repository without downloading `actions/checkout` or needing Node in the job image, see **[docs/builtin-actions.md](docs/builtin-actions.md)**.
+
 #### Caching (`actions/cache`)
 
 Each runner starts its own cache server, so runners do not share cached entries. When the runner itself runs in Docker, set `cache.host` to an address job containers can reach and `cache.port` to a fixed published port, or put jobs on a shared `container.network`.
