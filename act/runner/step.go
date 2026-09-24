@@ -15,6 +15,7 @@ import (
 
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/container"
+	"gitea.com/gitea/runner/internal/pkg/telemetry"
 
 	"gitea.dev/actionslib/pkg/exprparser"
 	"gitea.dev/actionslib/pkg/model"
@@ -65,24 +66,27 @@ func processRunnerEnvFileCommand(ctx context.Context, fileName string, rc *RunCo
 }
 
 func runStepExecutor(step step, stage stepStage, executor common.Executor) common.Executor {
-	return func(ctx context.Context) error {
+	return func(ctx context.Context) (err error) {
 		logger := common.Logger(ctx)
 		rc := step.getRunContext()
 		stepModel := step.getStepModel()
-
-		ifExpression := step.getIfExpression(ctx, stage)
-		rc.CurrentStep = stepModel.ID
 
 		stepResult := &model.StepResult{
 			Outcome:    model.StepStatusSuccess,
 			Conclusion: model.StepStatusSuccess,
 			Outputs:    make(map[string]string),
 		}
+		ctx, endStep := telemetry.StartStep(ctx, stepModel, stage.String())
+		defer func() { endStep(err, stepResult) }()
+
+		ifExpression := step.getIfExpression(ctx, stage)
+		rc.CurrentStep = stepModel.ID
+
 		if stage == stepStageMain {
 			rc.StepResults[rc.CurrentStep] = stepResult
 		}
 
-		err := setupEnv(ctx, step)
+		err = setupEnv(ctx, step)
 		var runStep bool
 		if err == nil {
 			runStep, err = isStepEnabled(ctx, ifExpression, step, stage)

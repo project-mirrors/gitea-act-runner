@@ -14,6 +14,7 @@ import (
 
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/container"
+	"gitea.com/gitea/runner/act/ghcontext"
 
 	"gitea.dev/actionslib/pkg/model"
 	docker_container "github.com/moby/moby/api/types/container"
@@ -321,7 +322,8 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 		})
 	}
 
-	return common.NewPipelineExecutor(stagePipeline...).Then(handleFailure(plan))
+	executor := common.NewPipelineExecutor(stagePipeline...).Then(handleFailure(plan))
+	return func(ctx context.Context) error { return executor(ghcontext.WithPinnedCheckout(ctx)) }
 }
 
 func handleFailure(plan *model.Plan) common.Executor {

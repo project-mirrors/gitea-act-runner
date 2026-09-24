@@ -13,13 +13,19 @@ import (
 
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/container"
+	"gitea.com/gitea/runner/internal/pkg/telemetry"
 
 	"gitea.dev/actionslib/pkg/model"
+	runnerv1 "gitea.dev/actionslib/runner/v1"
 	log "github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	yaml "go.yaml.in/yaml/v4"
 )
 
@@ -545,6 +551,29 @@ func TestRunStepExecutorParity(t *testing.T) {
 		assert.Equal(t, map[string]string{"declared": "child", "undeclared": "leak"}, childRC.StepResults[child.Step.ID].Outputs)
 		assert.Empty(t, outer.RunContext.IntraActionState)
 		assert.Equal(t, "child", childRC.IntraActionState[child.Step.ID]["saved"])
+	})
+
+	t.Run("stages and composite steps are traced under Gitea's step names", func(t *testing.T) {
+		spans := tracetest.NewSpanRecorder()
+		telemetry.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)))
+		t.Cleanup(func() { telemetry.SetTracerProvider(tracenoop.NewTracerProvider()) })
+		ctx, _ := telemetry.StartJob(t.Context(), &runnerv1.Task{Id: 7})
+		outer := newStep(t, &model.Step{ID: "outer", Uses: "actions/cache@v4", Number: 3})
+		child := newStep(t, &model.Step{ID: "child", Name: "Restore", Number: 1})
+		skipped := newStep(t, &model.Step{ID: "skipped", Name: "Deploy", Number: 4, If: yaml.Node{Value: "false"}})
+		broken := newStep(t, &model.Step{ID: "broken", Name: "Broken", Number: 5, If: yaml.Node{Value: badExpression}})
+
+		require.NoError(t, runStepExecutor(outer, stepStagePost, runStepExecutor(child, stepStageMain, noopExecutor))(ctx))
+		require.NoError(t, runStepExecutor(skipped, stepStageMain, noopExecutor)(ctx))
+		require.Error(t, runStepExecutor(broken, stepStageMain, noopExecutor)(ctx))
+
+		ended := spans.Ended()
+		require.Len(t, ended, 4)
+		assert.Equal(t, []string{"Restore", "Post Run actions/cache@v4", "Deploy", "Broken"}, []string{ended[0].Name(), ended[1].Name(), ended[2].Name(), ended[3].Name()})
+		assert.Equal(t, ended[1].SpanContext().SpanID(), ended[0].Parent().SpanID())
+		assert.Contains(t, ended[0].Attributes(), semconv.CICDPipelineTaskRunID("7.3.post.1"))
+		assert.Contains(t, ended[2].Attributes(), semconv.CICDPipelineTaskRunResultSkip)
+		assert.Contains(t, ended[3].Attributes(), semconv.CICDPipelineTaskRunResultFailure)
 	})
 
 	t.Run("timeout must be positive", func(t *testing.T) {

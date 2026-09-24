@@ -5,6 +5,7 @@ package run
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json/v2"
 	"errors"
@@ -34,6 +35,7 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/labels"
 	"gitea.com/gitea/runner/internal/pkg/metrics"
 	"gitea.com/gitea/runner/internal/pkg/report"
+	"gitea.com/gitea/runner/internal/pkg/telemetry"
 	"gitea.com/gitea/runner/internal/pkg/ver"
 
 	"connectrpc.com/connect"
@@ -298,6 +300,7 @@ func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) error {
 
 	ctx, cancel := context.WithTimeout(ctx, r.cfg.Runner.Timeout)
 	defer cancel()
+	ctx, endJob := telemetry.StartJob(ctx, task)
 	// A proxy URL may carry credentials, and every job is given it; keep them out of the log.
 	reporter := report.NewReporter(ctx, cancel, r.client, task, r.cfg, proxyPasswords()...)
 	var volumeCleanup []common.Executor
@@ -322,6 +325,7 @@ func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) error {
 
 		metrics.JobDuration.Observe(time.Since(start).Seconds())
 		metrics.JobsTotal.WithLabelValues(metrics.ResultToStatusLabel(reporter.Result())).Inc()
+		endJob(reporter.Result())
 	}()
 	reporter.RunDaemon()
 	runErr = r.run(ctx, task, reporter)
@@ -409,6 +413,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	}
 	job := workflow.GetJob(jobID)
 	reporter.ResetSteps(len(job.Steps))
+	telemetry.SetJobName(ctx, cmp.Or(job.Name, jobID))
 
 	taskContext := task.Context.Fields
 	envs := r.cloneEnvs()
@@ -426,6 +431,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	if v := taskContext["run_id"].GetStringValue(); v != "" {
 		envs["GITEA_RUN_ID"] = v
 	}
+	telemetry.AddJobEnv(ctx, envs)
 
 	log.Infof("task %v repo is %v %v %v", task.Id, taskContext["repository"].GetStringValue(),
 		r.getDefaultActionsURL(task),

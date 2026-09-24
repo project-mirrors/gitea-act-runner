@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/git"
@@ -24,6 +25,26 @@ var (
 	findGitRevision = git.FindGitRevision
 	findGithubRepo  = git.FindGithubRepo
 )
+
+type pinnedKey struct{}
+
+// WithPinnedCheckout keeps a run's sha and ref fixed when HEAD moves.
+func WithPinnedCheckout(ctx context.Context) context.Context {
+	if ctx.Value(pinnedKey{}) != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, pinnedKey{}, &sync.Map{})
+}
+
+func pinned(ctx context.Context, key string, lookup func() (string, error)) (string, error) {
+	cache, ok := ctx.Value(pinnedKey{}).(*sync.Map)
+	if !ok {
+		return lookup()
+	}
+	cached, _ := cache.LoadOrStore(key, sync.OnceValues(lookup))
+	lookupOnce, _ := cached.(func() (string, error))
+	return lookupOnce()
+}
 
 // SetRef resolves the ref of the context from its event payload, falling back
 // to the ref checked out in repoPath.
@@ -51,7 +72,7 @@ func SetRef(ctx context.Context, ghc *model.GithubContext, repoPath string) {
 	}
 
 	if ghc.Ref == "" {
-		ref, err := findGitRef(ctx, repoPath)
+		ref, err := pinned(ctx, "ref:"+repoPath, func() (string, error) { return findGitRef(ctx, repoPath) })
 		if err != nil {
 			logger.Warningf("unable to get git ref: %v", err)
 		} else {
@@ -95,7 +116,10 @@ func SetSha(ctx context.Context, ghc *model.GithubContext, repoPath string) {
 	}
 
 	if ghc.Sha == "" {
-		_, sha, err := findGitRevision(ctx, repoPath)
+		sha, err := pinned(ctx, "sha:"+repoPath, func() (string, error) {
+			_, revision, err := findGitRevision(ctx, repoPath)
+			return revision, err
+		})
 		if err != nil {
 			logger.Warningf("unable to get git revision: %v", err)
 		} else {

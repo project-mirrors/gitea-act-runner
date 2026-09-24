@@ -384,6 +384,10 @@ Both hooks are synchronous and block the job while they run. Either one exiting 
 
 See **[docs/job-hooks.md](docs/job-hooks.md)** for the execution order, environment, and platform notes.
 
+#### OpenTelemetry (`OTEL_*`)
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` in the runner's environment to send a trace of every job to an OpenTelemetry collector. See **[docs/telemetry.md](docs/telemetry.md)**.
+
 #### Local job logs (`log.job.dir`)
 
 Set `log.job.dir` to a path and the runner writes a copy of every task's log there as `<start time>-task-<id>.log`: the rows exactly as Gitea received them, with the same secrets masked and the job's result on the last line. Off by default, and what Gitea shows does not change.

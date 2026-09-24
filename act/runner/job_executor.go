@@ -281,8 +281,8 @@ func newJobExecutor(info jobInfo, sf stepFactory, rc *RunContext) common.Executo
 // finished main-pipeline context. Cleanup has to run even when the run was interrupted, so the
 // returned context always carries a fresh bounded deadline and is never itself cancelled.
 //
-//   - context.Canceled (server cancel): detach from the cancelled context via a fresh root so
-//     the post steps can run.
+//   - context.Canceled (server cancel): detach with WithoutCancel under a fresh job-error
+//     container, so a failing post step cannot turn the cancellation into a failure.
 //   - context.DeadlineExceeded (job timeout): detach the deadline with WithoutCancel, which
 //     keeps the original values — including the job-error container — so the timeout failure and
 //     any post-step error are preserved and the job is still reported as failed.
@@ -290,10 +290,7 @@ func newJobExecutor(info jobInfo, sf stepFactory, rc *RunContext) common.Executo
 func postStepsContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	switch ctx.Err() {
 	case context.Canceled:
-		// The cancelled context is abandoned for a fresh root, which drops the job-error
-		// container installed at the job root. Re-attach a fresh one so a failing post step
-		// records its error via SetJobError instead of panicking on a nil container.
-		return context.WithTimeout(common.WithJobErrorContainer(common.WithLogger(context.Background(), common.Logger(ctx))), 5*time.Minute)
+		return context.WithTimeout(common.WithJobErrorContainer(context.WithoutCancel(ctx)), 5*time.Minute)
 	case context.DeadlineExceeded:
 		return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 	default:

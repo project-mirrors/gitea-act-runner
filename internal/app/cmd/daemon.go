@@ -25,6 +25,7 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/lock"
 	"gitea.com/gitea/runner/internal/pkg/metrics"
 	"gitea.com/gitea/runner/internal/pkg/report"
+	"gitea.com/gitea/runner/internal/pkg/telemetry"
 	"gitea.com/gitea/runner/internal/pkg/ver"
 
 	"connectrpc.com/connect"
@@ -70,6 +71,18 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 			// reintroduce the duplicate-identity job cancellations.
 			defer func() { _ = releaseLock() }()
 		}
+
+		shutdownTelemetry, err := telemetry.Setup(ctx, reg.UUID, reg.Name)
+		if err != nil {
+			log.WithError(err).Warn("OpenTelemetry export failed to start")
+		}
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := shutdownTelemetry(ctx); err != nil {
+				log.WithError(err).Warn("OpenTelemetry export failed to flush")
+			}
+		}()
 
 		lbls := resolveLabels(daemArgs.Labels, cfg.Runner.Labels, reg.Labels)
 

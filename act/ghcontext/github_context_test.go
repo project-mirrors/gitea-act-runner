@@ -214,4 +214,17 @@ func TestSetSha(t *testing.T) {
 			assert.Equal(t, table.sha, ghc.Sha)
 		})
 	}
+
+	t.Run("pinned checkout keeps the first sha and ref", func(t *testing.T) {
+		ctx := WithPinnedCheckout(context.Background())
+		for _, head := range []string{"first", "moved"} {
+			findGitRevision = func(context.Context, string) (string, string, error) { return "", head, nil }
+			findGitRef = func(context.Context, string) (string, error) { return "refs/heads/" + head, nil }
+			ghc := &model.GithubContext{Event: map[string]any{}}
+			SetSha(ctx, ghc, "/some/dir")
+			SetRef(ctx, ghc, "/some/dir")
+			assert.Equal(t, "first", ghc.Sha)
+			assert.Equal(t, "refs/heads/first", ghc.Ref)
+		}
+	})
 }
