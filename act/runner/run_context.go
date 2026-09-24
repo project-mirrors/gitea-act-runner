@@ -1104,9 +1104,7 @@ func (rc *RunContext) Executor() (common.Executor, error) {
 	return func(ctx context.Context) error {
 		res, err := rc.isEnabled(ctx)
 		if err != nil {
-			// Record the failure so a job whose if-expression fails to evaluate
-			// gets a result (and therefore a stop time) instead of being left
-			// unfinished. rc.caller is only set for reusable workflows.
+			// Record the failure so a job that cannot start gets a stop time. rc.caller is only set for reusable workflows.
 			rc.result("failure")
 			if rc.caller != nil { // For Gitea
 				rc.caller.setReusedWorkflowJobResult(rc.Run.JobID, "failure")
@@ -1197,7 +1195,7 @@ func (rc *RunContext) isEnabled(ctx context.Context) (bool, error) {
 	jobType, jobTypeErr := job.Type()
 
 	if runJobErr != nil {
-		return false, fmt.Errorf("if-expression %q evaluation failed: %s", job.If.Value, runJobErr)
+		l.Errorf("Error when evaluating 'if' for job '%s'. %v", rc.Run.JobID, runJobErr)
 	}
 
 	if jobType == model.JobTypeInvalid {

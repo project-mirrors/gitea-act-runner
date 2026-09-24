@@ -1141,6 +1141,13 @@ if: always()`, ""),
 if: false`, ""),
 	})
 	assertObject.False(rc.isEnabled(context.Background()))
+
+	rc = createIfTestRunContext(map[string]*model.Job{
+		"job1": createJob(t, `if: ${{ fromJSON('not-json') }}`, ""),
+	})
+	enabled, err := rc.isEnabled(context.Background())
+	require.NoError(t, err)
+	assertObject.False(enabled)
 }
 
 func TestRunContextGetEnv(t *testing.T) {
