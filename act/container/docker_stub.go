@@ -18,7 +18,7 @@ import (
 	"github.com/moby/moby/api/types/system"
 )
 
-func IsolatedNetwork(context.Context, netip.Addr, string) (string, error) {
+func IsolatedCacheContainer(context.Context, netip.Addr, string) (string, error) {
 	return "", nil
 }
 
@@ -91,7 +91,19 @@ func NewDockerNetworkRemoveExecutor(name string) common.Executor {
 	}
 }
 
-func RemoveOrphanNetworks(ctx context.Context, runnerUUID string, createdBefore time.Time) error {
+func NewDockerNetworkConnectExecutor(_, _ string) common.Executor {
+	return func(_ context.Context) error {
+		return nil
+	}
+}
+
+func NewDockerNetworkDisconnectExecutor(_, _ string) common.Executor {
+	return func(_ context.Context) error {
+		return nil
+	}
+}
+
+func RemoveOrphanNetworks(_ context.Context, _, _ string, _ time.Time) error {
 	return nil
 }
 

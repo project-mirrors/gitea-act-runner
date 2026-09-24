@@ -40,6 +40,7 @@ const (
 	blobUploadURLTTL = time.Hour
 
 	twirpInternal        = "internal"
+	twirpUnavailable     = "unavailable"
 	twirpUnauthenticated = "unauthenticated"
 )
 
@@ -261,6 +262,8 @@ func (h *Handler) twirpError(w http.ResponseWriter, r *http.Request, code string
 	switch code {
 	case twirpInternal:
 		status = http.StatusInternalServerError
+	case twirpUnavailable:
+		status = http.StatusServiceUnavailable
 	case twirpUnauthenticated:
 		status = http.StatusUnauthorized
 	}

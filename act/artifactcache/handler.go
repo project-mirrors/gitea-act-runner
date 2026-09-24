@@ -17,6 +17,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -57,10 +58,9 @@ type JobCredential struct {
 	Repo string `json:"repo"`
 
 	// Results is the instance whose artifact service this server forwards for the job, and
-	// InsecureTLS how the runner reaches it; see results.go. The tags are the wire format a
-	// remote runner registers with.
-	Results     string `json:"results"`
-	InsecureTLS bool   `json:"insecure_tls"`
+	// InsecureTLS how the runner reaches it; see results.go.
+	Results     string `json:"-"`
+	InsecureTLS bool   `json:"-"`
 
 	// PublicURL is this server as a reverse proxy makes the job reach it, not the listen address.
 	PublicURL string `json:"public_url"`
@@ -117,6 +117,7 @@ type Options struct {
 	Dir        string
 	OutboundIP string
 	Port       uint16
+	Upstream   string
 
 	// InternalSecret, when non-empty, enables a control-plane API at
 	// /_internal/{register,revoke} that lets a remote runner pre-register the
@@ -129,7 +130,7 @@ type Options struct {
 	Logger logrus.FieldLogger
 }
 
-// StartHandler opens the on-disk cache store and starts the HTTP server.
+// StartHandler starts an embedded cache or forwards cache requests to Upstream.
 func StartHandler(opts Options) (*Handler, error) {
 	dir, logger := opts.Dir, opts.Logger
 	h := &Handler{
@@ -146,6 +147,25 @@ func StartHandler(opts Options) (*Handler, error) {
 	}
 	logger = logger.WithField("module", "artifactcache")
 	h.logger = logger
+
+	if opts.OutboundIP != "" {
+		h.outboundIP = opts.OutboundIP
+	} else if ip := common.GetOutboundIP(); ip == nil {
+		return nil, errors.New("unable to determine outbound IP address")
+	} else {
+		h.outboundIP = ip.String()
+	}
+
+	if opts.Upstream != "" {
+		handler, err := h.cacheForwarder(opts.Upstream)
+		if err != nil {
+			return nil, err
+		}
+		if err := h.serve(opts.Port, handler); err != nil {
+			return nil, err
+		}
+		return h, nil
+	}
 
 	if dir == "" {
 		home, err := os.UserHomeDir()
@@ -165,14 +185,6 @@ func StartHandler(opts Options) (*Handler, error) {
 		return nil, err
 	}
 	h.storage = storage
-
-	if opts.OutboundIP != "" {
-		h.outboundIP = opts.OutboundIP
-	} else if ip := common.GetOutboundIP(); ip == nil {
-		return nil, errors.New("unable to determine outbound IP address")
-	} else {
-		h.outboundIP = ip.String()
-	}
 
 	secret, err := loadOrCreateSecret(dir)
 	if err != nil {
@@ -201,34 +213,69 @@ func StartHandler(opts Options) (*Handler, error) {
 
 	h.gcCache()
 
+	if err := h.serve(opts.Port, router); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+func (h *Handler) serve(port uint16, handler http.Handler) error {
 	// Listen on all interfaces. Binding to outboundIP only would give no real
 	// security benefit (it is the LAN/internet-facing address either way) and
 	// can break Docker Desktop variants where the host's outbound IP is not
 	// routable from inside the container network. Authentication is enforced
 	// by the bearer middleware and per-repo scoping, not by reachability.
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", opts.Port))
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	addr, ok := listener.Addr().(*net.TCPAddr)
 	if !ok {
 		listener.Close()
-		return nil, fmt.Errorf("cache server listens on %T, want a TCP address", listener.Addr())
+		return fmt.Errorf("cache server listens on %T, want a TCP address", listener.Addr())
 	}
 	h.port = addr.Port
 	server := &http.Server{
 		ReadHeaderTimeout: 2 * time.Second,
-		Handler:           router,
+		Handler:           handler,
 	}
 	go func() {
 		if err := server.Serve(listener); err != nil && errors.Is(err, net.ErrClosed) {
-			logger.Errorf("http serve: %v", err)
+			h.logger.Errorf("http serve: %v", err)
 		}
 	}()
 	h.listener = listener
 	h.server = server
 
-	return h, nil
+	return nil
+}
+
+func (h *Handler) cacheForwarder(upstream string) (http.Handler, error) {
+	target, err := url.Parse(strings.TrimRight(upstream, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("parse cache upstream: %w", err)
+	}
+	transport, _ := http.DefaultTransport.(*http.Transport)
+	transport = transport.Clone()
+	transport.MaxIdleConnsPerHost = 64 // parallel block uploads would otherwise redial past the default 2
+	proxy := &httputil.ReverseProxy{
+		Transport: transport,
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(target)
+			r.Out.URL.RawQuery = r.In.URL.RawQuery // Rewrite drops unparsable query params, and signed URLs must pass verbatim.
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			h.logger.Warnf("cache forward %s %s: %v", r.Method, r.URL.Path, err)
+			h.twirpError(w, r, twirpUnavailable, errors.New("cache upstream is unavailable"))
+		},
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, apiPath+"/") || strings.HasPrefix(r.URL.Path, cacheServiceV2Path+"/") {
+			proxy.ServeHTTP(w, r)
+		} else {
+			h.forwardOrNotFound(w, r)
+		}
+	}), nil
 }
 
 func (h *Handler) ExternalURL() string {
@@ -708,8 +755,7 @@ func (h *Handler) internalRegister(w http.ResponseWriter, r *http.Request, _ htt
 		return
 	}
 	h.RegisterJob(body.Token, body.JobCredential)
-	// A server too old to forward answers without this, which is how the caller knows.
-	h.responseJSON(w, r, http.StatusOK, map[string]any{"results_url": h.ResultsURL(body.JobCredential)})
+	h.responseJSON(w, r, http.StatusOK)
 }
 
 // POST /_internal/revoke

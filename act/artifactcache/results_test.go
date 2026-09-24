@@ -54,11 +54,11 @@ func TestFrontResultsService(t *testing.T) {
 	assert.Contains(t, body["msg"], "bearer")
 	assert.NotEmpty(t, body["msg"])
 
-	defer handler.RegisterJob(token, JobCredential{Repo: "owner/repo", Results: gitea.URL, PublicURL: "https://cache.example"})()
+	defer handler.RegisterJob(token, JobCredential{Repo: "owner/repo", Results: selfSigned.URL, InsecureTLS: true})()
 
 	status, _ = post(rpc)
-	require.Equal(t, http.StatusOK, status, "a registered https public URL onto an http instance must proxy, not redirect")
-	assert.Equal(t, strings.TrimPrefix(gitea.URL, "http://"), gotHost, "Gitea must see the host it mints its URLs from")
+	require.Equal(t, http.StatusOK, status, "an http job reaching an https instance must proxy")
+	assert.Equal(t, strings.TrimPrefix(selfSigned.URL, "https://"), gotHost, "Gitea must see the host it mints its URLs from")
 	assert.Empty(t, gotProto, "a forwarded scheme would make an https Gitea mint http URLs")
 	assert.Equal(t, rpc, gotPath)
 
@@ -87,15 +87,15 @@ func TestFrontResultsService(t *testing.T) {
 		},
 		{
 			name: "a trusted https instance is reached by the job itself",
-			cred: JobCredential{Results: selfSigned.URL, PublicURL: "https://cache.example"}, want: http.StatusTemporaryRedirect,
+			cred: JobCredential{Results: selfSigned.URL}, forwardedProto: "https", want: http.StatusTemporaryRedirect,
 		},
 		{
 			name: "the job does not share this server's disregard for the certificate",
-			cred: JobCredential{Results: selfSigned.URL, PublicURL: "https://cache.example", InsecureTLS: true}, want: http.StatusOK,
+			cred: JobCredential{Results: selfSigned.URL, InsecureTLS: true}, forwardedProto: "https", want: http.StatusOK,
 		},
 		{name: "an http job is not redirected to an https instance", cred: JobCredential{Results: selfSigned.URL}, want: http.StatusInternalServerError},
 		{
-			name: "a runner too old to send its public URL leaves the terminator to say so",
+			name: "a forwarded https scheme onto an http instance is proxied",
 			cred: JobCredential{Results: gitea.URL}, forwardedProto: "https", want: http.StatusOK,
 		},
 		{

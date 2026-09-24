@@ -610,6 +610,8 @@ func (rc *RunContext) startJobContainer() common.Executor {
 		return common.NewPipelineExecutor(
 			container.NewDockerNetworkCreateExecutor(networkName, rc.Config.ContainerNetworkCreateOptions).
 				IfBool(createAndDeleteNetwork),
+			container.NewDockerNetworkConnectExecutor(networkName, rc.Config.CacheContainer).
+				IfBool(rc.Config.CacheContainer != ""),
 			rc.startServiceContainers(),
 			rc.reportUnstartedServices(),
 			func(ctx context.Context) error { return rc.createJobVolumes(ctx, containerInput.Mounts) },
@@ -659,6 +661,8 @@ func (rc *RunContext) cleanupJobResources(networkName string, createAndDeleteNet
 		}
 		if createAndDeleteNetwork {
 			logger.Infof("Cleaning up network for job %s, and network name is: %s", rc.JobName, networkName)
+			errs = append(errs, container.NewDockerNetworkDisconnectExecutor(networkName, rc.Config.CacheContainer).
+				IfBool(rc.Config.CacheContainer != "")(ctx))
 			errs = append(errs, container.NewDockerNetworkRemoveExecutor(networkName)(ctx))
 		}
 		return errors.Join(errs...)

@@ -743,7 +743,7 @@ func TestCleanupJobResourcesContinuesAfterFailure(t *testing.T) {
 			service.On("Remove").Return(func(context.Context) error { return removeError }).Once()
 			service.On("Close").Return(func(context.Context) error { return closeError }).Once()
 			rc := &RunContext{
-				Config:            &Config{},
+				Config:            &Config{CacheContainer: "cache-container"},
 				Run:               &model.Run{Workflow: &model.Workflow{Name: "wf"}, JobID: "job"},
 				JobContainer:      job,
 				serviceContainers: []*serviceContainer{{name: "svc", container: service}},
@@ -794,7 +794,7 @@ func TestCleanupJobResourcesContinuesAfterFailure(t *testing.T) {
 			if name == "canceled" {
 				require.ErrorIs(t, err, context.Canceled)
 			} else {
-				for _, operation := range []string{"DELETE /volumes/" + rc.jobContainerName(), "DELETE /volumes/" + rc.jobContainerName() + "-env", "GET /networks"} {
+				for _, operation := range []string{"DELETE /volumes/" + rc.jobContainerName(), "DELETE /volumes/" + rc.jobContainerName() + "-env", "POST /networks/job-network/disconnect", "GET /networks"} {
 					require.ErrorContains(t, err, operation)
 				}
 				assert.Equal(t, 2, volumeRemovals)

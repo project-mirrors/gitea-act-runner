@@ -57,6 +57,7 @@ type Config struct {
 	DisableActEnv                 bool                                          // do not inject the ACT=true environment variable into jobs
 	ContainerNetworkMode          docker_container.NetworkMode                  // the network mode of job containers (the value of --network)
 	ContainerNetworkCreateOptions container.NewDockerNetworkCreateExecutorInput // the default network create options
+	CacheContainer                string                                        // let jobs reach an otherwise isolated cache
 	ProxyEnv                      map[string]string                             // the proxy variables the job runs with, also given to service containers and image builds
 	NoActionPatch                 bool                                          // run actions exactly as published, applying no compatibility patches, see patch_actions.go
 

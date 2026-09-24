@@ -17,9 +17,6 @@ import (
 // Gitea implements only the artifact half of it. Forwarding that half from here makes this origin
 // the whole service, so ACTIONS_RESULTS_URL can point at it truthfully, which is what the clients
 // this runner cannot patch need, docker buildx among them.
-//
-// The instance to forward to travels with the job registration rather than with configuration, so
-// a cache server shared between runners serves each of their instances.
 const artifactServicePath = "/twirp/github.actions.results.api.v1.ArtifactService/"
 
 // forwardOrNotFound is the router's fallback: the artifact service of the instance the job
@@ -81,9 +78,6 @@ func (h *Handler) mustProxy(r *http.Request, cred JobCredential, target *url.URL
 		return true
 	}
 	scheme := r.Header.Get("X-Forwarded-Proto")
-	if base, err := url.Parse(cred.PublicURL); err == nil && base.Scheme != "" {
-		scheme = base.Scheme
-	}
 	if scheme == "" {
 		scheme = "http"
 	}
@@ -98,4 +92,4 @@ func mergeQuery(target, request string) string {
 }
 
 // insecureTransport is shared, because a transport per request would pool no connections.
-var insecureTransport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // the runner reaches its instance on the operator's say-so
+var insecureTransport = &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // the runner reaches its instance on the operator's say-so

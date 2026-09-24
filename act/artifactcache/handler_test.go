@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,55 @@ func signArtifactURL(h *Handler, id int64) string {
 
 func TestHandler_ExternalURL(t *testing.T) {
 	assert.Equal(t, "http://[2001:db8::1]:8080", (&Handler{outboundIP: "2001:db8::1", port: 8080}).ExternalURL())
+}
+
+func TestHandler_Upstream(t *testing.T) {
+	var upstream *httptest.Server
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		assert.Equal(t, "/cache%20server"+blobPath+"/%34%32", r.URL.EscapedPath())
+		assert.Equal(t, "sig=opaque%2Fvalue&raw=a;b", r.URL.RawQuery)
+		assert.Equal(t, strings.TrimPrefix(upstream.URL, "http://"), r.Host)
+		assert.Equal(t, "Bearer unregistered", r.Header.Get("Authorization"))
+		_, err := io.Copy(w, r.Body)
+		assert.NoError(t, err)
+	}))
+	t.Cleanup(upstream.Close)
+	dir := filepath.Join(t.TempDir(), "artifactcache")
+	handler, err := StartHandler(Options{
+		Dir:        dir,
+		OutboundIP: "127.0.0.1",
+		Upstream:   upstream.URL + "/cache%20server//",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, handler.Close()) })
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut,
+		handler.ExternalURL()+blobPath+"/%34%32?sig=opaque%2Fvalue&raw=a;b", strings.NewReader("cache content"))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer unregistered")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	forwarded, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.NoError(t, err)
+	assert.Equal(t, "cache content", string(forwarded))
+
+	resp, err = http.Post(handler.ExternalURL()+internalPath+"/register", "application/json", nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+	upstream.Close()
+	resp, err = http.Post(handler.ExternalURL()+cacheServiceV2Path+"/CreateCacheEntry", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	var failure map[string]string
+	err = json.UnmarshalRead(resp.Body, &failure)
+	resp.Body.Close()
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	assert.Equal(t, map[string]string{"code": "unavailable", "msg": "cache upstream is unavailable"}, failure)
+	assert.NoDirExists(t, dir)
 }
 
 func TestHandler(t *testing.T) {
@@ -1522,7 +1572,10 @@ func TestHandler_InternalAPI_AuthAndUsage(t *testing.T) {
 		}
 
 		assert.Equal(t, http.StatusUnauthorized, probe("via-internal-api"))
-		assert.Equal(t, http.StatusOK, post("/_internal/register", secret, `{"token":"via-internal-api","repo":"owner/repo"}`))
+		assert.Equal(t, http.StatusOK, post("/_internal/register", secret, `{"token":"via-internal-api","repo":"owner/repo","public_url":"http://runner.example","results":"https://gitea.example","insecure_tls":true}`))
+		cred, ok := handler.lookupCredential("via-internal-api")
+		require.True(t, ok)
+		assert.Equal(t, JobCredential{Repo: testRepo, PublicURL: "http://runner.example"}, cred)
 		assert.NotEqual(t, http.StatusUnauthorized, probe("via-internal-api"))
 		assert.Equal(t, http.StatusOK, post("/_internal/revoke", secret, `{"token":"via-internal-api"}`))
 		assert.Equal(t, http.StatusUnauthorized, probe("via-internal-api"))

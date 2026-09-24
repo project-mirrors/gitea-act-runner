@@ -311,11 +311,13 @@ func TestRunnerOnIdleRemovesOrphanNetworks(t *testing.T) {
 	}
 
 	var swept []string
+	var detached []string
 	var sweptVolumes []string
 	var sweptCutoff time.Time
 	origRemoveOrphanNetworks := removeOrphanNetworks
-	removeOrphanNetworks = func(_ context.Context, runnerUUID string, createdBefore time.Time) error {
+	removeOrphanNetworks = func(_ context.Context, runnerUUID, detach string, createdBefore time.Time) error {
 		swept = append(swept, runnerUUID)
+		detached = append(detached, detach)
 		sweptCutoff = createdBefore
 		return nil
 	}
@@ -329,6 +331,7 @@ func TestRunnerOnIdleRemovesOrphanNetworks(t *testing.T) {
 	t.Cleanup(func() { removeOrphanJobVolumes = origRemoveOrphanJobVolumes })
 
 	r := &Runner{uuid: "runner-1", cfg: cfg, now: func() time.Time { return now }}
+	r.isolatedCacheContainer = func() string { return "a1b2c3d4e5f6" }
 	r.OnIdle(context.Background())
 	assert.Equal(t, []string{"runner-1"}, swept)
 	assert.Equal(t, swept, sweptVolumes)
@@ -340,6 +343,7 @@ func TestRunnerOnIdleRemovesOrphanNetworks(t *testing.T) {
 	dockerReachable = func(context.Context) bool { return false }
 	t.Cleanup(func() { dockerReachable = origDockerReachable })
 	hostOnly := &Runner{uuid: "runner-2", cfg: &config.Config{Runner: cfg.Runner}, now: func() time.Time { return now }}
+	hostOnly.isolatedCacheContainer = func() string { return "" }
 	hostOnly.OnIdle(context.Background())
 	assert.Equal(t, []string{"runner-1"}, swept)
 	assert.Equal(t, swept, sweptVolumes)
@@ -348,4 +352,5 @@ func TestRunnerOnIdleRemovesOrphanNetworks(t *testing.T) {
 	now = now.Add(time.Minute)
 	hostOnly.OnIdle(context.Background())
 	assert.Equal(t, []string{"runner-1", "runner-2"}, sweptVolumes)
+	assert.Equal(t, []string{"a1b2c3d4e5f6", ""}, detached)
 }

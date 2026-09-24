@@ -251,15 +251,19 @@ func TestNewRunnerLeavesProxyToTheTask(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.Cache.ExternalServer = "http://cache.local:8088/"
+	cfg.Cache.Host = "runner.local"
 	reg := &config.Registration{Name: "runner"}
 	cli := clientmocks.NewClient(t)
 	cli.AddressValue = "https://gitea.example/"
 
 	r := NewRunner(cfg, reg, cli)
+	t.Cleanup(func() { _ = r.Close() })
 
 	require.NotContains(t, r.envs, "http_proxy")
 	require.NotContains(t, r.envs, "no_proxy")
-	assert.Empty(t, r.builtInCacheURL(), "an external cache server is the operator's to exempt, not ours")
+	proxyEnv := JobProxyEnv(r.envs, r.builtInCacheURL(), nil)
+	assert.Contains(t, proxyEnv["no_proxy"], "runner.local")
+	assert.NotContains(t, proxyEnv["no_proxy"], "cache.local")
 }
 
 func taskWithDefaultActionsURL(url string) *runnerv1.Task {
@@ -289,7 +293,7 @@ func TestNewRunnerCacheServiceV2(t *testing.T) {
 
 	// The registration is what makes it true: the cache server takes the results service over,
 	// having been told which instance to forward the artifact half to.
-	revoke, resultsURL := r.registerCacheForTask(token, "owner/repo", nil)
+	revoke, resultsURL := r.registerCacheForTask(token, "owner/repo", r.cacheHandler.ExternalURL(), nil)
 	defer revoke()
 	require.Equal(t, r.cacheHandler.ExternalURL(), resultsURL)
 
@@ -341,26 +345,16 @@ func TestNewRunnerCacheServiceV2(t *testing.T) {
 
 	workflow, err := model.ReadWorkflow(strings.NewReader(`jobs: {native: {runs-on: native}, linux: {runs-on: linux}, containerized: {runs-on: native, container: alpine}, empty: {runs-on: native, container: ""}}`))
 	require.NoError(t, err)
-	r.isolatedCacheNetwork = func() string { return "compose" }
+	r.isolatedCacheContainer = func() string { return "a1b2c3d4e5f6" }
 	pickPlatform := func(runsOn []string) string { return map[string]string{"native": labels.SelfHostedPlatform}[runsOn[0]] }
 	for job, isolated := range map[string]bool{"native": false, "linux": true, "containerized": true, "empty": false} {
-		assert.Equal(t, isolated, r.cacheIsolatedFrom(workflow.GetJob(job), pickPlatform), job)
+		cacheURL, cacheContainer := r.cacheForJob(workflow.GetJob(job), pickPlatform)
+		if isolated {
+			assert.Equal(t, "a1b2c3d4e5f6", cacheContainer, job)
+			assert.Equal(t, strings.Replace(r.cacheHandler.ExternalURL(), "127.0.0.1", cacheContainer, 1), cacheURL, job)
+		} else {
+			assert.Empty(t, cacheContainer, job)
+			assert.Equal(t, r.cacheHandler.ExternalURL(), cacheURL, job)
+		}
 	}
-}
-
-// The v1 cache client appends its path to ACTIONS_CACHE_URL without a separator, so a configured
-// server that is missing the slash would send it to a URL whose port swallows the path.
-func TestNewRunnerNormalizesTheExternalCacheServer(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.Cache.ExternalServer = "http://cache.local:8088//"
-	cli := clientmocks.NewClient(t)
-	cli.AddressValue = "https://gitea.example/"
-
-	r := NewRunner(cfg, &config.Registration{Name: "runner"}, cli)
-
-	assert.Equal(t, "http://cache.local:8088/", r.envs["ACTIONS_CACHE_URL"])
-	// Nothing to front the results service with, so the variable stays unset and the client keeps
-	// to v1, which reads the cache URL first.
-	assert.Equal(t, "https://gitea.example", r.envs["ACTIONS_RESULTS_URL"])
-	assert.Empty(t, r.envs[runner.CacheServiceV2Env])
 }

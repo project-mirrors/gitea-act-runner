@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -71,7 +72,7 @@ type Runner struct {
 	cacheHandler *artifactcache.Handler
 	capabilities string
 
-	isolatedCacheNetwork func() string
+	isolatedCacheContainer func() string
 
 	runningTasks            sync.Map
 	runningCount            atomic.Int64
@@ -99,24 +100,22 @@ func NewRunner(cfg *config.Config, reg *config.Registration, cli client.Client) 
 	if cacheEnabled(cfg) {
 		if cfg.Cache.ExternalServer != "" {
 			warnIgnoredCachePolicy(cfg)
-			// The v1 client appends its path to this without a separator, so the slash is required.
-			envs["ACTIONS_CACHE_URL"] = strings.TrimRight(cfg.Cache.ExternalServer, "/") + "/"
+		}
+		warnIgnoredCacheSecret(cfg)
+		handler, err := artifactcache.StartHandler(artifactcache.Options{
+			Dir:        cfg.Cache.Dir,
+			OutboundIP: cfg.Cache.Host,
+			Port:       cfg.Cache.Port,
+			Upstream:   cfg.Cache.ExternalServer,
+			Policy:     CachePolicy(cfg),
+			Logger:     log.StandardLogger().WithField("module", "cache_request"),
+		})
+		if err != nil {
+			log.Errorf("cannot init cache server, it will be disabled: %v", err)
+			// go on
 		} else {
-			warnIgnoredCacheSecret(cfg)
-			handler, err := artifactcache.StartHandler(artifactcache.Options{
-				Dir:        cfg.Cache.Dir,
-				OutboundIP: cfg.Cache.Host,
-				Port:       cfg.Cache.Port,
-				Policy:     CachePolicy(cfg),
-				Logger:     log.StandardLogger().WithField("module", "cache_request"),
-			})
-			if err != nil {
-				log.Errorf("cannot init cache server, it will be disabled: %v", err)
-				// go on
-			} else {
-				cacheHandler = handler
-				envs["ACTIONS_CACHE_URL"] = handler.ExternalURL() + "/"
-			}
+			cacheHandler = handler
+			envs["ACTIONS_CACHE_URL"] = handler.ExternalURL() + "/"
 		}
 	}
 
@@ -140,7 +139,7 @@ func NewRunner(cfg *config.Config, reg *config.Registration, cli client.Client) 
 		now:            time.Now,
 		runHealthCheck: executeHealthCheck,
 	}
-	runner.isolatedCacheNetwork = sync.OnceValue(runner.detectIsolatedCacheNetwork)
+	runner.isolatedCacheContainer = sync.OnceValue(runner.detectIsolatedCacheContainer)
 	return runner
 }
 
@@ -183,7 +182,7 @@ func (r *Runner) cleanupOrphanDockerResources(ctx context.Context) {
 		return
 	}
 	cutoff := r.now().Add(-r.cfg.Runner.WorkdirCleanupAge)
-	if err := removeOrphanNetworks(ctx, r.uuid, cutoff); err != nil {
+	if err := removeOrphanNetworks(ctx, r.uuid, r.isolatedCacheContainer(), cutoff); err != nil {
 		log.Warnf("failed to clean up networks left behind by earlier jobs: %v", err)
 	}
 	if err := removeOrphanJobVolumes(ctx, r.uuid, cutoff); err != nil {
@@ -418,11 +417,24 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	taskContext := task.Context.Fields
 	envs := r.cloneEnvs()
 
+	// act asks for the platform once per step, so resolve the fallback at most once per task.
+	fallbackPlatform := sync.OnceValue(func() string { return r.fallbackPlatform(ctx) })
+	platformPicker := func(runsOn []string) string {
+		if platform := r.labels.PickPlatform(runsOn); platform != "" {
+			return platform
+		}
+		return fallbackPlatform()
+	}
+	cacheURL, cacheContainer := r.cacheForJob(job, platformPicker)
+	if cacheURL != "" {
+		envs["ACTIONS_CACHE_URL"] = cacheURL + "/"
+	}
+
 	// Added per task because this job's service containers must be reached directly, and
 	// act reaches them by their workflow key.
 	var services map[string]yaml.Node
 	_ = job.RawServices.Decode(&services) // a whole-value expression names no service before evaluation
-	proxyEnv := JobProxyEnv(envs, r.builtInCacheURL(), slices.Sorted(maps.Keys(services)))
+	proxyEnv := JobProxyEnv(envs, cacheURL, slices.Sorted(maps.Keys(services)))
 	maps.Copy(envs, proxyEnv)
 
 	if r.capabilities != "" {
@@ -467,10 +479,8 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	// cache requests from the job container can authenticate. The credential
 	// is removed when the task finishes, so a leaked token stops working as
 	// soon as the job ends rather than remaining valid for the runner's
-	// lifetime. Only applies to the embedded cache server; when the operator
-	// points the runner at an external cache via cfg.Cache.ExternalServer, it
-	// is that server's responsibility to authenticate requests.
-	revokeCache, resultsURL := r.registerCacheForTask(giteaRuntimeToken, preset.Repository, reporter)
+	// lifetime.
+	revokeCache, resultsURL := r.registerCacheForTask(giteaRuntimeToken, preset.Repository, cacheURL, reporter)
 	defer revokeCache()
 
 	eventJSON, err := json.Marshal(preset.Event)
@@ -503,20 +513,6 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	// Without bind_workdir, the workspace path omits the task id; concurrent host-mode jobs
 	// for the same repository would share this directory and can race with per-job cleanup.
 
-	// act asks for the platform once per step, so resolve the fallback at most once per task.
-	fallbackPlatform := sync.OnceValue(func() string { return r.fallbackPlatform(ctx) })
-	platformPicker := func(runsOn []string) string {
-		if platform := r.labels.PickPlatform(runsOn); platform != "" {
-			return platform
-		}
-		return fallbackPlatform()
-	}
-
-	if resultsURL != "" && r.cacheIsolatedFrom(job, platformPicker) {
-		reporter.Logf("::warning::%s", runner.EscapeCommandData(fmt.Sprintf("jobs cannot reach the cache server at %s on docker network %q, so caching fails and artifacts go to Gitea directly, set cache.host and cache.port to an address jobs reach, or container.network to %[2]q",
-			r.cacheHandler.ExternalURL(), r.isolatedCacheNetwork())))
-		resultsURL = ""
-	}
 	r.setResultsService(envs, resultsURL)
 
 	runnerConfig := &runner.Config{
@@ -546,6 +542,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		ContainerMaxLifetime: maxLifetime,
 		CleanWorkdir:         true,
 		ContainerNetworkMode: docker_container.NetworkMode(r.cfg.Container.Network),
+		CacheContainer:       cacheContainer,
 		ContainerNetworkCreateOptions: container.NewDockerNetworkCreateExecutorInput{
 			EnableIPv4: r.cfg.Container.NetworkCreateOptions.EnableIPv4,
 			EnableIPv6: r.cfg.Container.NetworkCreateOptions.EnableIPv6,
@@ -643,32 +640,24 @@ func (r *Runner) instanceOutOfReach(instance string) bool {
 // function the caller must invoke (typically via defer) to revoke the
 // credential when the task finishes.
 //
-// Two modes:
-//   - Embedded handler: register in-process via RegisterJob.
-//   - external_server: POST to the remote server's /_internal/register, defer a
-//     POST to /_internal/revoke. This is what enables full per-job auth and
-//     repo scoping over the network.
-//
 // Safe with an empty token (older Gitea did not issue one).
-// It also returns the URL to advertise as ACTIONS_RESULTS_URL, which is the cache server itself
-// when it agreed to forward this instance's artifact service, and "" when it did not.
-func (r *Runner) registerCacheForTask(token, repo string, reporter *report.Reporter) (func(), string) {
-	if token == "" {
+// It also returns the URL to advertise as ACTIONS_RESULTS_URL.
+func (r *Runner) registerCacheForTask(token, repo, publicURL string, reporter *report.Reporter) (func(), string) {
+	if token == "" || r.cacheHandler == nil {
 		return func() {}, ""
 	}
 	cred := artifactcache.JobCredential{
 		Repo:        repo,
+		PublicURL:   publicURL,
 		Results:     r.envs["ACTIONS_RESULTS_URL"], // the instance as the job would reach it
 		InsecureTLS: r.cfg.Runner.Insecure,
 	}
-	if r.cacheHandler != nil {
-		return r.cacheHandler.RegisterJob(token, cred), r.cacheHandler.ResultsURL(cred)
+	revoke := r.cacheHandler.RegisterJob(token, cred)
+	if r.cfg.Cache.ExternalServer != "" {
+		revokeLocal, revokeExternal := revoke, r.registerExternalCacheJob(token, repo, publicURL, reporter)
+		revoke = func() { revokeLocal(); revokeExternal() }
 	}
-	if cacheEnabled(r.cfg) && r.cfg.Cache.ExternalServer != "" && r.cfg.Cache.ExternalSecret != "" {
-		return r.registerExternalCacheJob(token, cred, reporter)
-	}
-	// No cache server to register against: caching is disabled, or the built-in server failed to start.
-	return func() {}, ""
+	return revoke, r.cacheHandler.ResultsURL(cred)
 }
 
 // registerExternalCacheJob POSTs to the remote cache-server's control-plane.
@@ -676,23 +665,19 @@ func (r *Runner) registerCacheForTask(token, repo string, reporter *report.Repor
 // 401 the job's requests — better than failing the whole task for a cache
 // outage. The warning is mirrored to the job log so users can see why their
 // cache calls 401, instead of having to read the runner daemon's stderr.
-func (r *Runner) registerExternalCacheJob(token string, cred artifactcache.JobCredential, reporter *report.Reporter) (func(), string) {
+func (r *Runner) registerExternalCacheJob(token, repo, publicURL string, reporter *report.Reporter) func() {
 	base := strings.TrimRight(r.cfg.Cache.ExternalServer, "/")
-	resultsURL := ""
-	if body, err := postInternalCache(base+"/_internal/register", r.cfg.Cache.ExternalSecret, map[string]any{
-		"token": token, "repo": cred.Repo, "results": cred.Results, "insecure_tls": cred.InsecureTLS,
-		"public_url": base,
+	if err := postInternalCache(base+"/_internal/register", r.cfg.Cache.ExternalSecret, map[string]any{
+		"token": token, "repo": repo, "public_url": publicURL,
 	}); err != nil {
 		log.Warnf("cache external_server register failed (%s): %v", base, err)
 		if reporter != nil {
 			reporter.Logf("::warning::%s", runner.EscapeCommandData(fmt.Sprintf(
 				"cache external_server register failed (%s): %v — cache requests from this job will be unauthenticated and likely return 401", base, err)))
 		}
-	} else if forwarded, _ := body["results_url"].(string); forwarded != "" {
-		resultsURL = base // the answer only says it forwards, its own address need not be the job's
 	}
 	return func() {
-		if _, err := postInternalCache(base+"/_internal/revoke", r.cfg.Cache.ExternalSecret,
+		if err := postInternalCache(base+"/_internal/revoke", r.cfg.Cache.ExternalSecret,
 			map[string]any{"token": token}); err != nil {
 			log.Warnf("cache external_server revoke failed (%s): %v", base, err)
 			if reporter != nil {
@@ -700,33 +685,30 @@ func (r *Runner) registerExternalCacheJob(token string, cred artifactcache.JobCr
 					"cache external_server revoke failed (%s): %v", base, err)))
 			}
 		}
-	}, resultsURL
+	}
 }
 
-func postInternalCache(url, secret string, body map[string]any) (map[string]any, error) {
+func postInternalCache(url, secret string, body map[string]any) error {
 	buf, err := json.Marshal(body)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(buf))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+secret)
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
+		return fmt.Errorf("status %d", resp.StatusCode)
 	}
-	answer := map[string]any{}
-	// A server too old to answer with a body is not an error, it simply tells us nothing.
-	_ = json.UnmarshalRead(resp.Body, &answer)
-	return answer, nil
+	return nil
 }
 
 func (r *Runner) RunningCount() int64 {
@@ -848,12 +830,22 @@ func warnIgnoredCacheSecret(cfg *config.Config) {
 	log.Warnf("%s is set but cache.external_server is not; the built-in cache server does not use a shared secret, so the value is ignored", key)
 }
 
-func (r *Runner) cacheIsolatedFrom(job *model.Job, pickPlatform func([]string) string) bool {
+// cacheForJob returns the cache address for the job, and the container to attach to its network to reach it there.
+func (r *Runner) cacheForJob(job *model.Job, pickPlatform func([]string) string) (string, string) {
 	jobContainer := job.Container()
-	return (jobContainer != nil && jobContainer.Image != "" || pickPlatform(job.RunsOn()) != labels.SelfHostedPlatform) && r.isolatedCacheNetwork() != ""
+	cacheContainer := ""
+	if jobContainer != nil && jobContainer.Image != "" || pickPlatform(job.RunsOn()) != labels.SelfHostedPlatform {
+		cacheContainer = r.isolatedCacheContainer()
+	}
+	if cacheContainer == "" {
+		return strings.TrimSuffix(r.builtInCacheURL(), "/"), ""
+	}
+	cacheURL, _ := url.Parse(r.cacheHandler.ExternalURL())
+	cacheURL.Host = net.JoinHostPort(cacheContainer, cacheURL.Port())
+	return cacheURL.String(), cacheContainer
 }
 
-func (r *Runner) detectIsolatedCacheNetwork() string {
+func (r *Runner) detectIsolatedCacheContainer() string {
 	if r.cacheHandler == nil {
 		return ""
 	}
@@ -863,9 +855,9 @@ func (r *Runner) detectIsolatedCacheNetwork() string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	network, err := container.IsolatedNetwork(ctx, addr, r.cfg.Container.Network)
+	cacheContainer, err := container.IsolatedCacheContainer(ctx, addr, r.cfg.Container.Network)
 	if err != nil {
 		log.Warnf("cannot check whether jobs reach the cache server: %v", err)
 	}
-	return network
+	return cacheContainer
 }
