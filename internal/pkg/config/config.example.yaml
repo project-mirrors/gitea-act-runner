@@ -166,6 +166,19 @@ cache:
   # Surrounding whitespace is trimmed, so a trailing newline in the file is fine.
   # Setting both external_secret and external_secret_file is an error.
   #external_secret_file: ""
+  # Store the cache in an S3-compatible bucket such as AWS S3, MinIO or RustFS. Runners with
+  # the same settings use the same cache. Cannot be combined with external_server. Add lifecycle
+  # rules to the bucket that expire old caches and abort incomplete multipart uploads.
+  # region defaults to us-east-1, and path_style to false for AWS and true otherwise.
+  # access_key and secret_key can also be set directly instead of read from files.
+  #s3:
+  #  endpoint: "http://minio:9000"
+  #  region: "us-east-1"
+  #  bucket: "runner-cache"
+  #  prefix: "gitea-runner-cache"
+  #  path_style: true
+  #  access_key_file: "/run/secrets/cache-s3-access-key"
+  #  secret_key_file: "/run/secrets/cache-s3-secret-key"
   # When true, reuse a cached action instead of fetching from the remote on every job.
   # A moved tag (e.g. a re-tagged "v6") or an updated branch stays at the cached commit
   # until its cache entry expires or is manually removed.
@@ -176,8 +189,8 @@ cache:
   # advertised. A bundle that does not match is left alone. With v2, artifact uploads go via the
   # cache server.
   #v2: true
-  # How the cache server discards entries, ignored when external_server is set since that
-  # server applies its own. Leave a setting out for its default; 0s or 0 turns the three
+  # How the cache server discards entries, ignored when external_server or s3 is set since
+  # those apply their own. Leave a setting out for its default; 0s or 0 turns the three
   # limits off. Sizes accept 10GB, 512mb, 1TiB or a plain byte count, binary either way.
   # Whatever these allow, the cache still sheds entries to keep free space on its volume
   # above health_check.min_free_disk_space_mb when health checks are enabled.

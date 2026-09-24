@@ -98,15 +98,14 @@ func NewRunner(cfg *config.Config, reg *config.Registration, cli client.Client) 
 	maps.Copy(envs, cfg.Runner.Envs)
 	var cacheHandler *artifactcache.Handler
 	if cacheEnabled(cfg) {
-		if cfg.Cache.ExternalServer != "" {
-			warnIgnoredCachePolicy(cfg)
-		}
+		warnIgnoredCachePolicy(cfg)
 		warnIgnoredCacheSecret(cfg)
 		handler, err := artifactcache.StartHandler(artifactcache.Options{
 			Dir:        cfg.Cache.Dir,
 			OutboundIP: cfg.Cache.Host,
 			Port:       cfg.Cache.Port,
 			Upstream:   cfg.Cache.ExternalServer,
+			S3:         cacheS3(cfg),
 			Policy:     CachePolicy(cfg),
 			Logger:     log.StandardLogger().WithField("module", "cache_request"),
 		})
@@ -804,12 +803,27 @@ func CachePolicy(cfg *config.Config) artifactcache.Policy {
 	}
 }
 
-// warnIgnoredCachePolicy flags eviction settings configured on a runner that points at an external cache server.
+func cacheS3(cfg *config.Config) *artifactcache.S3Options {
+	s3 := cfg.Cache.S3
+	if s3 == nil {
+		return nil
+	}
+	return &artifactcache.S3Options{
+		Endpoint: s3.Endpoint, Region: s3.Region, Bucket: s3.Bucket, Prefix: s3.Prefix,
+		PathStyle: s3.PathStyle, AccessKey: s3.AccessKey, SecretKey: s3.SecretKey,
+	}
+}
+
+// warnIgnoredCachePolicy flags eviction settings configured on a runner that does not apply them.
 func warnIgnoredCachePolicy(cfg *config.Config) {
 	defaults := config.DefaultCache()
-	if cfg.Cache.Retention != defaults.Retention || cfg.Cache.RepoSizeLimit != defaults.RepoSizeLimit ||
-		cfg.Cache.SizeLimit != defaults.SizeLimit || cfg.Cache.SweepInterval != defaults.SweepInterval {
+	limits := cfg.Cache.Retention != defaults.Retention || cfg.Cache.RepoSizeLimit != defaults.RepoSizeLimit ||
+		cfg.Cache.SizeLimit != defaults.SizeLimit
+	switch {
+	case cfg.Cache.ExternalServer != "" && (limits || cfg.Cache.SweepInterval != defaults.SweepInterval):
 		log.Warn("cache eviction settings are ignored when cache.external_server is set; configure them on that server instead")
+	case cfg.Cache.S3 != nil && limits:
+		log.Warn("cache eviction settings are ignored when cache.s3 is set; use lifecycle rules on the bucket instead")
 	}
 }
 

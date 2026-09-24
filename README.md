@@ -341,6 +341,24 @@ cache:
 
 Runners can also share one `cache.dir` on a file system with working file locks, at the cost of slower cache requests.
 
+**Storing the cache in an S3-compatible bucket**
+
+The cache can also be stored in an S3-compatible bucket such as AWS S3, MinIO or RustFS, with no cache server. Runners with the same settings use the same cache:
+
+```yaml
+cache:
+  s3:
+    endpoint: "http://minio:9000"
+    region: "us-east-1"
+    bucket: "runner-cache"
+    prefix: "gitea-runner-cache"
+    path_style: true
+    access_key_file: "/run/secrets/cache-s3-access-key"
+    secret_key_file: "/run/secrets/cache-s3-secret-key"
+```
+
+A cache saved on one runner can be restored on the others within 30 seconds. The eviction settings below do not apply to the bucket, so add lifecycle rules to it that expire old caches and abort incomplete multipart uploads.
+
 **Eviction**
 
 Entries not read or written within `retention` (default `168h`) are removed. A repository over `repo_size_limit` (default `10GB`) loses its least recently used entries, and `size_limit` (off by default) caps the whole cache the same way. Entries in use are never removed. The cache also keeps 1024 MiB free on its volume, or `health_check.min_free_disk_space_mb` when health checks are enabled. See [config.example.yaml](internal/pkg/config/config.example.yaml) for all options.

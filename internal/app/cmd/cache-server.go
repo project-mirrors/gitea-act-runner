@@ -29,6 +29,9 @@ func runCacheServer(configFile *string, cacheArgs *cacheServerArgs) func(cmd *co
 		}
 
 		initLogging(cfg)
+		if cfg.Cache.S3 != nil {
+			return errors.New("cache-server does not support cache.s3; set cache.s3 on the runners instead")
+		}
 
 		var (
 			dir  = cfg.Cache.Dir

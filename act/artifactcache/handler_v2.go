@@ -112,7 +112,7 @@ func (h *Handler) v2CreateCacheEntry(w http.ResponseWriter, r *http.Request, _ h
 		CreatedAt: now,
 		UsedAt:    now,
 	}
-	if err := insertCache(db, cache); err != nil {
+	if err := h.insertCache(db, cache); err != nil {
 		h.twirpError(w, r, twirpInternal, err)
 		return
 	}

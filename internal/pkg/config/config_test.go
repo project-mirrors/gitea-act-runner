@@ -42,6 +42,36 @@ cache:
 	require.NoError(t, err)
 }
 
+func TestLoadDefault_CacheS3(t *testing.T) {
+	dir := t.TempDir()
+	accessPath := filepath.Join(dir, "access.key")
+	require.NoError(t, os.WriteFile(accessPath, []byte("access\n"), 0o600))
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+cache:
+  s3:
+    endpoint: "http://minio:9000"
+    bucket: "caches"
+    prefix: "/runners/"
+    access_key_file: "` + accessPath + `"
+    secret_key: "secret"
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	cfg, err := LoadDefault(path)
+	require.NoError(t, err)
+	assert.Equal(t, CacheS3{
+		Endpoint: "http://minio:9000", Bucket: "caches", Prefix: "runners",
+		AccessKey: "access", AccessKeyFile: accessPath, SecretKey: "secret",
+	}, *cfg.Cache.S3)
+
+	require.NoError(t, os.WriteFile(path, []byte(content+`  external_server: "http://cache.invalid/"
+  external_secret: "shh"
+`), 0o600))
+	_, err = LoadDefault(path)
+	assert.ErrorContains(t, err, "cache.s3 and cache.external_server cannot both be set")
+}
+
 func TestLoadDefault_ToolCacheMode(t *testing.T) {
 	cfg, err := LoadDefault("")
 	require.NoError(t, err)

@@ -101,11 +101,26 @@ type Cache struct {
 	OfflineMode        bool   `yaml:"offline_mode"`         // OfflineMode reuses a cached action without fetching from the remote; a moved tag or branch stays at the cached commit until the cache entry is removed.
 	V2                 *bool  `yaml:"v2"`                   // V2 advertises the actions cache service v2 API to jobs. The bundle edit that reaches it is made either way, the artifact actions need it too. Unset means enabled.
 
-	// Eviction settings, ignored when ExternalServer is set since that server applies its own.
+	S3 *CacheS3 `yaml:"s3"` // S3 stores the cache in an S3-compatible bucket, so runners with the same settings use the same cache.
+
+	// Eviction settings, ignored when ExternalServer is set since that server applies its own. With S3, bucket lifecycle rules replace all but SweepInterval.
 	Retention     time.Duration `yaml:"retention"`       // Retention removes entries nothing has read or written within this window. Default 168h, 0 keeps them regardless of age.
 	RepoSizeLimit Size          `yaml:"repo_size_limit"` // RepoSizeLimit caps one repository, evicting least recently accessed first. Default 10GB, 0 is no limit.
 	SizeLimit     Size          `yaml:"size_limit"`      // SizeLimit caps the whole cache the same way. No limit by default.
 	SweepInterval time.Duration `yaml:"sweep_interval"`  // SweepInterval is the minimum time between two eviction sweeps. Default 1h; a cadence has no "off".
+}
+
+// CacheS3 is an S3-compatible bucket that stores the cache.
+type CacheS3 struct {
+	Endpoint      string `yaml:"endpoint"`
+	Region        string `yaml:"region"`
+	Bucket        string `yaml:"bucket"`
+	Prefix        string `yaml:"prefix"`
+	PathStyle     *bool  `yaml:"path_style"`
+	AccessKey     string `yaml:"access_key"`
+	AccessKeyFile string `yaml:"access_key_file"`
+	SecretKey     string `yaml:"secret_key"`
+	SecretKeyFile string `yaml:"secret_key_file"`
 }
 
 // DefaultCache returns the cache eviction defaults, seeded before the file is read so a
@@ -266,7 +281,7 @@ func LoadDefault(file string) (*Config, error) {
 		cfg.Cache.Enabled = &b
 	}
 	// Resolved regardless of cache.enabled, because the `cache-server` command reads the secret from the same key without checking cache.enabled.
-	if err := resolveCacheExternalSecret(cfg); err != nil {
+	if err := resolveSecretFile("cache.external_secret", &cfg.Cache.ExternalSecret, cfg.Cache.ExternalSecretFile); err != nil {
 		return nil, err
 	}
 	if *cfg.Cache.Enabled {
@@ -279,6 +294,9 @@ func LoadDefault(file string) (*Config, error) {
 		}
 		if cfg.Cache.ExternalServer != "" && cfg.Cache.ExternalSecret == "" {
 			return nil, errors.New("cache.external_server is set but no shared secret is configured; set cache.external_secret (or cache.external_secret_file) to the same value used by the gitea-runner cache-server")
+		}
+		if err := resolveCacheS3(&cfg.Cache); err != nil {
+			return nil, err
 		}
 	}
 	if cfg.Container.WorkdirParent == "" {
@@ -426,23 +444,44 @@ func definedRunnerConfigKeys(content []byte) (map[string]bool, error) {
 	return defined, nil
 }
 
-// resolveCacheExternalSecret loads cache.external_secret from the file named by cache.external_secret_file,
-// so deployments can mount the secret instead of committing it to the config file.
-func resolveCacheExternalSecret(cfg *Config) error {
-	if cfg.Cache.ExternalSecretFile == "" {
+// resolveSecretFile reads key from key_file, so deployments can mount a secret instead of committing it.
+func resolveSecretFile(key string, secret *string, file string) error {
+	if file == "" {
 		return nil
 	}
-	if cfg.Cache.ExternalSecret != "" {
-		return errors.New("cache.external_secret and cache.external_secret_file are both set; configure only one of them")
+	if *secret != "" {
+		return fmt.Errorf("%s and %s_file are both set; configure only one of them", key, key)
 	}
-	content, err := os.ReadFile(cfg.Cache.ExternalSecretFile)
+	content, err := os.ReadFile(file)
 	if err != nil {
-		return fmt.Errorf("read cache.external_secret_file %q: %w", cfg.Cache.ExternalSecretFile, err)
+		return fmt.Errorf("read %s_file %q: %w", key, file, err)
 	}
-	secret := strings.TrimSpace(string(content))
-	if secret == "" {
-		return fmt.Errorf("cache.external_secret_file %q contains no secret", cfg.Cache.ExternalSecretFile)
+	*secret = strings.TrimSpace(string(content))
+	if *secret == "" {
+		return fmt.Errorf("%s_file %q contains no secret", key, file)
 	}
-	cfg.Cache.ExternalSecret = secret
+	return nil
+}
+
+func resolveCacheS3(cache *Cache) error {
+	s3 := cache.S3
+	switch {
+	case s3 == nil:
+		return nil
+	case cache.ExternalServer != "":
+		return errors.New("cache.s3 and cache.external_server cannot both be set")
+	case s3.Endpoint == "" || s3.Bucket == "":
+		return errors.New("cache.s3.endpoint and cache.s3.bucket must be set")
+	}
+	if err := resolveSecretFile("cache.s3.access_key", &s3.AccessKey, s3.AccessKeyFile); err != nil {
+		return err
+	}
+	if err := resolveSecretFile("cache.s3.secret_key", &s3.SecretKey, s3.SecretKeyFile); err != nil {
+		return err
+	}
+	if s3.AccessKey == "" || s3.SecretKey == "" {
+		return errors.New("cache.s3.access_key (or cache.s3.access_key_file) and cache.s3.secret_key (or cache.s3.secret_key_file) must be set")
+	}
+	s3.Prefix = strings.Trim(s3.Prefix, "/")
 	return nil
 }
