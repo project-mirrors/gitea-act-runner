@@ -232,7 +232,8 @@ container:
   # If it's empty, /workspace will be used.
   # Purely numeric subdirectories under this path are reserved for task workspaces and may be removed by idle cleanup.
   #workdir_parent:
-  # Volumes (including bind mounts) can be mounted to containers. Glob syntax is supported, see https://github.com/gobwas/glob
+  # Volumes (including bind mounts) can be mounted to containers. Glob syntax is supported, see https://github.com/bmatcuk/doublestar#patterns
+  # `*` matches within a single path segment, `**` also matches across path separators.
   # You can specify multiple volumes. If the sequence is empty, no volumes can be mounted.
   # For example, if you only allow containers to mount the `data` volume and all the json files in `/src`, you should change the config to:
   # valid_volumes:

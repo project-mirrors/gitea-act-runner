@@ -560,11 +560,14 @@ func TestCheckVolumes(t *testing.T) {
 				"shared_volume",
 				"/home/test/data",
 				"/etc/conf.d/*.json",
+				"/opt/**",
 			},
 			binds: []string{
 				"shared_volume:/shared_volume",
 				"/home/test/data:/test_data",
 				"/etc/conf.d/base.json:/config/base.json",
+				"/etc/conf.d/sub/nested.json:/config/nested.json",
+				"/opt/app/cache:/cache",
 				"sql_data:/sql_data",
 				"/secrets/keys:/keys",
 			},
@@ -572,6 +575,7 @@ func TestCheckVolumes(t *testing.T) {
 				"shared_volume:/shared_volume",
 				"/home/test/data:/test_data",
 				"/etc/conf.d/base.json:/config/base.json",
+				"/opt/app/cache:/cache",
 			},
 		},
 	}

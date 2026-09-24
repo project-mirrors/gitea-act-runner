@@ -28,13 +28,13 @@ import (
 	"gitea.com/gitea/runner/act/filecollector"
 
 	"dario.cat/mergo"
+	"github.com/bmatcuk/doublestar/v4"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/cli/cli/compose/loader"
 	"github.com/docker/cli/cli/connhelper"
 	"github.com/go-git/go-billy/v5/helper/polyfill"
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
-	"github.com/gobwas/glob"
 	"github.com/joho/godotenv"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
@@ -1291,15 +1291,15 @@ func overlayVolumes(dst, src *container.HostConfig) {
 
 type validVolumeMatcher struct {
 	allowAll bool
-	named    []*glob.Pattern
-	host     []*glob.Pattern
+	named    []string
+	host     []string
 }
 
 func newValidVolumeMatcher(ctx context.Context, validVolumes []string) validVolumeMatcher {
 	logger := common.Logger(ctx)
 	ret := validVolumeMatcher{
-		named: make([]*glob.Pattern, 0, len(validVolumes)),
-		host:  make([]*glob.Pattern, 0, len(validVolumes)),
+		named: make([]string, 0, len(validVolumes)),
+		host:  make([]string, 0, len(validVolumes)),
 	}
 
 	for _, v := range validVolumes {
@@ -1308,10 +1308,10 @@ func newValidVolumeMatcher(ctx context.Context, validVolumes []string) validVolu
 			continue
 		}
 		if !isHostVolumePattern(v) {
-			if g, err := glob.Compile(v); err != nil {
-				logger.Errorf("create glob from %s error: %v", v, err)
+			if doublestar.ValidatePattern(v) {
+				ret.named = append(ret.named, v)
 			} else {
-				ret.named = append(ret.named, g)
+				logger.Errorf("invalid volume pattern %s", v)
 			}
 			continue
 		}
@@ -1320,10 +1320,10 @@ func newValidVolumeMatcher(ctx context.Context, validVolumes []string) validVolu
 			logger.Errorf("normalize volume pattern %s error: %v", v, err)
 			continue
 		}
-		if g, err := glob.Compile(normalized); err != nil {
-			logger.Errorf("create glob from %s error: %v", normalized, err)
+		if doublestar.ValidatePathPattern(normalized) {
+			ret.host = append(ret.host, normalized)
 		} else {
-			ret.host = append(ret.host, g)
+			logger.Errorf("invalid volume pattern %s", normalized)
 		}
 	}
 
@@ -1339,15 +1339,15 @@ func (m validVolumeMatcher) isValid(source string, sourceType mount.Type) bool {
 		if err != nil {
 			return false
 		}
-		for _, g := range m.host {
-			if g.Match(normalized) {
+		for _, pattern := range m.host {
+			if doublestar.PathMatchUnvalidated(pattern, normalized) {
 				return true
 			}
 		}
 		return false
 	}
-	for _, g := range m.named {
-		if g.Match(source) {
+	for _, pattern := range m.named {
+		if doublestar.MatchUnvalidated(pattern, source) {
 			return true
 		}
 	}
