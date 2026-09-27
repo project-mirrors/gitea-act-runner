@@ -56,10 +56,15 @@ func (r *Runner) setupLines(task *runnerv1.Task) []string {
 	return append(lines, "::endgroup::")
 }
 
-// inputLines lists the inputs the run was triggered with, as workflow_dispatch and workflow_call
-// carry them in the event payload. Empty when the event has none.
+// inputLines lists the inputs of the job: those Gitea resolved for a called workflow's job,
+// or the ones a workflow_dispatch event carries in its payload. Empty when there are none.
 func inputLines(fields map[string]*structpb.Value) []string {
 	inputs := fields["event"].GetStructValue().GetFields()["inputs"].GetStructValue().GetFields()
+	// For a called workflow's job, restore its inputs from `gitea_workflow_call`.
+	// See https://github.com/go-gitea/gitea/pull/39452.
+	if workflowCall := fields["gitea_workflow_call"].GetStructValue(); workflowCall != nil {
+		inputs = workflowCall.GetFields()["inputs"].GetStructValue().GetFields()
+	}
 	if len(inputs) == 0 {
 		return nil
 	}

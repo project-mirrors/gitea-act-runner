@@ -392,6 +392,28 @@ jobs:
 	})
 }
 
+func TestGetEvaluatorInputsResolvedByGitea(t *testing.T) {
+	wf, err := model.ReadWorkflow(strings.NewReader(`
+on:
+  workflow_call:
+    inputs:
+      name: {type: string, default: callee}
+  workflow_dispatch:
+    inputs:
+      name: {type: string}
+`))
+	require.NoError(t, err)
+	config := &Config{Workdir: ".", WorkflowCallInputs: map[string]any{"name": "caller", "target": "dispatch"}}
+	ghc := &model.GithubContext{EventName: "workflow_dispatch", Event: map[string]any{"inputs": map[string]any{"name": "dispatch"}}}
+
+	// the event's own inputs must not override those Gitea resolved
+	job := &RunContext{Config: config, Run: &model.Run{JobID: "job1", Workflow: wf}}
+	assert.Equal(t, map[string]any{"name": "caller", "target": "dispatch"}, getEvaluatorInputs(job, nil, ghc))
+
+	composite := &RunContext{Config: config, Run: &model.Run{JobID: "job1", Workflow: &model.Workflow{}}, Parent: job}
+	assert.Equal(t, map[string]any{"arg": "x"}, getEvaluatorInputs(composite, map[string]any{"arg": "x"}, ghc))
+}
+
 func TestResolveWorkflowCallToleratesMismatchesAndPassesInheritedSecretsVerbatim(t *testing.T) {
 	callerWorkflow, err := model.ReadWorkflow(strings.NewReader(`
 jobs:

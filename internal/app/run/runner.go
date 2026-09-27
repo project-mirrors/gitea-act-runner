@@ -350,6 +350,25 @@ func (r *Runner) cloneEnvs() map[string]string {
 	return envs
 }
 
+// restoreCalledWorkflowContext undoes Gitea's rewrite of `event_name` and `event.inputs` for older runners,
+// and returns the job's `inputs` from `gitea_workflow_call`, nil if it is not a called workflow's job.
+// See https://github.com/go-gitea/gitea/pull/39452
+func restoreCalledWorkflowContext(task *runnerv1.Task) map[string]any {
+	workflowCall := task.GetContext().GetFields()["gitea_workflow_call"].GetStructValue().GetFields()
+	if workflowCall == nil {
+		return nil
+	}
+	task.Context.Fields["event_name"] = workflowCall["original_event_name"]
+	if event := task.Context.Fields["event"].GetStructValue(); event != nil {
+		if inputs, ok := workflowCall["original_event_inputs"]; ok {
+			event.Fields["inputs"] = inputs
+		} else {
+			delete(event.Fields, "inputs")
+		}
+	}
+	return workflowCall["inputs"].GetStructValue().AsMap()
+}
+
 // getDefaultActionsURL
 // when DEFAULT_ACTIONS_URL == "https://github.com" and GithubMirror is not blank,
 // it should be set to GithubMirror first.
@@ -398,6 +417,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		}
 	}()
 
+	workflowCallInputs := restoreCalledWorkflowContext(task)
 	r.reportSetup(reporter, task)
 
 	workflow, jobID, err := generateWorkflow(task)
@@ -536,6 +556,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		NoSkipCheckout:       true,
 		DisableActEnv:        r.cfg.Runner.SetActEnv != nil && !*r.cfg.Runner.SetActEnv,
 		PresetGitHubContext:  preset,
+		WorkflowCallInputs:   workflowCallInputs,
 		EventJSON:            string(eventJSON),
 		ContainerNamePrefix:  fmt.Sprintf("GITEA-ACTIONS-TASK-%d", task.Id),
 		ContainerMaxLifetime: maxLifetime,

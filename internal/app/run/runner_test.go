@@ -358,3 +358,48 @@ func TestNewRunnerCacheServiceV2(t *testing.T) {
 		}
 	}
 }
+
+func TestRestoreCalledWorkflowContext(t *testing.T) {
+	newTask := func(workflowCall map[string]any) *runnerv1.Task {
+		values := map[string]any{
+			"event_name": "workflow_call",
+			"event":      map[string]any{"ref": "refs/heads/main", "inputs": map[string]any{"env": "leaf"}},
+		}
+		if workflowCall != nil {
+			values["gitea_workflow_call"] = workflowCall
+		}
+		taskCtx, err := structpb.NewStruct(values)
+		require.NoError(t, err)
+		return &runnerv1.Task{Context: taskCtx}
+	}
+
+	t.Run("dispatched run", func(t *testing.T) {
+		task := newTask(map[string]any{
+			"original_event_name":   "workflow_dispatch",
+			"original_event_inputs": map[string]any{"target": "prod"},
+			"inputs":                map[string]any{"target": "prod", "env": "leaf"},
+		})
+		assert.Equal(t, map[string]any{"target": "prod", "env": "leaf"}, restoreCalledWorkflowContext(task))
+		taskCtx := task.Context.AsMap()
+		assert.Equal(t, "workflow_dispatch", taskCtx["event_name"])
+		assert.Equal(t, map[string]any{"ref": "refs/heads/main", "inputs": map[string]any{"target": "prod"}}, taskCtx["event"])
+		assert.Equal(t, []string{"::group::Inputs", "env: leaf", "target: prod", "::endgroup::"}, inputLines(task.Context.Fields))
+	})
+
+	t.Run("event without inputs", func(t *testing.T) {
+		task := newTask(map[string]any{
+			"original_event_name": "push",
+			"inputs":              map[string]any{"env": "leaf"},
+		})
+		assert.Equal(t, map[string]any{"env": "leaf"}, restoreCalledWorkflowContext(task))
+		taskCtx := task.Context.AsMap()
+		assert.Equal(t, "push", taskCtx["event_name"])
+		assert.Equal(t, map[string]any{"ref": "refs/heads/main"}, taskCtx["event"])
+	})
+
+	t.Run("not a called workflow's job", func(t *testing.T) {
+		task := newTask(nil)
+		assert.Nil(t, restoreCalledWorkflowContext(task))
+		assert.Equal(t, "workflow_call", task.Context.AsMap()["event_name"])
+	})
+}

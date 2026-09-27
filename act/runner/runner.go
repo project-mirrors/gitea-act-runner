@@ -62,6 +62,7 @@ type Config struct {
 	NoActionPatch                 bool                                          // run actions exactly as published, applying no compatibility patches, see patch_actions.go
 
 	PresetGitHubContext   *model.GithubContext // overrides actor, ref, repository, token and related context fields
+	WorkflowCallInputs    map[string]any       // the `inputs` Gitea resolved for a called workflow's job, nil for other jobs
 	EventJSON             string               // the content of JSON file to use for event.json in containers, overrides EventPath
 	ContainerNamePrefix   string               // the prefix of container name
 	ContainerMaxLifetime  time.Duration        // the max lifetime of job containers
