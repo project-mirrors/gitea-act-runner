@@ -298,7 +298,7 @@ These hosts are added to `no_proxy` for jobs, so they are always reached directl
 
 Gitea is not added. Add it to `no_proxy` yourself if it should be reached directly.
 
-To change a value for one job, set it in a step's `env:` or in the job's `container.env`. Setting it at workflow or job level has no effect. To change it for the whole runner, set it in `runner.envs`. A `no_proxy` set there is added to the list above instead of replacing it.
+For one step, set it in the step's `env:`, for the rest of a job, write it to `$GITHUB_ENV`. Setting it at workflow or job level or in `container.env` has no effect. To change it for the whole runner, set it in `runner.envs`. A `no_proxy` set there is added to the list above instead of replacing it.
 
 Images are pulled by the Docker daemon, which needs its own proxy setting. In the `dind` images the daemon runs in the same container and reads the variables above. For any other daemon, see [the Docker documentation](https://docs.docker.com/engine/daemon/proxy/). The runner logs a warning at startup if it has a proxy and the daemon does not.
 

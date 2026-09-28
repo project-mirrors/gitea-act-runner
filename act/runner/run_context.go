@@ -64,7 +64,7 @@ type RunContext struct {
 	ExprEval            *expressionEvaluator
 	JobContainer        container.ExecutionsEnvironment
 	serviceContainers   []*serviceContainer
-	containerSpec       model.ContainerSpec // container:, resolved once with platformImage, zero without a job container
+	containerSpec       model.ContainerSpec // container:, resolved once with platformImage, zero without a container image
 	JobName             string
 	ActionPath          string
 	Parent              *RunContext
@@ -113,6 +113,7 @@ type serviceContainer struct {
 	name       string
 	image      string
 	container  container.ExecutionsEnvironment
+	created    bool
 	logsDumped bool
 	info       *container.Info // last poll, the source of the `job.services` entry
 }
@@ -334,12 +335,12 @@ func splitVolumes(specs []string) ([]string, map[string]string, map[string]bool)
 }
 
 // Returns the binds and mounts for the container, resolving paths as appopriate
-func (rc *RunContext) GetBindsAndMounts() ([]string, map[string]string) {
+func (rc *RunContext) GetBindsAndMounts(ctx context.Context) ([]string, map[string]string) {
 	name := rc.jobContainerName()
 	ext := container.LinuxContainerEnvironmentExtensions{}
 
 	// the runner's own mounts below yield to the targets the job claims
-	binds, mounts, claimed := splitVolumes(rc.containerSpec.Volumes)
+	binds, mounts, claimed := splitVolumes(container.SanitizeBinds(ctx, rc.validVolumes(), rc.containerSpec.Volumes))
 
 	if rc.containerDaemonSocket() != "-" && !claimed["/var/run/docker.sock"] {
 		binds = append(binds, rc.jobDockerSocket()+":/var/run/docker.sock")
@@ -497,10 +498,12 @@ func (rc *RunContext) startJobContainer() common.Executor {
 		if err := model.DecodeEvaluated("job services", rc.Run.Job().RawServices, rc.ExprEval.shared(ctx).EvaluateYamlNode, &services); err != nil {
 			return err
 		}
-		for serviceID, spec := range services {
+		for _, serviceID := range slices.Sorted(maps0.Keys(services)) {
+			spec := services[serviceID]
 			if spec == nil {
 				return fmt.Errorf("service %s has no container definition", serviceID)
 			}
+			spec.Image = strings.TrimPrefix(spec.Image, "docker://")
 			// GitHub compatibility: skip services whose image evaluates to an
 			// empty string, enabling conditional services via expressions
 			if spec.Image == "" {
@@ -537,6 +540,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 			}
 
 			serviceContainerName := createContainerName(rc.jobContainerName(), serviceID)
+			serviceLog := common.NewLineWriter(rawLogLine(ctx)) // raw, so a service's output cannot set the job's env, outputs or state
 			c := newContainer(&container.NewContainerInput{
 				Name:            serviceContainerName,
 				Image:           spec.Image,
@@ -547,8 +551,8 @@ func (rc *RunContext) startJobContainer() common.Executor {
 				Env:             envs,
 				Mounts:          serviceMounts,
 				Binds:           serviceBinds,
-				Stdout:          logWriter,
-				Stderr:          logWriter,
+				Stdout:          serviceLog,
+				Stderr:          serviceLog,
 				Privileged:      rc.Config.Privileged,
 				UsernsMode:      rc.Config.UsernsMode,
 				Platform:        rc.Config.ContainerArchitecture,
@@ -602,7 +606,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 			return err
 		}
 		rc.startDockerProxy(ctx)
-		containerInput.Binds, containerInput.Mounts = rc.GetBindsAndMounts()
+		containerInput.Binds, containerInput.Mounts = rc.GetBindsAndMounts(ctx)
 		containerInput.ValidVolumes = rc.validVolumes()
 
 		rc.jobNetworkName = networkName
@@ -633,16 +637,21 @@ func (rc *RunContext) startJobContainer() common.Executor {
 }
 
 func (rc *RunContext) commandLogWriter(ctx context.Context) io.Writer {
+	return common.NewLineWriter(rc.commandHandler(ctx), rawLogLine(ctx))
+}
+
+func rawLogLine(ctx context.Context) common.LineHandler {
 	rawLogger := common.Logger(ctx).WithField(rawOutputField, true)
-	return common.NewLineWriter(rc.commandHandler(ctx), func(line string) bool {
+	return func(line string) bool {
 		rawLogger.Infof("%s", line)
 		return true
-	})
+	}
 }
 
 func (rc *RunContext) cleanupJobResources(networkName string, createAndDeleteNetwork, preclean bool) common.Executor {
 	return func(ctx context.Context) error {
 		logger := common.Logger(ctx)
+		rc.printServiceLogs(ctx)
 		errs := []error{rc.closeDockerProxy(ctx)}
 		if rc.JobContainer != nil {
 			errs = append(errs, rc.JobContainer.Remove()(ctx))
@@ -789,6 +798,7 @@ func (rc *RunContext) startServiceContainers() common.Executor {
 		for _, svc := range rc.serviceContainers {
 			execs = append(execs, common.NewPipelineExecutor(
 				svc.container.Create(rc.Config.ContainerCapAdd, rc.Config.ContainerCapDrop),
+				func(context.Context) error { svc.created = true; return nil },
 				svc.container.Start(false),
 			))
 		}
@@ -927,6 +937,26 @@ func (svc *serviceContainer) dumpLogs(ctx context.Context) {
 	}
 }
 
+const serviceLogsTimeout = 15 * time.Second // cleanup gets one minute in total
+
+func (rc *RunContext) printServiceLogs(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, serviceLogsTimeout)
+	defer cancel()
+	rawLogger := common.Logger(ctx).WithField(rawOutputField, true)
+	for _, svc := range rc.serviceContainers {
+		if !svc.created || svc.logsDumped {
+			continue
+		}
+		rawLogger.Infof("::group::Print service container logs: %s", EscapeCommandData(svc.name))
+		svc.dumpLogs(ctx)
+		rawLogger.Infof("::endgroup::")
+		if ctx.Err() != nil {
+			common.Logger(ctx).Warnf("Timed out printing the service logs after %s", serviceLogsTimeout)
+			return
+		}
+	}
+}
+
 // inspect also records the state for the `job.services` context.
 func (svc *serviceContainer) inspect(ctx context.Context) (*container.Info, error) {
 	info, err := svc.container.Inspect(ctx)
@@ -1039,7 +1069,7 @@ func (rc *RunContext) cleanupFailedStart(ctx context.Context) {
 }
 
 func (rc *RunContext) IsHostEnv() bool {
-	return strings.EqualFold(rc.platformImage, "-self-hosted")
+	return rc.containerSpec.Image == "" && strings.EqualFold(rc.platformImage, "-self-hosted")
 }
 
 func (rc *RunContext) stopContainer() common.Executor {
@@ -1162,12 +1192,13 @@ func (rc *RunContext) runsOnPlatformNames(ctx context.Context) []string {
 // resolvePlatformImage evaluates the job's container once for every consumer, ignoring one without an image as GitHub does.
 func (rc *RunContext) resolvePlatformImage(ctx context.Context) error {
 	withoutEnv, _ := splitContainerEnv(rc.Run.Job().RawContainer)
-	var spec *model.ContainerSpec
+	var spec model.ContainerSpec
 	if err := model.DecodeEvaluated("container", withoutEnv, rc.ExprEval.shared(ctx).EvaluateYamlNode, &spec); err != nil {
 		return err
 	}
-	if spec != nil && spec.Image != "" {
-		rc.containerSpec, rc.platformImage = *spec, spec.Image
+	spec.Image = strings.TrimPrefix(spec.Image, "docker://")
+	if spec.Image != "" {
+		rc.containerSpec, rc.platformImage = spec, spec.Image
 		return nil
 	}
 	image, err := rc.runsOnImage(ctx)

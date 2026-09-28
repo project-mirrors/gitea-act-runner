@@ -682,6 +682,7 @@ func mergeOptions(t *testing.T, runnerOptions, workflowOptions string, privilege
 		WorkflowOptions: workflowOptions,
 		NetworkMode:     "bridge",
 		UsernsMode:      "private",
+		ValidVolumes:    []string{"**"},
 	}}
 
 	_, hostConfig, err := cr.mergeContainerConfigs(common.WithLogger(context.Background(), logger), &container.Config{}, &container.HostConfig{
@@ -844,8 +845,10 @@ func TestMergeContainerConfigsVolumesReplaceRunnerMounts(t *testing.T) {
 	ctx := common.WithLogger(context.Background(), logger)
 	cr := &containerReference{
 		input: &NewContainerInput{
-			NetworkMode:   "bridge",
-			RunnerOptions: "--volume /host/tools:/opt/hostedtoolcache",
+			NetworkMode:     "bridge",
+			RunnerOptions:   "--volume /host/tools:/opt/hostedtoolcache",
+			WorkflowOptions: "--volume /unapproved:/var/run/docker.sock",
+			ValidVolumes:    []string{"/host/tools"},
 		},
 	}
 
@@ -867,6 +870,7 @@ func TestMergeContainerConfigsWarnsOnlyAboutOptionsThatWereGiven(t *testing.T) {
 	assert.Zero(t, warnings("--volume /host/tools:/opt/hostedtoolcache", ""))
 	assert.Zero(t, warnings("", "--shm-size 1g"))
 	assert.Equal(t, 1, warnings("--network host", ""))
+	assert.Equal(t, 1, warnings("", "--privileged"))
 }
 
 func TestMergeContainerConfigsKeepsNetworkAliasesFromOptions(t *testing.T) {

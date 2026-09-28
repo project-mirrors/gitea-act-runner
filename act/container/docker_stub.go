@@ -107,6 +107,10 @@ func RemoveOrphanNetworks(_ context.Context, _, _ string, _ time.Time) error {
 	return nil
 }
 
+func SanitizeBinds(_ context.Context, _, binds []string) []string {
+	return binds
+}
+
 func CreateJobVolumes(ctx context.Context, runnerUUID string, volumeNames []string) error {
 	return nil
 }

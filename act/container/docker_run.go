@@ -593,7 +593,8 @@ func (cr *containerReference) mergeContainerConfigs(ctx context.Context, config 
 
 	// If the `privileged` config has been disabled, `copts.privileged` need to be forced to false,
 	// even if the user specifies `--privileged` in the options string.
-	if !hostConfig.Privileged {
+	if !hostConfig.Privileged && copts.privileged {
+		logger.Warnf("container option %q is not allowed when privileged mode is disabled and will be ignored", "--privileged")
 		copts.privileged = false
 	}
 
@@ -629,6 +630,7 @@ func (cr *containerReference) mergeContainerConfigs(ctx context.Context, config 
 
 	logger.Debugf("Custom container.HostConfig from options ==> %+v", containerConfig.HostConfig)
 
+	cr.sanitizeConfig(ctx, nil, containerConfig.HostConfig) // a dropped volume must not displace the runner's own
 	overlayVolumes(hostConfig, containerConfig.HostConfig)
 	binds := hostConfig.Binds
 	mounts := hostConfig.Mounts
@@ -1259,6 +1261,12 @@ func (cr *containerReference) sanitizeConfig(ctx context.Context, config *contai
 	}
 
 	return config, hostConfig
+}
+
+func SanitizeBinds(ctx context.Context, validVolumes, binds []string) []string {
+	cr := &containerReference{input: &NewContainerInput{ValidVolumes: validVolumes}}
+	_, hostConfig := cr.sanitizeConfig(ctx, nil, &container.HostConfig{Binds: binds})
+	return hostConfig.Binds
 }
 
 // bindTarget returns the container path a bind mounts onto, empty if it cannot be parsed.
