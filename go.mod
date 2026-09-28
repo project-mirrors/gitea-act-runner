@@ -9,7 +9,7 @@ require (
 	dario.cat/mergo v1.0.2
 	gitea.dev/actionslib v1.2.1
 	github.com/avast/retry-go/v5 v5.0.0
-	github.com/bmatcuk/doublestar/v4 v4.10.0
+	github.com/bmatcuk/doublestar/v4 v4.10.2
 	github.com/containerd/errdefs v1.0.0
 	github.com/creack/pty v1.1.24
 	github.com/distribution/reference v0.6.0

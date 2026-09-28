@@ -6,7 +6,7 @@ SHASUM ?= shasum -a 256
 HAS_GO = $(shell hash $(GO) > /dev/null 2>&1 && echo "GO" || echo "NOGO" )
 XGO_PACKAGE ?= src.techknowlogick.com/xgo@v1.9.0 # renovate: datasource=go
 XGO_VERSION := go-1.27.x
-GXZ_PACKAGE ?= github.com/ulikunitz/xz/cmd/gxz@v0.5.16 # renovate: datasource=go
+GXZ_PACKAGE ?= github.com/ulikunitz/xz/cmd/gxz@v0.5.17 # renovate: datasource=go
 
 PODMAN_TEST_IMAGE ?= quay.io/containers/podman:v5.8.4-immutable@sha256:90405e3c6a86f33c5a6f8dbdfa8e02a98143a8ba4337b84bdaec5336d2ef008a # renovate: datasource=docker
 E2E_JOB_IMAGE ?= node:24-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4 # renovate: datasource=docker
