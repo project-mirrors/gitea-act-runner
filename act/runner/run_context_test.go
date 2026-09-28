@@ -1601,6 +1601,27 @@ func TestImageOSFromImage(t *testing.T) {
 	}
 }
 
+func TestResolvePlatformImageAppliesImagelessContainerToRunsOnImage(t *testing.T) {
+	for _, tc := range []struct {
+		name, image string
+		want        model.ContainerSpec
+	}{
+		{"without image key", "", model.ContainerSpec{Volumes: []string{"/host/data:/data"}, Env: map[string]string{"KEY": "value"}}},
+		{"with empty image", "image: '', ", model.ContainerSpec{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := createIfTestRunContext(map[string]*model.Job{
+				"job1": createJob(t, "runs-on: toolkit\ncontainer: {"+tc.image+"volumes: [/host/data:/data], env: {KEY: value}}", ""),
+			})
+			require.NoError(t, rc.resolvePlatformImage(t.Context()))
+			require.NoError(t, evaluateJobEnvAndDefaults(t.Context(), rc))
+
+			assert.Equal(t, "ubuntu-latest", rc.platformImage)
+			assert.Equal(t, tc.want, rc.containerSpec)
+		})
+	}
+}
+
 func createRunsOnRunContext(t *testing.T, runsOn string) *RunContext {
 	return createIfTestRunContext(map[string]*model.Job{
 		"job1": createJob(t, "runs-on: "+runsOn, ""),

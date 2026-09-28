@@ -64,7 +64,8 @@ type RunContext struct {
 	ExprEval            *expressionEvaluator
 	JobContainer        container.ExecutionsEnvironment
 	serviceContainers   []*serviceContainer
-	containerSpec       model.ContainerSpec // container:, resolved once with platformImage, zero without a container image
+	containerSpec       model.ContainerSpec // container:, resolved once with platformImage
+	containerEnv        yaml.Node           // container.env of the kept containerSpec, decoded once the job env resolves
 	JobName             string
 	ActionPath          string
 	Parent              *RunContext
@@ -1189,21 +1190,37 @@ func (rc *RunContext) runsOnPlatformNames(ctx context.Context) []string {
 	return model.RunsOnFromNode(rawRunsOn)
 }
 
-// resolvePlatformImage evaluates the job's container once for every consumer, ignoring one without an image as GitHub does.
+// resolvePlatformImage evaluates the job's container once for every consumer, skipping one whose image is empty as GitHub does.
 func (rc *RunContext) resolvePlatformImage(ctx context.Context) error {
-	withoutEnv, _ := splitContainerEnv(rc.Run.Job().RawContainer)
+	withoutEnv, env := splitContainerEnv(rc.Run.Job().RawContainer)
 	var spec model.ContainerSpec
 	if err := model.DecodeEvaluated("container", withoutEnv, rc.ExprEval.shared(ctx).EvaluateYamlNode, &spec); err != nil {
 		return err
 	}
 	spec.Image = strings.TrimPrefix(spec.Image, "docker://")
-	if spec.Image != "" {
-		rc.containerSpec, rc.platformImage = spec, spec.Image
+	if spec.Image != "" || imagelessContainer(withoutEnv) {
+		rc.containerSpec, rc.containerEnv = spec, env
+	}
+	if rc.containerSpec.Image != "" {
+		rc.platformImage = rc.containerSpec.Image
 		return nil
 	}
 	image, err := rc.runsOnImage(ctx)
 	rc.platformImage = image
 	return err
+}
+
+// imagelessContainer reports a container: mapping without an image key, which configures the runs-on image.
+func imagelessContainer(container yaml.Node) bool {
+	if container.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i < len(container.Content); i += 2 {
+		if container.Content[i].Value == "image" {
+			return false
+		}
+	}
+	return true
 }
 
 // splitContainerEnv takes `env` out of a container mapping, since env reads the job env that resolves after the job environment starts.

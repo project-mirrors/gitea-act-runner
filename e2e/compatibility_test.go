@@ -69,6 +69,7 @@ func testPayloads(t *testing.T) {
 		"cell-a-2",
 		"cell-b-1",
 		"cell-b-2",
+		"imageless env=imageless-env-value host=imageless-host",
 	} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("stored logs are missing %q", want)

@@ -3,6 +3,10 @@ on: push
 jobs:
   verify:
     runs-on: ubuntu-latest
+    container:
+      env:
+        IMAGELESS_ENV: imageless-env-value
+      options: --hostname imageless-host
     services:
       web:
         image: ${{ vars.E2E_SERVICE_IMAGE }}
@@ -19,6 +23,7 @@ jobs:
           echo '::notice::encoded-first%0Aencoded-second'
           echo "the variable is ${{ vars.GREETING }}"
           echo "the secret is ${{ secrets.FOO }}"
+          echo "imageless env=$IMAGELESS_ENV host=$(hostname)"
           curl --connect-timeout 1 --max-time 2 --retry 30 --retry-delay 1 --retry-max-time 30 --retry-all-errors -fsS -o /dev/null http://web/
   produce:
     runs-on: ubuntu-latest

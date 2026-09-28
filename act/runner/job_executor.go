@@ -435,11 +435,7 @@ func evaluateJobEnvAndDefaults(ctx context.Context, rc *RunContext) error {
 		return err
 	}
 	rc.jobRunDefaults = defaults.Run
-	if rc.containerSpec.Image == "" {
-		return nil
-	}
-	_, containerEnv := splitContainerEnv(rc.Run.Job().RawContainer)
-	return model.DecodeEvaluated("container env", containerEnv, rc.ExprEval.shared(ctx).EvaluateYamlNode, &rc.containerSpec.Env)
+	return model.DecodeEvaluated("container env", rc.containerEnv, rc.ExprEval.shared(ctx).EvaluateYamlNode, &rc.containerSpec.Env)
 }
 
 func setJobOutputs(ctx context.Context, rc *RunContext) error {
