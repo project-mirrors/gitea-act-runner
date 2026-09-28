@@ -5,24 +5,31 @@
 package cmd
 
 import (
+	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
-	"gitea.com/gitea/act_runner/internal/app/run"
-	"github.com/actions-oss/act-cli/pkg/artifactcache"
-	"github.com/actions-oss/act-cli/pkg/artifacts"
-	"github.com/actions-oss/act-cli/pkg/common"
-	"github.com/actions-oss/act-cli/pkg/model"
-	"github.com/actions-oss/act-cli/pkg/runner"
-	"github.com/actions-oss/act-cli/pkg/schema"
-	"github.com/docker/docker/api/types/container"
+	"gitea.com/gitea/runner/act/artifactcache"
+	"gitea.com/gitea/runner/act/artifacts"
+	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/runner"
+	"gitea.com/gitea/runner/internal/app/run"
+	"gitea.com/gitea/runner/internal/pkg/config"
+
+	"gitea.dev/actionslib/pkg/model"
 	"github.com/joho/godotenv"
+	"github.com/moby/moby/api/types/container"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -32,6 +39,7 @@ type executeArgs struct {
 	runList               bool
 	job                   string
 	event                 string
+	eventpath             string
 	workdir               string
 	workflowsPath         string
 	noWorkflowRecurse     bool
@@ -39,6 +47,8 @@ type executeArgs struct {
 	forcePull             bool
 	forceRebuild          bool
 	jsonLogger            bool
+	inputs                []string
+	inputfile             string
 	envs                  []string
 	envfile               string
 	secrets               []string
@@ -63,6 +73,15 @@ type executeArgs struct {
 	cacheHandler          *artifactcache.Handler
 	network               string
 	githubInstance        string
+	toolCacheMode         string
+}
+
+// sharedToolCache reports whether mode mounts one tool cache for every job.
+func sharedToolCache(mode string) (bool, error) {
+	if !slices.Contains(config.ToolCacheModes, mode) {
+		return false, fmt.Errorf("invalid --tool-cache-mode %q: must be one of %q", mode, config.ToolCacheModes)
+	}
+	return mode == config.ToolCacheModeShared, nil
 }
 
 // WorkflowsPath returns path to workflow file(s)
@@ -73,6 +92,11 @@ func (i *executeArgs) WorkflowsPath() string {
 // Envfile returns path to .env
 func (i *executeArgs) Envfile() string {
 	return i.resolve(i.envfile)
+}
+
+// Inputfile returns path to .env-format inputfile
+func (i *executeArgs) Inputfile() string {
+	return i.resolve(i.inputfile)
 }
 
 func (i *executeArgs) LoadSecrets() map[string]string {
@@ -113,39 +137,79 @@ func readEnvs(path string, envs map[string]string) bool {
 	return false
 }
 
-func (i *executeArgs) LoadEnvs() map[string]string {
-	envs := make(map[string]string)
-	if i.envs != nil {
-		for _, envVar := range i.envs {
-			e := strings.SplitN(envVar, `=`, 2)
-			if len(e) == 2 {
-				envs[e[0]] = e[1]
-			} else {
-				envs[e[0]] = ""
-			}
+func (i *executeArgs) LoadVars() map[string]string {
+	return parseKVAndFile(i.vars, "")
+}
+
+func (i *executeArgs) LoadInputs() map[string]string {
+	return parseKVAndFile(i.inputs, i.Inputfile())
+}
+
+// eventJSON assembles the payload the run is triggered with, the `--input` values overriding
+// the inputs the `--eventpath` file carries.
+func (i *executeArgs) eventJSON() (string, error) {
+	payload := []byte("{}")
+	if path := i.resolve(i.eventpath); path != "" {
+		var err error
+		if payload, err = os.ReadFile(path); err != nil {
+			return "", fmt.Errorf("failed to read %s: %w", path, err)
 		}
 	}
-	_ = readEnvs(i.Envfile(), envs)
+
+	cliInputs := i.LoadInputs()
+	if len(cliInputs) == 0 {
+		return string(payload), nil
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return "", fmt.Errorf("failed to parse event payload: %w", err)
+	}
+	if event == nil { // a JSON `null` payload unmarshals into a nil map
+		event = make(map[string]any)
+	}
+	inputs, ok := event["inputs"].(map[string]any)
+	if !ok {
+		inputs = make(map[string]any)
+	}
+	for name, value := range cliInputs {
+		inputs[name] = value
+	}
+	event["inputs"] = inputs
+
+	merged, err := json.Marshal(event)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal event payload: %w", err)
+	}
+	return string(merged), nil
+}
+
+func (i *executeArgs) LoadEnvs() map[string]string {
+	envs := parseKVAndFile(i.envs, i.Envfile())
 
 	envs["ACTIONS_CACHE_URL"] = i.cacheHandler.ExternalURL() + "/"
+	// The same server answers cache v2, which docker buildx reads from the results origin alone.
+	if envs["ACTIONS_RESULTS_URL"] == "" {
+		envs["ACTIONS_RESULTS_URL"] = cmp.Or(os.Getenv("ACTIONS_RESULTS_URL"), i.cacheHandler.ExternalURL())
+	}
+	envs[runner.CacheServiceV2Env] = "true"
 
 	return envs
 }
 
-func (i *executeArgs) LoadVars() map[string]string {
-	vars := make(map[string]string)
-	if i.vars != nil {
-		for _, runVar := range i.vars {
-			e := strings.SplitN(runVar, `=`, 2)
-			if len(e) == 2 {
-				vars[e[0]] = e[1]
-			} else {
-				vars[e[0]] = ""
-			}
+func parseKVAndFile(rawKVs []string, filePath string) map[string]string {
+	result := make(map[string]string)
+	_ = readEnvs(filePath, result)
+
+	for _, raw := range rawKVs {
+		parts := strings.SplitN(raw, "=", 2)
+		if len(parts) == 2 {
+			result[parts[0]] = parts[1]
+		} else {
+			result[parts[0]] = ""
 		}
 	}
-
-	return vars
+	return result
 }
 
 // Workdir returns path to workdir
@@ -286,19 +350,20 @@ func runExecList(planner model.WorkflowPlanner, execArgs *executeArgs) error {
 	}
 
 	var err error
-	if execArgs.job != "" {
+	switch {
+	case execArgs.job != "":
 		log.Infof("Preparing plan with a job: %s", execArgs.job)
 		filterPlan, err = planner.PlanJob(execArgs.job)
 		if err != nil {
 			return err
 		}
-	} else if filterEventName != "" {
+	case filterEventName != "":
 		log.Infof("Preparing plan for a event: %s", filterEventName)
 		filterPlan, err = planner.PlanEvent(filterEventName)
 		if err != nil {
 			return err
 		}
-	} else {
+	default:
 		log.Infof("Preparing plan with all jobs")
 		filterPlan, err = planner.PlanAll()
 		if err != nil {
@@ -311,14 +376,55 @@ func runExecList(planner model.WorkflowPlanner, execArgs *executeArgs) error {
 	return nil
 }
 
+func (i *executeArgs) runnerConfig(eventName string, env, proxyEnv map[string]string, maxLifetime time.Duration, sharedToolCache bool) (*runner.Config, error) {
+	eventJSON, err := i.eventJSON()
+	if err != nil {
+		return nil, err
+	}
+
+	return &runner.Config{
+		Workdir:               i.Workdir(),
+		BindWorkdir:           false,
+		ForcePull:             i.forcePull,
+		ForceRebuild:          i.forceRebuild,
+		JSONLogger:            i.jsonLogger,
+		Env:                   env,
+		ProxyEnv:              proxyEnv,
+		Vars:                  i.LoadVars(),
+		Secrets:               i.LoadSecrets(),
+		InsecureSecrets:       i.insecureSecrets,
+		Privileged:            i.privileged,
+		UsernsMode:            i.usernsMode,
+		ContainerArchitecture: i.containerArchitecture,
+		ContainerDaemonSocket: i.containerDaemonSocket,
+		UseGitIgnore:          i.useGitIgnore,
+		GitHubInstance:        i.githubInstance,
+		ContainerCapAdd:       i.containerCapAdd,
+		ContainerCapDrop:      i.containerCapDrop,
+		ContainerOptions:      i.containerOptions,
+		ArtifactServerPath:    i.artifactServerPath,
+		ArtifactServerPort:    i.artifactServerPort,
+		ArtifactServerAddr:    i.artifactServerAddr,
+		NoSkipCheckout:        i.noSkipCheckout,
+		EventName:             eventName,
+		EventJSON:             eventJSON,
+		// PresetGitHubContext:   preset,
+		ContainerNamePrefix:               "GITEA-ACTIONS-TASK-" + eventName,
+		ContainerMaxLifetime:              maxLifetime,
+		ContainerNetworkMode:              container.NetworkMode(i.network),
+		DefaultActionInstance:             i.defaultActionsURL,
+		DefaultActionInstanceIsSelfHosted: i.defaultActionsURL != "" && i.defaultActionsURL != "https://github.com",
+		PlatformPicker: func(_ []string) string {
+			return i.image
+		},
+		ValidVolumes:    []string{"**"}, // All volumes are allowed for `exec` command
+		SharedToolCache: sharedToolCache,
+	}, nil
+}
+
 func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		planner, err := model.NewWorkflowPlanner(execArgs.WorkflowsPath(), model.PlannerConfig{
-			Recursive: !execArgs.noWorkflowRecurse,
-			Workflow: model.WorkflowConfig{
-				Schema: schema.GetGiteaWorkflowSchema(),
-			},
-		})
+		planner, err := model.NewWorkflowPlanner(execArgs.WorkflowsPath(), execArgs.noWorkflowRecurse)
 		if err != nil {
 			return err
 		}
@@ -336,18 +442,19 @@ func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command
 		// collect all events from loaded workflows
 		events := planner.GetEvents()
 
-		if len(execArgs.event) > 0 {
+		switch {
+		case len(execArgs.event) > 0:
 			log.Infof("Using chosed event for filtering: %s", execArgs.event)
 			eventName = execArgs.event
-		} else if len(events) == 1 && len(events[0]) > 0 {
+		case len(events) == 1 && len(events[0]) > 0:
 			log.Infof("Using the only detected workflow event: %s", events[0])
 			eventName = events[0]
-		} else if execArgs.autodetectEvent && len(events) > 0 && len(events[0]) > 0 {
+		case execArgs.autodetectEvent && len(events) > 0 && len(events[0]) > 0:
 			// set default event type to first event from many available
 			// this way user dont have to specify the event.
 			log.Infof("Using first detected workflow event: %s", events[0])
 			eventName = events[0]
-		} else {
+		default:
 			log.Infof("Using default workflow event: push")
 			eventName = "push"
 		}
@@ -367,14 +474,16 @@ func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command
 			}
 		}
 
-		// TODO GITEA
-		// maxLifetime := 3 * time.Hour
-		// if deadline, ok := ctx.Deadline(); ok {
-		// 	maxLifetime = time.Until(deadline)
-		// }
+		maxLifetime := 3 * time.Hour
+		if deadline, ok := ctx.Deadline(); ok {
+			maxLifetime = time.Until(deadline)
+		}
 
 		// init a cache server
-		handler, err := artifactcache.StartHandler("", "", 0, log.StandardLogger().WithField("module", "cache_request"))
+		handler, err := artifactcache.StartHandler(artifactcache.Options{
+			Policy: run.CachePolicy(&config.Config{Cache: config.DefaultCache()}),
+			Logger: log.StandardLogger().WithField("module", "cache_request"),
+		})
 		if err != nil {
 			return err
 		}
@@ -399,48 +508,43 @@ func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command
 			execArgs.artifactServerPath = tempDir
 		}
 
+		// Register ACTIONS_RUNTIME_TOKEN against local cache server
+		env := execArgs.LoadEnvs()
+		const actionsRuntimeTokenEnvName = "ACTIONS_RUNTIME_TOKEN"
+		actionsRuntimeToken := env[actionsRuntimeTokenEnvName]
+		if actionsRuntimeToken == "" {
+			actionsRuntimeToken = os.Getenv(actionsRuntimeTokenEnvName)
+		}
+		if actionsRuntimeToken == "" {
+			tmpBranch := make([]byte, 12)
+			if _, err := rand.Read(tmpBranch); err != nil {
+				actionsRuntimeToken = "token"
+			} else {
+				actionsRuntimeToken = hex.EncodeToString(tmpBranch)
+			}
+			env[actionsRuntimeTokenEnvName] = actionsRuntimeToken
+			os.Setenv(actionsRuntimeTokenEnvName, actionsRuntimeToken)
+		}
+		handler.RegisterJob(actionsRuntimeToken, artifactcache.JobCredential{Repo: "__local/__exec"})
+
+		// no service aliases: exec builds one config for the whole plan
+		run.BypassProxyForDockerHost(os.Getenv("DOCKER_HOST"))
+		proxyEnv := run.JobProxyEnv(env, env["ACTIONS_CACHE_URL"], nil)
+		maps.Copy(env, proxyEnv)
+
+		shared, err := sharedToolCache(execArgs.toolCacheMode)
+		if err != nil {
+			return err
+		}
+
 		// run the plan
-		config := &runner.Config{
-			Workdir:               execArgs.Workdir(),
-			BindWorkdir:           false,
-			ReuseContainers:       false,
-			ForcePull:             execArgs.forcePull,
-			ForceRebuild:          execArgs.forceRebuild,
-			LogOutput:             true,
-			JSONLogger:            execArgs.jsonLogger,
-			Env:                   execArgs.LoadEnvs(),
-			Vars:                  execArgs.LoadVars(),
-			Secrets:               execArgs.LoadSecrets(),
-			InsecureSecrets:       execArgs.insecureSecrets,
-			Privileged:            execArgs.privileged,
-			UsernsMode:            execArgs.usernsMode,
-			ContainerArchitecture: execArgs.containerArchitecture,
-			ContainerDaemonSocket: execArgs.containerDaemonSocket,
-			UseGitIgnore:          execArgs.useGitIgnore,
-			GitHubInstance:        execArgs.githubInstance,
-			ContainerCapAdd:       execArgs.containerCapAdd,
-			ContainerCapDrop:      execArgs.containerCapDrop,
-			ContainerOptions:      execArgs.containerOptions,
-			AutoRemove:            true,
-			ArtifactServerPath:    execArgs.artifactServerPath,
-			ArtifactServerPort:    execArgs.artifactServerPort,
-			ArtifactServerAddr:    execArgs.artifactServerAddr,
-			NoSkipCheckout:        execArgs.noSkipCheckout,
-			// PresetGitHubContext:   preset,
-			// EventJSON:             string(eventJSON),
-			// TODO GITEA
-			// ContainerNamePrefix:   "GITEA-ACTIONS-TASK-" + eventName,
-			// ContainerMaxLifetime:  maxLifetime,
-			ContainerNetworkMode: container.NetworkMode(execArgs.network),
-			// TODO GITEA
-			// DefaultActionInstance: execArgs.defaultActionsURL,
-			// PlatformPicker: func(_ []string) string {
-			// 	return execArgs.image
-			// },
-			// ValidVolumes: []string{"**"}, // All volumes are allowed for `exec` command
+		config, err := execArgs.runnerConfig(eventName, env, proxyEnv, maxLifetime, shared)
+		if err != nil {
+			return err
 		}
 
 		config.Env["ACT_EXEC"] = "true"
+		config.Secrets[actionsRuntimeTokenEnvName] = actionsRuntimeToken
 
 		if t := config.Secrets["GITEA_TOKEN"]; t != "" {
 			config.Token = t
@@ -448,8 +552,10 @@ func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command
 			config.Token = t
 		}
 
-		// TODO GITEA
-		ctx = runner.WithJobLoggerFactory(ctx, &run.JobLoggerFactoryWithInfoLevel{})
+		if !execArgs.debug {
+			logLevel := log.InfoLevel
+			config.JobLoggerLevel = &logLevel
+		}
 
 		r, err := runner.New(config)
 		if err != nil {
@@ -480,8 +586,9 @@ func loadExecCmd(ctx context.Context) *cobra.Command {
 	}
 
 	execCmd.Flags().BoolVarP(&execArg.runList, "list", "l", false, "list workflows")
-	execCmd.Flags().StringVarP(&execArg.job, "job", "j", "", "run a specific job ID")
+	execCmd.Flags().StringVarP(&execArg.job, "job", "j", "", "run a specific job ID; when several workflow files define that job, also pass --workflows/-W to select the file")
 	execCmd.Flags().StringVarP(&execArg.event, "event", "E", "", "run a event name")
+	execCmd.Flags().StringVarP(&execArg.eventpath, "eventpath", "e", "", "path to a JSON event payload file exposed as the event that triggered the workflow")
 	execCmd.PersistentFlags().StringVarP(&execArg.workflowsPath, "workflows", "W", "./.gitea/workflows/", "path to workflow file(s)")
 	execCmd.PersistentFlags().StringVarP(&execArg.workdir, "directory", "C", ".", "working directory")
 	execCmd.PersistentFlags().BoolVarP(&execArg.noWorkflowRecurse, "no-recurse", "", false, "Flag to disable running workflows from subdirectories of specified path in '--workflows'/'-W' flag")
@@ -489,7 +596,9 @@ func loadExecCmd(ctx context.Context) *cobra.Command {
 	execCmd.Flags().BoolVarP(&execArg.forcePull, "pull", "p", false, "pull docker image(s) even if already present")
 	execCmd.Flags().BoolVarP(&execArg.forceRebuild, "rebuild", "", false, "rebuild local action docker image(s) even if already present")
 	execCmd.PersistentFlags().BoolVar(&execArg.jsonLogger, "json", false, "Output logs in json format")
-	execCmd.Flags().StringArrayVarP(&execArg.envs, "env", "", []string{}, "env to make available to actions with optional value (e.g. --env myenv=foo or --env myenv)")
+	execCmd.Flags().StringArrayVarP(&execArg.inputs, "input", "", []string{}, "set an input the workflow declares under its workflow_dispatch or workflow_call trigger, others stay invisible to the inputs context (e.g. --input name=bar; can be specified multiple times with highest precedence)")
+	execCmd.Flags().StringVarP(&execArg.inputfile, "input-file", "", "", "path to an .env-format file containing key=value pairs as baseline workflow inputs (override event inputs)")
+	execCmd.Flags().StringArrayVarP(&execArg.envs, "env", "", []string{}, "env to make available to actions with optional value (e.g. --env myenv=foo or --env myenv; override env-file)")
 	execCmd.PersistentFlags().StringVarP(&execArg.envfile, "env-file", "", ".env", "environment file to read and use as env in the containers")
 	execCmd.Flags().StringArrayVarP(&execArg.secrets, "secret", "s", []string{}, "secret to make available to actions with optional value (e.g. -s mysecret=foo or -s mysecret)")
 	execCmd.Flags().StringArrayVarP(&execArg.vars, "var", "", []string{}, "variable to make available to actions with optional value (e.g. --var myvar=foo or --var myvar)")
@@ -509,7 +618,8 @@ func loadExecCmd(ctx context.Context) *cobra.Command {
 	execCmd.PersistentFlags().BoolVarP(&execArg.noSkipCheckout, "no-skip-checkout", "", false, "Do not skip actions/checkout")
 	execCmd.PersistentFlags().BoolVarP(&execArg.debug, "debug", "d", false, "enable debug log")
 	execCmd.PersistentFlags().BoolVarP(&execArg.dryrun, "dryrun", "n", false, "dryrun mode")
-	execCmd.PersistentFlags().StringVarP(&execArg.image, "image", "i", "docker.gitea.com/runner-images:ubuntu-latest", "Docker image to use. Use \"-self-hosted\" to run directly on the host.")
+	execCmd.PersistentFlags().StringVarP(&execArg.image, "image", "i", config.DefaultImage, "Docker image to use. Use \"-self-hosted\" to run directly on the host.")
+	execCmd.PersistentFlags().StringVarP(&execArg.toolCacheMode, "tool-cache-mode", "", config.ToolCacheModeNone, "What to mount at RUNNER_TOOL_CACHE: none, or shared to reuse one tool cache across runs")
 	execCmd.PersistentFlags().StringVarP(&execArg.network, "network", "", "", "Specify the network to which the container will connect")
 	execCmd.PersistentFlags().StringVarP(&execArg.githubInstance, "gitea-instance", "", "", "Gitea instance to use.")
 

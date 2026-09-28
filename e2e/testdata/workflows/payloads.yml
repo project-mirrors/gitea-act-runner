@@ -1,0 +1,58 @@
+name: payloads
+on: push
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    container:
+      env:
+        IMAGELESS_ENV: imageless-env-value
+      options: --hostname imageless-host
+    services:
+      web:
+        image: ${{ vars.E2E_SERVICE_IMAGE }}
+    steps:
+      - run: |
+          echo 'plain-100%-done;-[bracket]'
+          printf 'multiline-first\nmultiline-second\n'
+          echo '::notice::notice-payload-here'
+          echo '::warning::warning-payload-here'
+          echo '::error::error-payload-here'
+          echo '::group::group-payload-here'
+          echo 'inside-the-group'
+          echo '::endgroup::'
+          echo '::notice::encoded-first%0Aencoded-second'
+          echo "the variable is ${{ vars.GREETING }}"
+          echo "the secret is ${{ secrets.FOO }}"
+          echo "imageless env=$IMAGELESS_ENV host=$(hostname)"
+          curl --connect-timeout 1 --max-time 2 --retry 30 --retry-delay 1 --retry-max-time 30 --retry-all-errors -fsS -o /dev/null http://web/
+  produce:
+    runs-on: ubuntu-latest
+    outputs:
+      token: ${{ steps.emit.outputs.token }}
+    steps:
+      - id: emit
+        run: echo "token=produced-value-42" >> "$GITHUB_OUTPUT"
+      - run: echo "artifact content" > payload.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: payload
+          path: payload.txt
+  consume:
+    needs: produce
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: payload
+      - run: grep -q 'artifact content' payload.txt
+      - run: |
+          echo "received=${{ needs.produce.outputs.token }}"
+          test "${{ needs.produce.outputs.token }}" = "produced-value-42"
+  cell:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        letter: [a, b]
+        number: [1, 2]
+    steps:
+      - run: echo "cell-${{ matrix.letter }}-${{ matrix.number }}"

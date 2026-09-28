@@ -8,20 +8,38 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	runnerv1 "code.gitea.io/actions-proto-go/runner/v1"
+	"gitea.com/gitea/runner/act/runner"
+	"gitea.com/gitea/runner/internal/pkg/client"
+	"gitea.com/gitea/runner/internal/pkg/config"
+	"gitea.com/gitea/runner/internal/pkg/metrics"
+
 	"connectrpc.com/connect"
-	"github.com/avast/retry-go/v4"
+	runnerv1 "gitea.dev/actionslib/runner/v1"
+	"github.com/avast/retry-go/v5"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
-
-	"gitea.com/gitea/act_runner/internal/pkg/client"
 )
+
+// errOutputsNotSent travels the same return path as transport failures but is not one.
+var errOutputsNotSent = errors.New("there are still outputs that have not been sent")
+
+// Size limits for the outputs reported to the server.
+const (
+	maxOutputKeyLen   = 255
+	maxOutputValueLen = 1024 * 1024 // 1 MiB
+)
+
+// jobOutput is a job output on its way to the server, sent once the server has acknowledged it.
+type jobOutput struct {
+	value string
+	sent  bool
+}
 
 type Reporter struct {
 	ctx    context.Context
@@ -36,46 +54,106 @@ type Reporter struct {
 	logReplacer *strings.Replacer
 	oldnew      []string
 
-	state   *runnerv1.TaskState
-	stateMu sync.RWMutex
-	outputs sync.Map
-	daemon  chan struct{}
+	// lastLogBufferRows is the last value written to the ReportLogBufferRows
+	// gauge; guarded by clientM (the same lock held around each ReportLog call)
+	// so the gauge skips no-op Set calls when the buffer size is unchanged.
+	lastLogBufferRows int
+
+	state        *runnerv1.TaskState
+	stateChanged bool
+	// reportFailing keeps an outage to one log line at each end.
+	reportFailing map[string]bool
+	// serverResult is what the server decided, e.g. the zombie reaper failing
+	// the task. Guarded by stateMu.
+	serverResult      runnerv1.Result
+	stateMu           sync.RWMutex
+	outputsMu         sync.Mutex
+	outputs           map[string]jobOutput
+	daemon            chan struct{}
+	heartbeatStop     chan struct{}
+	heartbeatStopOnce sync.Once
+
+	// Unix-nanos of the last successful UpdateTask. Atomic so the heartbeat
+	// guard in ReportState reads it without contending stateMu.
+	lastReportedAtNanos atomic.Int64
+
+	// Adaptive batching control
+	logReportInterval   time.Duration
+	logReportMaxLatency time.Duration
+	logBatchSize        int
+	stateReportInterval time.Duration
+	// closeTimeout bounds each RPC attempt in the final flush, on a context
+	// detached from r.ctx so a server cancel can't abort the acknowledgement.
+	closeTimeout time.Duration
+	// daemonWait bounds how long Close waits for the daemon loop to acknowledge.
+	daemonWait time.Duration
+
+	// Event notification channels (non-blocking, buffered 1)
+	logNotify   chan struct{} // signal: new log rows arrived
+	stateNotify chan struct{} // signal: step transition (start/stop)
 
 	debugOutputEnabled  bool
 	stopCommandEndToken string
 
-	stepIds []string
+	jobLog *jobLog // this task's rows on the runner's own disk, nil when log.job.dir is unset
 }
 
-func NewReporter(ctx context.Context, cancel context.CancelFunc, client client.Client, task *runnerv1.Task) *Reporter {
+// extraMasks are values known before the job starts that are not among its secrets, such as
+// the password in the runner's proxy URL.
+func NewReporter(ctx context.Context, cancel context.CancelFunc, client client.Client, task *runnerv1.Task, cfg *config.Config, extraMasks ...string) *Reporter {
 	var oldnew []string
+	for _, v := range extraMasks {
+		oldnew = runner.AppendSecretMasker(oldnew, v)
+	}
 	if v := task.Context.Fields["token"].GetStringValue(); v != "" {
-		oldnew = append(oldnew, v, "***")
+		oldnew = runner.AppendSecretMasker(oldnew, v)
 	}
 	if v := task.Context.Fields["gitea_runtime_token"].GetStringValue(); v != "" {
-		oldnew = append(oldnew, v, "***")
+		oldnew = runner.AppendSecretMasker(oldnew, v)
 	}
-	for _, v := range task.Secrets {
-		oldnew = append(oldnew, v, "***")
+	if v := task.Context.Fields["actions_id_token_request_token"].GetStringValue(); v != "" {
+		oldnew = runner.AppendSecretMasker(oldnew, v)
 	}
+	oldnew = runner.AppendSecretMaskers(oldnew, task.Secrets)
 
 	rv := &Reporter{
-		ctx:         ctx,
-		cancel:      cancel,
-		client:      client,
-		oldnew:      oldnew,
-		logReplacer: strings.NewReplacer(oldnew...),
+		ctx:                 ctx,
+		cancel:              cancel,
+		client:              client,
+		oldnew:              oldnew,
+		logReplacer:         runner.NewSecretReplacer(oldnew),
+		logReportInterval:   cfg.Runner.LogReportInterval,
+		logReportMaxLatency: cfg.Runner.LogReportMaxLatency,
+		logBatchSize:        cfg.Runner.LogReportBatchSize,
+		stateReportInterval: cfg.Runner.StateReportInterval,
+		closeTimeout:        cfg.Runner.ReportCloseTimeout,
+		logNotify:           make(chan struct{}, 1),
+		stateNotify:         make(chan struct{}, 1),
 		state: &runnerv1.TaskState{
 			Id: task.Id,
 		},
-		daemon: make(chan struct{}),
+		reportFailing: map[string]bool{},
+		daemon:        make(chan struct{}),
+		heartbeatStop: make(chan struct{}),
+		jobLog:        openJobLog(cfg.Log.Job, task.Id, time.Now()),
 	}
+
+	rv.daemonWait = 6 * rv.effectiveCloseTimeout()
+
+	registerGlobalMasks(rv)
 
 	if task.Secrets["ACTIONS_STEP_DEBUG"] == "true" {
 		rv.debugOutputEnabled = true
 	}
 
 	return rv
+}
+
+// Result returns the final job result. Safe to call after Close() returns.
+func (r *Reporter) Result() runnerv1.Result {
+	r.stateMu.RLock()
+	defer r.stateMu.RUnlock()
+	return r.state.Result
 }
 
 func (r *Reporter) ResetSteps(l int) {
@@ -88,22 +166,19 @@ func (r *Reporter) ResetSteps(l int) {
 	}
 }
 
-func (r *Reporter) SetStepIdMapping(stepIDs ...string) {
-	r.ResetSteps(len(stepIDs))
-	r.stateMu.Lock()
-	defer r.stateMu.Unlock()
-	r.stepIds = stepIDs
-}
-
 func (r *Reporter) Levels() []log.Level {
 	return log.AllLevels
 }
 
-func appendIfNotNil[T any](s []*T, v *T) []*T {
-	if v != nil {
-		return append(s, v)
+// appendLogRow masks a row before buffering it for Gitea and the local job.log, the one point
+// feeding both. A nil row is one the command handler dropped. Caller holds stateMu.
+func (r *Reporter) appendLogRow(row *runnerv1.LogRow) {
+	if row == nil {
+		return
 	}
-	return s
+	row.Content = r.mask(row.Content)
+	r.logRows = append(r.logRows, row)
+	r.jobLog.write(row.Time.AsTime(), row.Content)
 }
 
 // isJobStepEntry is used to not report composite step results incorrectly as step result
@@ -118,11 +193,42 @@ func isJobStepEntry(entry *log.Entry) bool {
 	return true
 }
 
-func (r *Reporter) Fire(entry *log.Entry) error {
-	r.stateMu.Lock()
-	defer r.stateMu.Unlock()
+// notifyLog sends a non-blocking signal that new log rows are available.
+func (r *Reporter) notifyLog() {
+	select {
+	case r.logNotify <- struct{}{}:
+	default:
+	}
+}
 
-	log.WithFields(entry.Data).Trace(entry.Message)
+// notifyState sends a non-blocking signal that a UX-critical state change occurred (step start/stop, job result).
+func (r *Reporter) notifyState() {
+	select {
+	case r.stateNotify <- struct{}{}:
+	default:
+	}
+}
+
+// unlockAndNotify releases stateMu and sends channel notifications.
+// Must be called with stateMu held.
+func (r *Reporter) unlockAndNotify(urgentState bool) {
+	r.stateMu.Unlock()
+	r.notifyLog()
+	if urgentState {
+		r.notifyState()
+	}
+}
+
+func (r *Reporter) Fire(entry *log.Entry) error {
+	urgentState := false
+
+	r.stateMu.Lock()
+
+	r.stateChanged = true
+
+	if log.IsLevelEnabled(log.TraceLevel) {
+		log.WithFields(entry.Data).Trace(r.mask(entry.Message)) // the process masker has no ::add-mask:: value
+	}
 
 	timestamp := entry.Time
 	if r.state.StartedAt == nil {
@@ -145,11 +251,13 @@ func (r *Reporter) Fire(entry *log.Entry) error {
 						}
 					}
 				}
+				urgentState = true
 			}
 		}
-		if !r.duringSteps() {
-			r.logRows = appendIfNotNil(r.logRows, r.parseLogRow(entry))
+		if r.shouldAppendLogRow(entry) {
+			r.appendLogRow(r.parseLogRow(entry))
 		}
+		r.unlockAndNotify(urgentState)
 		return nil
 	}
 
@@ -158,22 +266,21 @@ func (r *Reporter) Fire(entry *log.Entry) error {
 		if v, ok := v.(int); ok && len(r.state.Steps) > v {
 			step = r.state.Steps[v]
 		}
-	} else if v, ok := entry.Data["stepID"]; ok {
-		if v, ok := v.([]string); ok && len(v) >= 1 {
-			if no := slices.Index(r.stepIds, v[0]); no >= 0 && len(r.state.Steps) > no {
-				step = r.state.Steps[no]
-			}
-		}
 	}
 	if step == nil {
-		if !r.duringSteps() {
-			r.logRows = appendIfNotNil(r.logRows, r.parseLogRow(entry))
+		if r.shouldAppendLogRow(entry) {
+			r.appendLogRow(r.parseLogRow(entry))
 		}
+		r.unlockAndNotify(false)
 		return nil
 	}
 
 	if step.StartedAt == nil {
 		step.StartedAt = timestamppb.New(timestamp)
+		urgentState = true
+		// The runner's own handler is per step, so an unresumed ::stop-commands:: must not
+		// leave the reporter suppressed, and no longer registering masks, for the whole job.
+		r.stopCommandEndToken = ""
 	}
 
 	// Force reporting log errors as raw output to prevent silent failures
@@ -188,11 +295,11 @@ func (r *Reporter) Fire(entry *log.Entry) error {
 					step.LogIndex = int64(r.logOffset + len(r.logRows))
 				}
 				step.LogLength++
-				r.logRows = append(r.logRows, row)
+				r.appendLogRow(row)
 			}
 		}
-	} else if !r.duringSteps() {
-		r.logRows = appendIfNotNil(r.logRows, r.parseLogRow(entry))
+	} else if r.shouldAppendLogRow(entry) {
+		r.appendLogRow(r.parseLogRow(entry))
 	}
 	if v, ok := entry.Data["stepResult"]; ok && isJobStepEntry(entry) {
 		if stepResult, ok := r.parseResult(v); ok {
@@ -201,26 +308,134 @@ func (r *Reporter) Fire(entry *log.Entry) error {
 			}
 			step.Result = stepResult
 			step.StoppedAt = timestamppb.New(timestamp)
+			urgentState = true
 		}
 	}
 
+	r.unlockAndNotify(urgentState)
 	return nil
 }
 
-func (r *Reporter) RunDaemon() {
-	r.stateMu.RLock()
-	closed := r.closed
-	r.stateMu.RUnlock()
-	if closed || r.ctx.Err() != nil {
-		// Acknowledge close
-		close(r.daemon)
-		return
+// Only the daemon loop calls this, so reportFailing needs no lock.
+func (r *Reporter) noteReport(method string, err error) {
+	if errors.Is(err, errOutputsNotSent) {
+		err = nil // the RPC itself succeeded
 	}
+	switch {
+	case err != nil && !r.reportFailing[method]:
+		r.reportFailing[method] = true
+		log.Warnf("%s error: %v, retrying until reconnected", method, err)
+	case err == nil && r.reportFailing[method]:
+		delete(r.reportFailing, method)
+		log.Infof("%s reconnected", method)
+	}
+}
 
-	_ = r.ReportLog(false)
-	_ = r.ReportState(false)
+func (r *Reporter) RunDaemon() {
+	go r.runDaemonLoop()
+}
 
-	time.AfterFunc(time.Second, r.RunDaemon)
+// StopHeartbeats stops periodic UpdateTask heartbeats without cancelling the
+// task context. Close() still delivers the final flush. Safe to call multiple
+// times and when the context is already cancelled.
+func (r *Reporter) StopHeartbeats() {
+	r.heartbeatStopOnce.Do(func() {
+		close(r.heartbeatStop)
+	})
+}
+
+func (r *Reporter) stopLatencyTimer(active *bool, timer *time.Timer) {
+	if *active {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		*active = false
+	}
+}
+
+func (r *Reporter) runDaemonLoop() {
+	defer close(r.daemon)
+
+	logTicker := time.NewTicker(r.logReportInterval)
+	stateTicker := time.NewTicker(r.stateReportInterval)
+
+	// maxLatencyTimer ensures the first buffered log row is sent within logReportMaxLatency.
+	// Start inactive — it is armed when the first log row arrives in an empty buffer.
+	maxLatencyTimer := time.NewTimer(0)
+	if !maxLatencyTimer.Stop() {
+		<-maxLatencyTimer.C
+	}
+	maxLatencyActive := false
+
+	defer logTicker.Stop()
+	defer stateTicker.Stop()
+	defer maxLatencyTimer.Stop()
+
+	for {
+		select {
+		case <-logTicker.C:
+			r.reportLogWithState()
+			r.stopLatencyTimer(&maxLatencyActive, maxLatencyTimer)
+
+		case <-stateTicker.C:
+			r.noteReport(metrics.LabelMethodUpdateTask, r.ReportState(false))
+
+		case <-r.logNotify:
+			r.stateMu.RLock()
+			n := len(r.logRows)
+			r.stateMu.RUnlock()
+
+			if n >= r.logBatchSize {
+				r.reportLogWithState()
+				r.stopLatencyTimer(&maxLatencyActive, maxLatencyTimer)
+			} else if !maxLatencyActive && n > 0 {
+				maxLatencyTimer.Reset(r.logReportMaxLatency)
+				maxLatencyActive = true
+			}
+
+		case <-r.stateNotify:
+			// Step transition or job result — flush both immediately for frontend UX.
+			r.noteReport(metrics.LabelMethodUpdateLog, r.ReportLog(false))
+			r.noteReport(metrics.LabelMethodUpdateTask, r.ReportState(false))
+			r.stopLatencyTimer(&maxLatencyActive, maxLatencyTimer)
+
+		case <-maxLatencyTimer.C:
+			maxLatencyActive = false
+			r.reportLogWithState()
+
+		case <-r.ctx.Done():
+			// Stop heartbeating on cancel so Gitea sees the runner as offline
+			// during cleanup and won't assign an overlapping task. Close() still
+			// delivers the final flush on a detached context (flushFinal).
+			return
+
+		case <-r.heartbeatStop:
+			// Stop heartbeating during post-task script execution. Close() still
+			// delivers the final flush on a detached context (flushFinal).
+			return
+		}
+
+		r.stateMu.RLock()
+		closed := r.closed
+		r.stateMu.RUnlock()
+		if closed {
+			return
+		}
+	}
+}
+
+// Gitea slices the single log stream into steps by the LogIndex/LogLength the state
+// carries, so rows acked without a state report behind them stay unattributed, and stay
+// that way for good if the runner never reports again.
+func (r *Reporter) reportLogWithState() {
+	took, err := r.reportLog(false)
+	r.noteReport(metrics.LabelMethodUpdateLog, err)
+	if took {
+		r.noteReport(metrics.LabelMethodUpdateTask, r.ReportState(false))
+	}
 }
 
 func (r *Reporter) Logf(format string, a ...any) {
@@ -232,78 +447,159 @@ func (r *Reporter) Logf(format string, a ...any) {
 
 func (r *Reporter) logf(format string, a ...any) {
 	if !r.duringSteps() {
-		r.logRows = append(r.logRows, &runnerv1.LogRow{
-			Time:    timestamppb.Now(),
-			Content: fmt.Sprintf(format, a...),
-		})
+		// Masked like any other row: these bypass parseLogRow, but a caller can still
+		// interpolate a secret, such as a configured URL carrying credentials.
+		r.appendLogRow(&runnerv1.LogRow{Time: timestamppb.Now(), Content: fmt.Sprintf(format, a...)})
 	}
 }
 
 func (r *Reporter) SetOutputs(outputs map[string]string) {
 	r.stateMu.Lock()
 	defer r.stateMu.Unlock()
+	r.outputsMu.Lock()
+	defer r.outputsMu.Unlock()
 
+	if r.outputs == nil {
+		r.outputs = map[string]jobOutput{}
+	}
 	for k, v := range outputs {
-		if len(k) > 255 {
-			r.logf("ignore output because the key is too long: %q", k)
+		if l := len(k); l > maxOutputKeyLen {
+			log.Warnf("ignore output %q because the key is too long: %d > %d", k, l, maxOutputKeyLen)
+			r.logf("ignore output %q because the key is too long: %d > %d", k, l, maxOutputKeyLen)
 			continue
 		}
-		if l := len(v); l > 1024*1024 {
-			log.Println("ignore output because the value is too long:", k, l)
-			r.logf("ignore output because the value %q is too long: %d", k, l)
-		}
-		if _, ok := r.outputs.Load(k); ok {
+		if l := len(v); l > maxOutputValueLen {
+			log.Warnf("ignore output %q because the value is too long: %d > %d", k, l, maxOutputValueLen)
+			r.logf("ignore output %q because the value is too long: %d > %d", k, l, maxOutputValueLen)
 			continue
 		}
-		r.outputs.Store(k, v)
+		if r.logReplacer.Replace(v) != v { // GitHub skips an output that may carry a secret rather than masking it
+			log.Warnf("ignore output %q because it may contain a secret", k)
+			r.logf("ignore output %q because it may contain a secret", k)
+			continue
+		}
+		if _, ok := r.outputs[k]; !ok {
+			r.outputs[k] = jobOutput{value: v}
+		}
 	}
 }
 
 func (r *Reporter) Close(lastWords string) error {
+	defer deregisterGlobalMasks(r) // deferred so a panic below cannot strand this task's masks
 	r.stateMu.Lock()
 	r.closed = true
 	if r.state.Result == runnerv1.Result_RESULT_UNSPECIFIED {
+		// No result of its own, so say why it stopped.
+		result, words := runnerv1.Result_RESULT_FAILURE, "Early termination"
+		switch {
+		case r.serverResult != runnerv1.Result_RESULT_UNSPECIFIED:
+			result, words = r.serverResult, "Ended by the server"
+		case errors.Is(r.ctx.Err(), context.Canceled):
+			result, words = runnerv1.Result_RESULT_CANCELLED, "Cancelled"
+		}
 		if lastWords == "" {
-			lastWords = "Early termination"
+			lastWords = words
 		}
 		for _, v := range r.state.Steps {
 			if v.Result == runnerv1.Result_RESULT_UNSPECIFIED {
 				v.Result = runnerv1.Result_RESULT_CANCELLED
 			}
 		}
-		r.state.Result = runnerv1.Result_RESULT_FAILURE
-		r.logRows = append(r.logRows, &runnerv1.LogRow{
+		r.state.Result = result
+		r.appendLogRow(&runnerv1.LogRow{
 			Time:    timestamppb.Now(),
 			Content: lastWords,
 		})
 		r.state.StoppedAt = timestamppb.Now()
 	} else if lastWords != "" {
-		r.logRows = append(r.logRows, &runnerv1.LogRow{
+		r.appendLogRow(&runnerv1.LogRow{
 			Time:    timestamppb.Now(),
 			Content: lastWords,
 		})
 	}
 	r.stateMu.Unlock()
+
+	// Wake up the daemon loop so it detects closed promptly.
+	r.notifyLog()
+
 	// Wait for Acknowledge
 	select {
 	case <-r.daemon:
-	case <-time.After(60 * time.Second):
-		close(r.daemon)
-		log.Error("No Response from RunDaemon for 60s, continue best effort")
+	case <-time.After(r.daemonWait):
+		log.Errorf("No Response from RunDaemon for %s, continue best effort", r.daemonWait)
 	}
 
-	// Report the job outcome even when all log upload retry attempts have been exhausted
-	return errors.Join(
-		retry.Do(func() error {
-			return r.ReportLog(true)
-		}, retry.Context(r.ctx)),
-		retry.Do(func() error {
-			return r.ReportState(true)
-		}, retry.Context(r.ctx)),
+	// Gitea's UpdateLog short-circuits on len(Rows)==0 before honoring NoMore,
+	// so a final empty request never runs TransferLogs and dbfs_data leaks.
+	// Inject a sentinel row after the daemon has exited so it can't be flushed
+	// before ReportLog(true).
+	// TODO: Remove after https://github.com/go-gitea/gitea/pull/37631 is in all
+	// supported branches, e.g. v1.28+.
+	r.stateMu.Lock()
+	if len(r.logRows) == 0 {
+		// Not appendLogRow: the sentinel is not job output and has no place in job.log.
+		r.logRows = append(r.logRows, &runnerv1.LogRow{
+			Time:    timestamppb.Now(),
+			Content: "",
+		})
+	}
+	r.stateMu.Unlock()
+
+	// Separate budgets so a slow ReportLog can't starve the ReportState that
+	// carries the cancel acknowledgement.
+	err := errors.Join(
+		r.flushFinal(func() error { return r.ReportLog(true) }),
+		r.flushFinal(func() error { return r.ReportState(true) }),
 	)
+
+	// After the flush so a failed handover is in the file too, under stateMu so a late entry cannot race.
+	r.stateMu.Lock()
+	trailer := fmt.Sprintf("task %d finished: %s", r.state.Id, metrics.ResultToStatusLabel(r.state.Result))
+	if err != nil {
+		trailer += fmt.Sprintf(", the final flush to Gitea failed: %v", err)
+	}
+	r.jobLog.close(r.mask(trailer))
+	r.stateMu.Unlock()
+
+	return err
+}
+
+// flushFinal retries fn on a detached, bounded context so a cancelled r.ctx
+// does not abort the final flush. Each call gets its own fresh budget.
+func (r *Reporter) flushFinal(fn func() error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*r.effectiveCloseTimeout())
+	defer cancel()
+	return retry.New(retry.Context(ctx)).Do(fn)
+}
+
+// effectiveCloseTimeout returns closeTimeout, or 10s when unset, so a zero
+// value can't produce an already-expired context for the final flush.
+func (r *Reporter) effectiveCloseTimeout() time.Duration {
+	if r.closeTimeout <= 0 {
+		return 10 * time.Second
+	}
+	return r.closeTimeout
+}
+
+// rpcCtx returns the context for an outbound RPC plus a cancel func. While
+// r.ctx is alive it's used directly; once cancelled (server RESULT_CANCELLED),
+// RPCs switch to a fresh bounded context so Close()'s final flush still lands.
+func (r *Reporter) rpcCtx() (context.Context, context.CancelFunc) {
+	select {
+	case <-r.ctx.Done():
+		return context.WithTimeout(context.Background(), r.effectiveCloseTimeout())
+	default:
+		return r.ctx, func() {}
+	}
 }
 
 func (r *Reporter) ReportLog(noMore bool) error {
+	_, err := r.reportLog(noMore)
+	return err
+}
+
+// reportLog also reports whether the server took rows it had not taken before.
+func (r *Reporter) reportLog(noMore bool) (bool, error) {
 	r.clientM.Lock()
 	defer r.clientM.Unlock()
 
@@ -311,32 +607,52 @@ func (r *Reporter) ReportLog(noMore bool) error {
 	rows := r.logRows
 	r.stateMu.RUnlock()
 
-	resp, err := r.client.UpdateLog(r.ctx, connect.NewRequest(&runnerv1.UpdateLogRequest{
+	if !noMore && len(rows) == 0 {
+		return false, nil
+	}
+
+	rpcCtx, rpcCancel := r.rpcCtx()
+	defer rpcCancel()
+
+	start := time.Now()
+	resp, err := r.client.UpdateLog(rpcCtx, connect.NewRequest(&runnerv1.UpdateLogRequest{
 		TaskId: r.state.Id,
 		Index:  int64(r.logOffset),
 		Rows:   rows,
 		NoMore: noMore,
 	}))
+	metrics.ReportLogDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
-		return err
+		metrics.ReportLogTotal.WithLabelValues(metrics.LabelResultError).Inc()
+		metrics.ClientErrors.WithLabelValues(metrics.LabelMethodUpdateLog).Inc()
+		return false, err
 	}
+	metrics.ReportLogTotal.WithLabelValues(metrics.LabelResultSuccess).Inc()
 
 	ack := int(resp.Msg.AckIndex)
 	if ack < r.logOffset {
-		return errors.New("submitted logs are lost")
+		return false, errors.New("submitted logs are lost")
 	}
 
 	r.stateMu.Lock()
-	r.logRows = r.logRows[ack-r.logOffset:]
 	submitted := r.logOffset + len(rows)
+	// A server can ack beyond what it was sent; clamp to stay within the buffer.
+	ack = min(ack, submitted)
+	took := ack > r.logOffset
+	r.logRows = r.logRows[ack-r.logOffset:]
 	r.logOffset = ack
+	remaining := len(r.logRows)
 	r.stateMu.Unlock()
-
-	if noMore && ack < submitted {
-		return errors.New("not all logs are submitted")
+	if remaining != r.lastLogBufferRows {
+		metrics.ReportLogBufferRows.Set(float64(remaining))
+		r.lastLogBufferRows = remaining
 	}
 
-	return nil
+	if noMore && ack < submitted {
+		return took, errors.New("not all logs are submitted")
+	}
+
+	return took, nil
 }
 
 // ReportState only reports the job result if reportResult is true
@@ -345,48 +661,79 @@ func (r *Reporter) ReportState(reportResult bool) error {
 	r.clientM.Lock()
 	defer r.clientM.Unlock()
 
-	r.stateMu.RLock()
-	state := proto.Clone(r.state).(*runnerv1.TaskState)
-	r.stateMu.RUnlock()
+	outputs := make(map[string]string)
+	r.outputsMu.Lock()
+	for key, out := range r.outputs {
+		if !out.sent {
+			outputs[key] = out.value
+		}
+	}
+	r.outputsMu.Unlock()
 
-	// Only report result from Close to reliable sent logs
+	// Consume stateChanged atomically with the snapshot; restored on error
+	// below so a concurrent Fire() during UpdateTask isn't silently lost.
+	// Heartbeat at stateReportInterval even when nothing changed, so the server
+	// doesn't time out long-running silent jobs as orphaned (#826).
+	last := r.lastReportedAtNanos.Load()
+	withinHeartbeatInterval := last != 0 && time.Since(time.Unix(0, last)) < r.stateReportInterval
+	r.stateMu.Lock()
+	if !reportResult && !r.stateChanged && len(outputs) == 0 && withinHeartbeatInterval {
+		r.stateMu.Unlock()
+		return nil
+	}
+	state := &runnerv1.TaskState{}
+	proto.Merge(state, r.state)
+	r.stateChanged = false
+	r.stateMu.Unlock()
+
 	if !reportResult {
 		state.Result = runnerv1.Result_RESULT_UNSPECIFIED
 	}
 
-	outputs := make(map[string]string)
-	r.outputs.Range(func(k, v any) bool {
-		if val, ok := v.(string); ok {
-			outputs[k.(string)] = val
-		}
-		return true
-	})
+	rpcCtx, rpcCancel := r.rpcCtx()
+	defer rpcCancel()
 
-	resp, err := r.client.UpdateTask(r.ctx, connect.NewRequest(&runnerv1.UpdateTaskRequest{
+	start := time.Now()
+	resp, err := r.client.UpdateTask(rpcCtx, connect.NewRequest(&runnerv1.UpdateTaskRequest{
 		State:   state,
 		Outputs: outputs,
 	}))
+	metrics.ReportStateDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
+		metrics.ReportStateTotal.WithLabelValues(metrics.LabelResultError).Inc()
+		metrics.ClientErrors.WithLabelValues(metrics.LabelMethodUpdateTask).Inc()
+		r.stateMu.Lock()
+		r.stateChanged = true
+		r.stateMu.Unlock()
 		return err
 	}
-
-	for _, k := range resp.Msg.SentOutputs {
-		r.outputs.Store(k, struct{}{})
-	}
-
-	if resp.Msg.State != nil && resp.Msg.State.Result == runnerv1.Result_RESULT_CANCELLED {
-		r.cancel()
-	}
+	metrics.ReportStateTotal.WithLabelValues(metrics.LabelResultSuccess).Inc()
+	r.lastReportedAtNanos.Store(time.Now().UnixNano())
 
 	var noSent []string
-	r.outputs.Range(func(k, v any) bool {
-		if _, ok := v.(string); ok {
-			noSent = append(noSent, k.(string))
+	r.outputsMu.Lock()
+	for _, k := range resp.Msg.SentOutputs {
+		if _, ok := r.outputs[k]; ok {
+			r.outputs[k] = jobOutput{sent: true}
 		}
-		return true
-	})
+	}
+	for key, out := range r.outputs {
+		if !out.sent {
+			noSent = append(noSent, key)
+		}
+	}
+	r.outputsMu.Unlock()
+
+	// A terminal result means the server is done with this task; keep running and
+	// the job holds a capacity slot until runner.timeout.
+	if state := resp.Msg.State; state != nil && state.Result != runnerv1.Result_RESULT_UNSPECIFIED {
+		r.stateMu.Lock()
+		r.serverResult = state.Result
+		r.stateMu.Unlock()
+		r.cancel()
+	}
 	if len(noSent) > 0 {
-		return fmt.Errorf("there are still outputs that have not been sent: %v", noSent)
+		return fmt.Errorf("%w: %v", errOutputsNotSent, noSent)
 	}
 
 	return nil
@@ -401,6 +748,13 @@ func (r *Reporter) duringSteps() bool {
 		return false
 	}
 	return true
+}
+
+// shouldAppendLogRow reports whether a non-raw_output entry should be written
+// to the job log: only when we are between steps and the entry's level is
+// within the globally configured log level.
+func (r *Reporter) shouldAppendLogRow(entry *log.Entry) bool {
+	return !r.duringSteps() && entry.Level <= log.GetLevel()
 }
 
 var stringToResult = map[string]runnerv1.Result{
@@ -422,70 +776,140 @@ func (r *Reporter) parseResult(result any) (runnerv1.Result, bool) {
 	return ret, ok
 }
 
-var cmdRegex = regexp.MustCompile(`^::([^ :]+)( .*)?::(.*)$`)
+// A property value never contains a raw ':' (GitHub escapes it as %3A), so excluding ':' ends
+// the property list at the first '::' as GitHub does; greedily would swallow a '::' message.
+var cmdRegex = regexp.MustCompile(`^::([^ :]+)( [^:]*)?::(.*)$`)
 
-func (r *Reporter) handleCommand(originalContent, command, value string) *string {
-	if r.stopCommandEndToken != "" && command != r.stopCommandEndToken {
-		return &originalContent
+// handleCommand takes value still escaped, so that the web UI decodes it exactly once. Only
+// the branches that consume the payload here decode it.
+func (r *Reporter) handleCommand(originalContent, command, properties, value string) *string {
+	command = strings.ToLower(command) // GitHub matches command names case-insensitively
+	if r.stopCommandEndToken != "" {
+		if !strings.EqualFold(command, r.stopCommandEndToken) {
+			return &originalContent
+		}
+		// Resumed here rather than from the switch, because the end token is arbitrary and a
+		// token naming a real command would otherwise never resume.
+		r.stopCommandEndToken = ""
+		return nil
 	}
 
 	switch command {
 	case "add-mask":
-		r.addMask(value)
+		r.addMask(runner.UnescapeCommandData(value))
 		return nil
 	case "debug":
 		if r.debugOutputEnabled {
-			return &value
+			return &originalContent // kept as ::debug::, so the web UI labels and decodes it
 		}
 		return nil
 
-	case "notice":
-		// Not implemented yet, so just return the original content.
-		return &originalContent
-	case "warning":
-		// Not implemented yet, so just return the original content.
-		return &originalContent
-	case "error":
-		// Not implemented yet, so just return the original content.
-		return &originalContent
-	case "group":
-		// Returning the original content, because I think the frontend
-		// will use it when rendering the output.
-		return &originalContent
-	case "endgroup":
-		// Ditto
+	case "notice", "warning", "error":
+		// Gitea has no annotation store, so the annotation is rendered into the log with
+		// its source location instead of being dropped: that location is the whole point
+		// of the command for compiler and linter output.
+		annotation := formatAnnotation(command, properties, value)
+		return &annotation
+	case "group", "endgroup":
+		// Passed through: the web UI folds the log on these and decodes the payload itself.
 		return &originalContent
 	case "stop-commands":
-		r.stopCommandEndToken = value
-		return nil
-	case r.stopCommandEndToken:
-		r.stopCommandEndToken = ""
+		r.stopCommandEndToken = runner.UnescapeCommandData(value)
 		return nil
 	}
 	return &originalContent
 }
 
+// formatAnnotation folds the file, line, column and title the command carries into its message,
+// which the web UI otherwise drops along with the rest of the properties:
+//
+//	::error file=main.go,line=12,col=5,title=vet::undefined: x
+//	::error::main.go:12:5: vet: undefined: x
+//
+// The ::-form prefix is deliberate, and value is not escaped here because it arrived escaped
+// and must stay that way.
+func formatAnnotation(level, properties, value string) string {
+	props := parseCommandProperties(properties)
+
+	prefix := props["file"]
+	if prefix != "" {
+		if props["line"] != "" {
+			prefix += ":" + props["line"]
+			if props["col"] != "" {
+				prefix += ":" + props["col"]
+			}
+		}
+		prefix += ": "
+	}
+	if props["title"] != "" {
+		prefix += props["title"] + ": "
+	}
+	return "::" + level + "::" + prefix + value
+}
+
+// parseCommandProperties parses the `file=main.go,line=12` part of a workflow command.
+func parseCommandProperties(properties string) map[string]string {
+	properties = strings.TrimSpace(properties)
+	if properties == "" {
+		return nil
+	}
+
+	props := map[string]string{}
+	for pair := range strings.SplitSeq(properties, ",") {
+		key, value, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		// Only the property-list separators are decoded, the web UI decodes the rest.
+		value = strings.ReplaceAll(strings.ReplaceAll(value, "%3A", ":"), "%2C", ",")
+		// GitHub keys its property dictionary case-insensitively, so `File=` works there too.
+		props[strings.ToLower(strings.TrimSpace(key))] = value
+	}
+	// GitHub's toolkit emits `col`; accept `column` as well, which some tools write instead.
+	if props["col"] == "" {
+		props["col"] = props["column"]
+	}
+	return props
+}
+
+func cutPrefixFold(s, prefix string) (string, bool) {
+	if len(s) < len(prefix) || !strings.EqualFold(s[:len(prefix)], prefix) {
+		return s, false
+	}
+	return s[len(prefix):], true
+}
+
 func (r *Reporter) parseLogRow(entry *log.Entry) *runnerv1.LogRow {
-	content := strings.TrimRightFunc(entry.Message, func(r rune) bool { return r == '\r' || r == '\n' })
+	content := strings.TrimRight(entry.Message, "\r\n")
+
+	// cmdRegex only covers the ::cmd:: form, so the ##[add-mask] one would otherwise reach
+	// the log carrying its own secret. Registered and dropped like its ::add-mask:: twin.
+	if arg, ok := cutPrefixFold(content, "##[add-mask]"); ok {
+		r.addMask(runner.UnescapeLegacyCommand(arg))
+		return nil
+	}
 
 	matches := cmdRegex.FindStringSubmatch(content)
 	if matches != nil {
-		if output := r.handleCommand(content, matches[1], matches[3]); output != nil {
+		if output := r.handleCommand(content, matches[1], matches[2], matches[3]); output != nil {
 			content = *output
 		} else {
 			return nil
 		}
 	}
 
-	content = r.logReplacer.Replace(content)
-
-	return &runnerv1.LogRow{
-		Time:    timestamppb.New(entry.Time),
-		Content: strings.ToValidUTF8(content, "?"),
-	}
+	return &runnerv1.LogRow{Time: timestamppb.New(entry.Time), Content: content}
 }
 
+// mask repairs the content first, so a secret the repair itself spells out is still caught.
+func (r *Reporter) mask(content string) string {
+	return r.logReplacer.Replace(strings.ToValidUTF8(content, "?"))
+}
+
+// addMask deliberately leaves the process-wide masker alone. Its entries come from every live
+// task at once, so a workflow could otherwise mask "error" there and rewrite the runner's own
+// log, and every other task's, for the rest of the job.
 func (r *Reporter) addMask(msg string) {
-	r.oldnew = append(r.oldnew, msg, "***")
-	r.logReplacer = strings.NewReplacer(r.oldnew...)
+	r.oldnew = runner.AppendSecretMasker(r.oldnew, msg)
+	r.logReplacer = runner.NewSecretReplacer(r.oldnew)
 }

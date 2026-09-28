@@ -1,0 +1,28 @@
+name: artifact
+on: push
+jobs:
+  upload:
+    runs-on: e2e-artifact
+    steps:
+      - run: |
+          echo "results=$ACTIONS_RESULTS_URL cache=$ACTIONS_CACHE_URL v2=${ACTIONS_CACHE_SERVICE_V2:-unset}"
+          if [ "$ACTIONS_CACHE_SERVICE_V2" = "true" ]; then
+            test "$ACTIONS_RESULTS_URL/" = "$ACTIONS_CACHE_URL"
+          else
+            test "$ACTIONS_RESULTS_URL/" != "$ACTIONS_CACHE_URL"
+          fi
+          mkdir -p out
+          echo "artifact-payload" > out/data.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: e2e-artifact-${{ github.run_id }}
+          path: out/data.txt
+  download:
+    needs: upload
+    runs-on: e2e-artifact
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: e2e-artifact-${{ github.run_id }}
+          path: got
+      - run: grep -q artifact-payload got/data.txt

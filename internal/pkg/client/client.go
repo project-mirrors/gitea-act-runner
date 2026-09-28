@@ -4,16 +4,17 @@
 package client
 
 import (
-	"code.gitea.io/actions-proto-go/ping/v1/pingv1connect"
-	"code.gitea.io/actions-proto-go/runner/v1/runnerv1connect"
+	"context"
+
+	"connectrpc.com/connect"
+	"gitea.dev/actionslib/runner/v1"
 )
 
 // A Client manages communication with the runner.
-//
-//go:generate mockery --name Client
 type Client interface {
-	pingv1connect.PingServiceClient
-	runnerv1connect.RunnerServiceClient
 	Address() string
-	Insecure() bool
+	Declare(context.Context, *connect.Request[runnerv1.DeclareRequest]) (*connect.Response[runnerv1.DeclareResponse], error)
+	FetchTask(context.Context, *connect.Request[runnerv1.FetchTaskRequest]) (*connect.Response[runnerv1.FetchTaskResponse], error)
+	UpdateLog(context.Context, *connect.Request[runnerv1.UpdateLogRequest]) (*connect.Response[runnerv1.UpdateLogResponse], error)
+	UpdateTask(context.Context, *connect.Request[runnerv1.UpdateTaskRequest]) (*connect.Response[runnerv1.UpdateTaskResponse], error)
 }

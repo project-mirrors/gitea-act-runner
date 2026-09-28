@@ -1,0 +1,7 @@
+name: ephemeral
+on: push
+jobs:
+  hello:
+    runs-on: e2e-ephemeral
+    steps:
+      - run: echo hello

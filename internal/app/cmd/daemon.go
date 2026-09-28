@@ -16,18 +16,22 @@ import (
 	"strings"
 	"time"
 
+	"gitea.com/gitea/runner/internal/app/poll"
+	"gitea.com/gitea/runner/internal/app/run"
+	"gitea.com/gitea/runner/internal/pkg/client"
+	"gitea.com/gitea/runner/internal/pkg/config"
+	"gitea.com/gitea/runner/internal/pkg/envcheck"
+	"gitea.com/gitea/runner/internal/pkg/labels"
+	"gitea.com/gitea/runner/internal/pkg/lock"
+	"gitea.com/gitea/runner/internal/pkg/metrics"
+	"gitea.com/gitea/runner/internal/pkg/report"
+	"gitea.com/gitea/runner/internal/pkg/telemetry"
+	"gitea.com/gitea/runner/internal/pkg/ver"
+
 	"connectrpc.com/connect"
 	"github.com/mattn/go-isatty"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-
-	"gitea.com/gitea/act_runner/internal/app/poll"
-	"gitea.com/gitea/act_runner/internal/app/run"
-	"gitea.com/gitea/act_runner/internal/pkg/client"
-	"gitea.com/gitea/act_runner/internal/pkg/config"
-	"gitea.com/gitea/act_runner/internal/pkg/envcheck"
-	"gitea.com/gitea/act_runner/internal/pkg/labels"
-	"gitea.com/gitea/act_runner/internal/pkg/ver"
 )
 
 func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) func(cmd *cobra.Command, args []string) error {
@@ -48,10 +52,39 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 			return fmt.Errorf("failed to load registration file: %w", err)
 		}
 
-		lbls := reg.Labels
-		if len(cfg.Runner.Labels) > 0 {
-			lbls = cfg.Runner.Labels
+		// Guard against a second runner process sharing this runner file: two
+		// processes with the same identity are indistinguishable to Gitea and
+		// end up cancelling each other's jobs.
+		releaseLock, err := lock.TryLock(cfg.Runner.File)
+		switch {
+		case errors.Is(err, lock.ErrLocked):
+			log.Errorf("another gitea-runner process is already using %q; each runner process needs its own runner file (runner.file)", cfg.Runner.File)
+			return err
+		case err != nil:
+			// Best-effort guard: if the lock file can't be created (e.g. a
+			// read-only runner-file mount), warn and start anyway rather than
+			// refusing to run.
+			log.Warnf("could not lock runner file %q, continuing without the single-process guard: %v", cfg.Runner.File, err)
+		default:
+			// Held until shutdown finishes: the draining runner still owns this
+			// identity on the server, so releasing early would let a restart
+			// reintroduce the duplicate-identity job cancellations.
+			defer func() { _ = releaseLock() }()
 		}
+
+		shutdownTelemetry, err := telemetry.Setup(ctx, reg.UUID, reg.Name)
+		if err != nil {
+			log.WithError(err).Warn("OpenTelemetry export failed to start")
+		}
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := shutdownTelemetry(ctx); err != nil {
+				log.WithError(err).Warn("OpenTelemetry export failed to flush")
+			}
+		}()
+
+		lbls := resolveLabels(daemArgs.Labels, cfg.Runner.Labels, reg.Labels)
 
 		ls := labels.Labels{}
 		for _, l := range lbls {
@@ -64,6 +97,14 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 		}
 		if len(ls) == 0 {
 			log.Warn("no labels configured, runner may not be able to pick up jobs")
+		}
+
+		// Before the first Docker API call: the standard library resolves the proxy
+		// environment once. Ungated because host labels still reach the daemon.
+		if dockerSocketPath, err := getDockerSocketPath(cfg.Container.DockerHost); err == nil {
+			run.BypassProxyForDockerHost(dockerSocketPath)
+		} else {
+			log.Debugf("cannot resolve the docker socket path, so Docker API calls are not exempted from the proxy: %v", err)
 		}
 
 		if ls.RequireDocker() || cfg.Container.RequireDocker {
@@ -103,7 +144,8 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 			}
 			// if dockerSocketPath passes the check, override DOCKER_HOST with dockerSocketPath
 			os.Setenv("DOCKER_HOST", dockerSocketPath)
-			// empty cfg.Container.DockerHost means act_runner need to find an available docker host automatically
+			run.WarnIfDaemonHasNoProxy(ctx)
+			// empty cfg.Container.DockerHost means runner need to find an available docker host automatically
 			// and assign the path to cfg.Container.DockerHost
 			if cfg.Container.DockerHost == "" {
 				cfg.Container.DockerHost = dockerSocketPath
@@ -131,25 +173,43 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 			cfg.Runner.Insecure,
 			reg.UUID,
 			reg.Token,
-			ver.Version(),
+			config.RequestTimeout,
 		)
 
 		runner := run.NewRunner(cfg, reg, cli)
+		defer func() {
+			if err := runner.Close(); err != nil {
+				log.Warnf("runner %s: cache server shutdown: %v", reg.Name, err)
+			}
+		}()
 
 		// declare the labels of the runner before fetching tasks
 		resp, err := runner.Declare(ctx, ls.Names())
-		if err != nil && connect.CodeOf(err) == connect.CodeUnimplemented {
+		switch {
+		case err != nil && connect.CodeOf(err) == connect.CodeUnimplemented:
 			log.Errorf("Your Gitea version is too old to support runner declare, please upgrade to v1.21 or later")
 			return err
-		} else if err != nil {
+		case err != nil:
 			log.WithError(err).Error("fail to invoke Declare")
 			return err
-		} else {
+		default:
 			log.Infof("runner: %s, with version: %s, with labels: %v, declare successfully",
 				resp.Msg.Runner.Name, resp.Msg.Runner.Version, resp.Msg.Runner.Labels)
 		}
+		runner.SetCapabilitiesFromDeclare(resp)
 
 		poller := poll.New(cfg, cli, runner)
+
+		if cfg.Metrics.Enabled {
+			metrics.Init()
+			metrics.RunnerInfo.WithLabelValues(ver.Version(), resp.Msg.Runner.Name).Set(1)
+			metrics.RunnerCapacity.Set(float64(cfg.Runner.Capacity))
+			metrics.RegisterUptimeFunc(time.Now())
+			metrics.RegisterRunningJobsFunc(runner.RunningCount, cfg.Runner.Capacity)
+			metrics.StartServer(ctx, cfg.Metrics.Addr, func() (bool, string) {
+				return poller.Ready(cfg.Metrics.ReadinessGrace)
+			})
+		}
 
 		if daemArgs.Once || reg.Ephemeral {
 			done := make(chan struct{})
@@ -166,7 +226,12 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 		} else {
 			go poller.Poll()
 
-			<-ctx.Done()
+			// Stop either on an external cancellation or when the poller shuts
+			// itself down (e.g. after the runner has been unregistered).
+			select {
+			case <-ctx.Done():
+			case <-poller.Done():
+			}
 		}
 
 		log.Infof("runner: %s shutdown initiated, waiting %s for running jobs to complete before shutting down", resp.Msg.Runner.Name, cfg.Runner.ShutdownTimeout)
@@ -179,12 +244,39 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 			log.Warnf("runner: %s cancelled in progress jobs during shutdown", resp.Msg.Runner.Name)
 		}
 
+		if poller.Unregistered() {
+			return errors.New("runner is no longer registered with the server; please register it again")
+		}
+
 		return nil
 	}
 }
 
 type daemonArgs struct {
-	Once bool
+	Once   bool
+	Labels string
+}
+
+// resolveLabels picks the labels to run with: --labels/GITEA_RUNNER_LABELS > config > .runner.
+// The flag lets a registered runner change its labels without deleting the .runner file.
+func resolveLabels(argLabels string, cfgLabels, regLabels []string) []string {
+	if lbls := splitLabels(argLabels); len(lbls) > 0 {
+		return lbls
+	}
+	if len(cfgLabels) > 0 {
+		return cfgLabels
+	}
+	return regLabels
+}
+
+func splitLabels(s string) []string {
+	var lbls []string
+	for l := range strings.SplitSeq(s, ",") {
+		if l = strings.TrimSpace(l); l != "" {
+			lbls = append(lbls, l)
+		}
+	}
+	return lbls
 }
 
 // initLogging setup the global logrus logger.
@@ -205,7 +297,7 @@ func initLogging(cfg *config.Config) {
 		FullTimestamp:    true,
 		CallerPrettyfier: callPrettyfier,
 	}
-	log.SetFormatter(format)
+	log.SetFormatter(report.MaskingFormatter(format))
 
 	l := cfg.Log.Level
 	if l == "" {

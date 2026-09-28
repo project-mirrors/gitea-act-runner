@@ -17,24 +17,35 @@ jobs:
   goreleaser:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      # Custom publishers (the R2 upload below) run as the very last
+      # step of goreleaser's publish pipeline, after the Gitea release
+      # has already been created. Fail here instead, before anything
+      # is built or published, if the R2 secrets are missing.
+      - name: check R2 configuration
+        run: sh scripts/upload-r2.sh --check-config
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: "go.mod"
+          check-latest: true
       - name: goreleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           distribution: goreleaser-pro
           args: release --nightly
         env:
           GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          S3_REGION: ${{ secrets.AWS_REGION }}
-          S3_BUCKET: ${{ secrets.AWS_BUCKET }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           GORELEASER_FORCE_TOKEN: "gitea"
           GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -43,43 +54,54 @@ jobs:
     strategy:
       matrix:
         variant:
+          # The basic image is built from source and can target any arch the
+          # toolchain supports. The dind variants are limited to the arches the
+          # docker:dind base image publishes.
           - target: basic
             tag_suffix: ""
+            platforms: linux/amd64,linux/arm64,linux/riscv64,linux/s390x
           - target: dind
             tag_suffix: "-dind"
+            platforms: linux/amd64,linux/arm64
           - target: dind-rootless
             tag_suffix: "-dind-rootless"
+            platforms: linux/amd64,linux/arm64
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0 # all history for all branches and tags
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 
       - name: Set up Docker BuildX
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Login to DockerHub
-        uses: docker/login-action@v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Echo the tag
-        run: echo "${{ env.DOCKER_ORG }}/act_runner:nightly${{ matrix.variant.tag_suffix }}"
+        run: echo "${{ env.DOCKER_ORG }}/runner:nightly${{ matrix.variant.tag_suffix }}"
+
+      - name: Get Meta
+        id: meta
+        run: |
+          echo REPO_VERSION=$(git describe --tags --always | sed 's/-/+/' | sed 's/^v//') >> $GITHUB_OUTPUT
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: ./Dockerfile
           target: ${{ matrix.variant.target }}
-          platforms: |
-            linux/amd64
-            linux/arm64
+          platforms: ${{ matrix.variant.platforms }}
           push: true
           tags: |
-            ${{ env.DOCKER_ORG }}/act_runner:nightly${{ matrix.variant.tag_suffix }}
+            ${{ env.DOCKER_ORG }}/runner:nightly${{ matrix.variant.tag_suffix }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.REPO_VERSION }}

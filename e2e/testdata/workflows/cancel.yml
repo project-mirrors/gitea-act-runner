@@ -1,0 +1,9 @@
+name: cancel
+on: push
+jobs:
+  slow:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo e2e-live-log-marker
+          timeout 10s tail -f /dev/null || true

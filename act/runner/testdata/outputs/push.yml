@@ -1,0 +1,28 @@
+name: output
+on: push
+
+jobs:
+  build_output:
+    runs-on: ubuntu-latest
+    steps:
+    - id: set_1
+      run: |
+        echo "::set-output name=var_1::$(echo var1)"
+        echo "::set-output name=var_2::$(echo var2)"
+    - id: set_2
+      run: |
+        echo "::set-output name=var_3::$(echo var3)"
+    outputs:
+      variable_1: ${{ steps.set_1.outputs.var_1 }}
+      variable_2: ${{ steps.set_1.outputs.var_2 }}
+      variable_3: ${{ steps.set_2.outputs.var_3 }}
+
+  build:
+    needs: build_output
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check outputs
+        run: |
+          test "${{ needs.build_output.outputs.variable_1 }}" = var1
+          test "${{ needs.build_output.outputs.variable_2 }}" = var2
+          test "${{ needs.build_output.outputs.variable_3 }}" = var3

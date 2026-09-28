@@ -1,0 +1,6 @@
+name: docker-proxy
+description: Verify mounted Docker access through post steps
+runs:
+  using: node24
+  main: index.js
+  post: index.js

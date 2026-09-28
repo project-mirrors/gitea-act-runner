@@ -1,0 +1,17 @@
+name: steps context
+on: push
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - id: first
+        run: exit 0
+      - id: second
+        continue-on-error: true
+        run: exit 1
+      - run: |
+          test '${{ steps.first.conclusion }}' = success
+          test '${{ steps.second.conclusion }}' = success
+          test '${{ steps.first.outcome }}' = success
+          test '${{ steps.second.outcome }}' = failure

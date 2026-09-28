@@ -11,8 +11,10 @@ linters:
     - dupl
     - errcheck
     - forbidigo
+    - forcetypeassert
     - gocheckcompilerdirectives
     - gocritic
+    - goheader
     - govet
     - ineffassign
     - mirror
@@ -35,12 +37,8 @@ linters:
       rules:
         main:
           deny:
-            - pkg: io/ioutil
-              desc: use os or io instead
             - pkg: golang.org/x/exp
               desc: it's experimental and unreliable
-            - pkg: github.com/pkg/errors
-              desc: use builtin errors package instead
     nolintlint:
       allow-unused: false
       require-explanation: true
@@ -48,8 +46,7 @@ linters:
     gocritic:
       enabled-checks:
         - equalFold
-      disabled-checks:
-        - ifElseChain
+      disabled-checks: []
     revive:
       severity: error
       rules:
@@ -73,10 +70,14 @@ linters:
         - name: unexported-return
         - name: var-declaration
         - name: var-naming
+          arguments:
+            - [] # AllowList - do not remove as args for the rule are positional and won't work without lists first
+            - [] # DenyList
+            - - skip-initialism-name-checks: true
     staticcheck:
       checks:
         - all
-        - -ST1005
+    testifylint: {}
     usetesting:
       os-temp-dir: true
     perfsprint:
@@ -85,27 +86,41 @@ linters:
       enable:
         - nilness
         - unusedwrite
+    goheader:
+      values:
+        regexp:
+          HEADER: 'Copyright \d{4} The Gitea Authors\. All rights reserved\.(\nCopyright [^\n]+)*\nSPDX-License-Identifier: MIT'
+      template: '{{ HEADER }}'
   exclusions:
     generated: lax
     presets:
       - comments
-      - common-false-positives
-      - legacy
       - std-error-handling
     rules:
       - linters:
           - forbidigo
         path: cmd
+      - linters:
+          - forcetypeassert
+        path: _test\.go
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
 formatters:
   enable:
-    - gofmt
+    - gci
     - gofumpt
   settings:
+    gci:
+      custom-order: true
+      sections:
+        - standard
+        - prefix(gitea.com/gitea/runner)
+        - blank
+        - default
     gofumpt:
-      extra-rules: true
+      extra:
+        group-params: true
   exclusions:
     generated: lax
 run:

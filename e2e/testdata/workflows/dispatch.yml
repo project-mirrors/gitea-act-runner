@@ -1,0 +1,11 @@
+name: dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      subject:
+        required: true
+jobs:
+  greet:
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ inputs.subject }}" = dispatch-input-value

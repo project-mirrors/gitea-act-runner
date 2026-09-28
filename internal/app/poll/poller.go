@@ -7,22 +7,40 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
+	"time"
 
-	runnerv1 "code.gitea.io/actions-proto-go/runner/v1"
+	"gitea.com/gitea/runner/internal/pkg/client"
+	"gitea.com/gitea/runner/internal/pkg/config"
+	"gitea.com/gitea/runner/internal/pkg/metrics"
+
 	"connectrpc.com/connect"
+	runnerv1 "gitea.dev/actionslib/runner/v1"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/time/rate"
-
-	"gitea.com/gitea/act_runner/internal/app/run"
-	"gitea.com/gitea/act_runner/internal/pkg/client"
-	"gitea.com/gitea/act_runner/internal/pkg/config"
 )
+
+// TaskRunner abstracts task execution so the poller can be tested
+// without a real runner.
+type TaskRunner interface {
+	Run(ctx context.Context, task *runnerv1.Task) error
+}
+
+// IdleRunner can run maintenance while the poller is idle.
+type IdleRunner interface {
+	OnIdle(ctx context.Context)
+}
+
+// AvailabilityRunner can temporarily pause task fetching for local resource
+// conditions such as low disk space without changing server-side scheduling.
+type AvailabilityRunner interface {
+	CanAcceptTask(ctx context.Context) (bool, string)
+}
 
 type Poller struct {
 	client       client.Client
-	runner       *run.Runner
+	runner       TaskRunner
 	cfg          *config.Config
 	tasksVersion atomic.Int64 // tasksVersion used to store the version of the last task fetched from the Gitea.
 
@@ -33,16 +51,39 @@ type Poller struct {
 	shutdownJobs context.CancelFunc
 
 	done chan struct{}
+
+	// unregistered is set when the server rejects the runner with an
+	// Unauthenticated response, meaning the runner is no longer registered.
+	unregistered       atomic.Bool
+	lastHealthyPoll    atomic.Int64
+	lastPollFailed     atomic.Bool
+	availabilityMu     sync.Mutex
+	availabilityReady  bool
+	availabilityReason string
 }
 
-func New(cfg *config.Config, client client.Client, runner *run.Runner) *Poller {
+// workerState holds the single poller's backoff state. Consecutive empty or
+// error responses drive exponential backoff; a successful task fetch resets
+// both counters so the next poll fires immediately.
+type workerState struct {
+	consecutiveEmpty  int64
+	consecutiveErrors int64
+	// fetchTimedOut suppresses repeats of the fetch timeout warning.
+	fetchTimedOut bool
+	// lastBackoff is the last interval reported to the PollBackoffSeconds gauge;
+	// used to suppress redundant no-op Set calls when the backoff plateaus
+	// (e.g. at FetchIntervalMax).
+	lastBackoff time.Duration
+}
+
+func New(cfg *config.Config, client client.Client, runner TaskRunner) *Poller {
 	pollingCtx, shutdownPolling := context.WithCancel(context.Background())
 
 	jobsCtx, shutdownJobs := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
 
-	return &Poller{
+	p := &Poller{
 		client: client,
 		runner: runner,
 		cfg:    cfg,
@@ -55,28 +96,147 @@ func New(cfg *config.Config, client client.Client, runner *run.Runner) *Poller {
 
 		done: done,
 	}
+	p.lastHealthyPoll.Store(time.Now().UnixNano())
+	p.availabilityReady = true
+	p.availabilityReason = "ok"
+	return p
 }
 
 func (p *Poller) Poll() {
-	limiter := rate.NewLimiter(rate.Every(p.cfg.Runner.FetchInterval), 1)
+	sem := make(chan struct{}, p.cfg.Runner.Capacity)
 	wg := &sync.WaitGroup{}
-	for i := 0; i < p.cfg.Runner.Capacity; i++ {
-		wg.Add(1)
-		go p.poll(wg, limiter)
-	}
-	wg.Wait()
+	s := &workerState{}
 
-	// signal that we shutdown
-	close(p.done)
+	defer func() {
+		wg.Wait()
+		close(p.done)
+	}()
+
+	for {
+		select {
+		case sem <- struct{}{}:
+		case <-p.pollingCtx.Done():
+			return
+		}
+
+		ready, reason := p.localAvailability(p.pollingCtx)
+		p.reportAvailability(ready, reason)
+		if !ready {
+			p.runIdleMaintenance()
+			<-sem
+			if !p.waitBackoff(s) {
+				return
+			}
+			continue
+		}
+
+		task, ok := p.fetchTask(p.pollingCtx, s)
+		if !ok {
+			p.runIdleMaintenance()
+			<-sem
+			if !p.waitBackoff(s) {
+				return
+			}
+			continue
+		}
+
+		s.resetBackoff()
+
+		wg.Add(1)
+		go func(t *runnerv1.Task) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			p.runTaskWithRecover(p.jobsCtx, t)
+		}(task)
+	}
 }
 
 func (p *Poller) PollOnce() {
-	limiter := rate.NewLimiter(rate.Every(p.cfg.Runner.FetchInterval), 1)
+	defer close(p.done)
+	s := &workerState{}
+	for {
+		ready, reason := p.localAvailability(p.pollingCtx)
+		p.reportAvailability(ready, reason)
+		if !ready {
+			p.runIdleMaintenance()
+			if !p.waitBackoff(s) {
+				return
+			}
+			continue
+		}
+		task, ok := p.fetchTask(p.pollingCtx, s)
+		if !ok {
+			p.runIdleMaintenance()
+			if !p.waitBackoff(s) {
+				return
+			}
+			continue
+		}
+		s.resetBackoff()
+		p.runTaskWithRecover(p.jobsCtx, task)
+		return
+	}
+}
 
-	p.pollOnce(limiter)
+// Done returns a channel that is closed once polling has fully stopped,
+// allowing callers to react when the poller shuts itself down (e.g. after the
+// runner has been unregistered) rather than only on an external cancellation.
+func (p *Poller) Done() <-chan struct{} {
+	return p.done
+}
 
-	// signal that we're done
-	close(p.done)
+// Unregistered reports whether polling stopped because the server rejected the
+// runner as unregistered (an Unauthenticated response).
+func (p *Poller) Unregistered() bool {
+	return p.unregistered.Load()
+}
+
+// Ready reports whether the daemon can currently communicate with Gitea and
+// accept work, reusing the availability the poll loop last observed rather than
+// re-running the check. Transient transport failures are tolerated for grace.
+func (p *Poller) Ready(grace time.Duration) (bool, string) {
+	if p.unregistered.Load() {
+		return false, "runner is no longer registered"
+	}
+	p.availabilityMu.Lock()
+	ready, reason := p.availabilityReady, p.availabilityReason
+	p.availabilityMu.Unlock()
+	if !ready {
+		return false, reason
+	}
+	if !p.lastPollFailed.Load() {
+		return true, "ok"
+	}
+	if time.Since(time.Unix(0, p.lastHealthyPoll.Load())) <= grace {
+		return true, "polling errors within grace period"
+	}
+	return false, "unable to poll Gitea"
+}
+
+func (p *Poller) localAvailability(ctx context.Context) (bool, string) {
+	if available, ok := p.runner.(AvailabilityRunner); ok {
+		return available.CanAcceptTask(ctx)
+	}
+	return true, "ok"
+}
+
+func (p *Poller) reportAvailability(ready bool, reason string) {
+	p.availabilityMu.Lock()
+	defer p.availabilityMu.Unlock()
+	switch {
+	case !ready && p.availabilityReady:
+		log.Warnf("runner temporarily unavailable: %s", reason)
+	case ready && !p.availabilityReady:
+		log.Info("runner local health recovered, resuming task polling")
+	}
+	p.availabilityReady = ready
+	p.availabilityReason = reason
+}
+
+func (p *Poller) runIdleMaintenance() {
+	if idleRunner, ok := p.runner.(IdleRunner); ok {
+		idleRunner.OnIdle(p.jobsCtx)
+	}
 }
 
 func (p *Poller) Shutdown(ctx context.Context) error {
@@ -89,13 +249,13 @@ func (p *Poller) Shutdown(ctx context.Context) error {
 
 	// our timeout for shutting down ran out
 	case <-ctx.Done():
-		// when both the timeout fires and the graceful shutdown
-		// completed succsfully, this branch of the select may
-		// fire. Do a non-blocking check here against the graceful
-		// shutdown status to avoid sending an error if we don't need to.
-		_, ok := <-p.done
-		if !ok {
+		// Both the timeout and the graceful shutdown may fire
+		// simultaneously. Do a non-blocking check to avoid forcing
+		// a shutdown when graceful already completed.
+		select {
+		case <-p.done:
 			return nil
+		default:
 		}
 
 		// force a shutdown of all running jobs
@@ -108,36 +268,60 @@ func (p *Poller) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (p *Poller) poll(wg *sync.WaitGroup, limiter *rate.Limiter) {
-	defer wg.Done()
-	for {
-		p.pollOnce(limiter)
+func (s *workerState) resetBackoff() {
+	s.consecutiveEmpty = 0
+	s.consecutiveErrors = 0
+	s.lastBackoff = 0
+}
 
-		select {
-		case <-p.pollingCtx.Done():
-			return
-		default:
-			continue
-		}
+// waitBackoff sleeps for the current backoff interval (with jitter).
+// Returns false if the polling context was cancelled during the wait.
+func (p *Poller) waitBackoff(s *workerState) bool {
+	base := p.calculateInterval(s)
+	if base != s.lastBackoff {
+		metrics.PollBackoffSeconds.Set(base.Seconds())
+		s.lastBackoff = base
+	}
+	timer := time.NewTimer(addJitter(base))
+	select {
+	case <-timer.C:
+		return true
+	case <-p.pollingCtx.Done():
+		timer.Stop()
+		return false
 	}
 }
 
-func (p *Poller) pollOnce(limiter *rate.Limiter) {
-	for {
-		if err := limiter.Wait(p.pollingCtx); err != nil {
-			if p.pollingCtx.Err() != nil {
-				log.WithError(err).Debug("limiter wait failed")
-			}
-			return
-		}
-		task, ok := p.fetchTask(p.pollingCtx)
-		if !ok {
-			continue
-		}
+// calculateInterval returns the polling interval with exponential backoff based on
+// consecutive empty or error responses. The interval starts at FetchInterval and
+// doubles with each consecutive empty/error, capped at FetchIntervalMax.
+func (p *Poller) calculateInterval(s *workerState) time.Duration {
+	base := p.cfg.Runner.FetchInterval
+	maxInterval := p.cfg.Runner.FetchIntervalMax
 
-		p.runTaskWithRecover(p.jobsCtx, task)
-		return
+	n := max(s.consecutiveEmpty, s.consecutiveErrors)
+	if n <= 1 {
+		return base
 	}
+
+	// Capped exponential backoff: base * 2^(n-1), max shift=5 so multiplier <= 32
+	shift := min(n-1, 5)
+	interval := base * time.Duration(int64(1)<<shift)
+	return min(interval, maxInterval)
+}
+
+// addJitter adds +/- 20% random jitter to the given duration to avoid thundering herd.
+func addJitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	// jitter range: [-20%, +20%] of d
+	jitterRange := int64(d) * 2 / 5 // 40% total range
+	if jitterRange <= 0 {
+		return d
+	}
+	jitter := rand.Int64N(jitterRange) - jitterRange/2
+	return d + time.Duration(jitter)
 }
 
 func (p *Poller) runTaskWithRecover(ctx context.Context, task *runnerv1.Task) {
@@ -153,24 +337,64 @@ func (p *Poller) runTaskWithRecover(ctx context.Context, task *runnerv1.Task) {
 	}
 }
 
-func (p *Poller) fetchTask(ctx context.Context) (*runnerv1.Task, bool) {
+func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task, bool) {
 	reqCtx, cancel := context.WithTimeout(ctx, p.cfg.Runner.FetchTimeout)
 	defer cancel()
 
 	// Load the version value that was in the cache when the request was sent.
 	v := p.tasksVersion.Load()
+	start := time.Now()
 	resp, err := p.client.FetchTask(reqCtx, connect.NewRequest(&runnerv1.FetchTaskRequest{
 		TasksVersion: v,
 	}))
+
+	// Our own deadline proves nothing either way: today Gitea answers immediately,
+	// so it means a slow server, and once it holds the request open it is an idle
+	// poll. Back off without claiming the server is healthy, warn once a streak so
+	// neither case floods, and keep it out of the latency histogram.
 	if errors.Is(err, context.DeadlineExceeded) {
-		err = nil
-	}
-	if err != nil {
-		log.WithError(err).Error("failed to fetch task")
+		if !s.fetchTimedOut {
+			s.fetchTimedOut = true
+			log.Warnf("fetching a task timed out after %s, raise runner.fetch_timeout if this persists", p.cfg.Runner.FetchTimeout)
+		}
+		s.consecutiveEmpty++
+		metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultEmpty).Inc()
 		return nil, false
 	}
+	s.fetchTimedOut = false
+	metrics.PollFetchDuration.Observe(time.Since(start).Seconds())
+
+	if err != nil {
+		// An Unauthenticated response means the server no longer knows this
+		// runner (e.g. it was deleted). Retrying forever is pointless, so stop
+		// polling and let the daemon exit with an error instead of spinning.
+		if isUnregistered(err) {
+			log.WithError(err).Error("server rejected the runner as unregistered, stopping poller")
+			p.unregistered.Store(true)
+			p.shutdownPolling()
+			return nil, false
+		}
+		// Not a long poll, so a deadline can mean the server assigned a task
+		// this runner never received.
+		if errors.Is(err, context.DeadlineExceeded) {
+			log.WithError(err).Errorf("fetching a task timed out after %s", p.cfg.Runner.FetchTimeout)
+		} else {
+			log.WithError(err).Error("failed to fetch task")
+		}
+		p.lastPollFailed.Store(true)
+		s.consecutiveErrors++
+		metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultError).Inc()
+		metrics.ClientErrors.WithLabelValues(metrics.LabelMethodFetchTask).Inc()
+		return nil, false
+	}
+	p.markHealthyPoll()
+
+	// Successful response — reset error counter.
+	s.consecutiveErrors = 0
 
 	if resp == nil || resp.Msg == nil {
+		s.consecutiveEmpty++
+		metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultEmpty).Inc()
 		return nil, false
 	}
 
@@ -179,11 +403,25 @@ func (p *Poller) fetchTask(ctx context.Context) (*runnerv1.Task, bool) {
 	}
 
 	if resp.Msg.Task == nil {
+		s.consecutiveEmpty++
+		metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultEmpty).Inc()
 		return nil, false
 	}
 
-	// got a task, set `tasksVersion` to zero to focre query db in next request.
+	// got a task, set `tasksVersion` to zero to force query db in next request.
 	p.tasksVersion.CompareAndSwap(resp.Msg.TasksVersion, 0)
 
+	metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultTask).Inc()
 	return resp.Msg.Task, true
+}
+
+func isUnregistered(err error) bool {
+	var connectErr *connect.Error
+	return errors.As(err, &connectErr) && (connectErr.Code() == connect.CodeUnauthenticated ||
+		connectErr.Code() == connect.CodeUnknown && connect.IsWireError(err) && connectErr.Message() == "rpc error: code = Unauthenticated desc = unregistered runner")
+}
+
+func (p *Poller) markHealthyPoll() {
+	p.lastHealthyPoll.Store(time.Now().UnixNano())
+	p.lastPollFailed.Store(false)
 }

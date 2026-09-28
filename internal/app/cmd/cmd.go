@@ -5,28 +5,25 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"os"
 
-	"github.com/spf13/cobra"
+	"gitea.com/gitea/runner/internal/pkg/ver"
 
-	"gitea.com/gitea/act_runner/internal/pkg/config"
-	"gitea.com/gitea/act_runner/internal/pkg/ver"
+	"github.com/spf13/cobra"
 )
 
 func Execute(ctx context.Context) {
-	// ./act_runner
+	// ./gitea-runner
 	rootCmd := &cobra.Command{
-		Use:          "act_runner [event name to run]\nIf no event name passed, will default to \"on: push\"",
-		Short:        "Run GitHub actions locally by specifying the event name (e.g. `push`) or an action name directly.",
-		Args:         cobra.MaximumNArgs(1),
+		Use:          "gitea-runner",
+		Short:        "Gitea Runner",
 		Version:      ver.Version(),
 		SilenceUsage: true,
 	}
 	configFile := ""
-	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "Config file path")
+	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "Config file path. `config` subcommands fall back to config.yaml in the working directory or next to the executable")
 
-	// ./act_runner register
+	// ./gitea-runner register
 	var regArgs registerArgs
 	registerCmd := &cobra.Command{
 		Use:   "register",
@@ -36,13 +33,14 @@ func Execute(ctx context.Context) {
 	}
 	registerCmd.Flags().BoolVar(&regArgs.NoInteractive, "no-interactive", false, "Disable interactive mode")
 	registerCmd.Flags().StringVar(&regArgs.InstanceAddr, "instance", "", "Gitea instance address")
-	registerCmd.Flags().StringVar(&regArgs.Token, "token", "", "Runner token")
+	registerCmd.Flags().StringVar(&regArgs.Token, "token", "", "Runner token (or set the GITEA_RUNNER_REGISTRATION_TOKEN envvar)")
+	registerCmd.Flags().StringVar(&regArgs.TokenFile, "token-file", "", "Path to a file containing the runner token")
 	registerCmd.Flags().StringVar(&regArgs.RunnerName, "name", "", "Runner name")
 	registerCmd.Flags().StringVar(&regArgs.Labels, "labels", "", "Runner tags, comma separated")
 	registerCmd.Flags().BoolVar(&regArgs.Ephemeral, "ephemeral", false, "Configure the runner to be ephemeral and only ever be able to pick a single job (stricter than --once)")
 	rootCmd.AddCommand(registerCmd)
 
-	// ./act_runner daemon
+	// ./gitea-runner daemon
 	var daemArgs daemonArgs
 	daemonCmd := &cobra.Command{
 		Use:   "daemon",
@@ -51,22 +49,24 @@ func Execute(ctx context.Context) {
 		RunE:  runDaemon(ctx, &daemArgs, &configFile),
 	}
 	daemonCmd.Flags().BoolVar(&daemArgs.Once, "once", false, "Run one job then exit")
+	daemonCmd.Flags().StringVar(&daemArgs.Labels, "labels", os.Getenv("GITEA_RUNNER_LABELS"), "Runner labels, comma separated. Overrides the labels of an already registered runner")
 	rootCmd.AddCommand(daemonCmd)
 
-	// ./act_runner exec
+	// ./gitea-runner exec
 	rootCmd.AddCommand(loadExecCmd(ctx))
 
-	// ./act_runner config
-	rootCmd.AddCommand(&cobra.Command{
-		Use:   "generate-config",
-		Short: "Generate an example config file",
-		Args:  cobra.MaximumNArgs(0),
-		Run: func(_ *cobra.Command, _ []string) {
-			fmt.Printf("%s", config.Example)
-		},
-	})
+	// ./gitea-runner bug-report
+	rootCmd.AddCommand(loadBugReportCmd())
 
-	// ./act_runner cache-server
+	// ./gitea-runner config
+	rootCmd.AddCommand(loadConfigCmd(&configFile))
+
+	// ./gitea-runner generate-config
+	generateConfigCmd := loadGenerateConfigCmd("generate-config")
+	generateConfigCmd.Deprecated = "use `config generate` instead."
+	rootCmd.AddCommand(generateConfigCmd)
+
+	// ./gitea-runner cache-server
 	var cacheArgs cacheServerArgs
 	cacheCmd := &cobra.Command{
 		Use:   "cache-server",
@@ -82,7 +82,7 @@ func Execute(ctx context.Context) {
 	// hide completion command
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 
-	if err := rootCmd.Execute(); err != nil {
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		os.Exit(1)
 	}
 }

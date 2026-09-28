@@ -1,0 +1,26 @@
+name: cache
+on: push
+jobs:
+  save:
+    runs-on: e2e-cache
+    steps:
+      - run: |
+          mkdir -p cached
+          echo "cached-payload" > cached/data.txt
+      - uses: actions/cache@v4
+        with:
+          path: cached
+          key: e2e-cache-${{ github.run_id }}
+  restore:
+    needs: save
+    runs-on: e2e-cache
+    steps:
+      - uses: actions/cache@v4
+        id: restore
+        with:
+          path: cached
+          key: e2e-cache-${{ github.run_id }}
+      - run: |
+          echo "cache-hit=${{ steps.restore.outputs.cache-hit }}"
+          test "${{ steps.restore.outputs.cache-hit }}" = "true"
+          grep -q cached-payload cached/data.txt

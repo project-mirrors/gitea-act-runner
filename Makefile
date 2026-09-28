@@ -1,32 +1,37 @@
 DIST := dist
-EXECUTABLE := act_runner
-GOFMT ?= gofumpt -l
+EXECUTABLE := gitea-runner
 DIST_DIRS := $(DIST)/binaries $(DIST)/release
 GO ?= go
 SHASUM ?= shasum -a 256
 HAS_GO = $(shell hash $(GO) > /dev/null 2>&1 && echo "GO" || echo "NOGO" )
-XGO_PACKAGE ?= src.techknowlogick.com/xgo@latest
-XGO_VERSION := go-1.26.x
-GXZ_PAGAGE ?= github.com/ulikunitz/xz/cmd/gxz@v0.5.10
+XGO_PACKAGE ?= src.techknowlogick.com/xgo@v1.9.0 # renovate: datasource=go
+XGO_VERSION := go-1.27.x
+GXZ_PACKAGE ?= github.com/ulikunitz/xz/cmd/gxz@v0.5.17 # renovate: datasource=go
+
+PODMAN_TEST_IMAGE ?= quay.io/containers/podman:v5.8.4-immutable@sha256:90405e3c6a86f33c5a6f8dbdfa8e02a98143a8ba4337b84bdaec5336d2ef008a # renovate: datasource=docker
+E2E_JOB_IMAGE ?= node:24-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4 # renovate: datasource=docker
+SERVICE_IMAGE ?= nginx:1.31.4-alpine@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913 # renovate: datasource=docker
+E2E_GITEA_IMAGE ?= gitea/gitea:main-nightly
 
 LINUX_ARCHS ?= linux/amd64,linux/arm64
 DARWIN_ARCHS ?= darwin-12/amd64,darwin-12/arm64
 WINDOWS_ARCHS ?= windows/amd64
-GO_FMT_FILES := $(shell find . -type f -name "*.go" ! -name "generated.*")
 GOFILES := $(shell find . -type f -name "*.go" -o -name "go.mod" ! -name "generated.*")
 
-DOCKER_IMAGE ?= gitea/act_runner
+DOCKER_IMAGE ?= gitea/runner
 DOCKER_TAG ?= nightly
 DOCKER_REF := $(DOCKER_IMAGE):$(DOCKER_TAG)
 DOCKER_ROOTLESS_REF := $(DOCKER_IMAGE):$(DOCKER_TAG)-dind-rootless
 
-GOLANGCI_LINT_PACKAGE ?= github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.10.1
-GOVULNCHECK_PACKAGE ?= golang.org/x/vuln/cmd/govulncheck@v1
+GOLANGCI_LINT_PACKAGE ?= github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 # renovate: datasource=go
+GOVULNCHECK_PACKAGE ?= golang.org/x/vuln/cmd/govulncheck@v1.8.0 # renovate: datasource=go
 
-ifneq ($(shell uname), Darwin)
-	EXTLDFLAGS = -extldflags "-static" $(null)
-else
-	EXTLDFLAGS =
+GOTEST_FLAGS ?= -race -timeout 20m -parallel 8
+
+STATIC ?=
+EXTLDFLAGS ?=
+ifneq ($(STATIC),)
+	EXTLDFLAGS = -extldflags "-static"
 endif
 
 ifeq ($(HAS_GO), GO)
@@ -40,12 +45,15 @@ endif
 ifeq ($(OS), Windows_NT)
 	GOFLAGS := -v -buildmode=exe
 	EXECUTABLE ?= $(EXECUTABLE).exe
+	GO_ENV_WINDOWS := set GOOS=windows&&
 else ifeq ($(OS), Windows)
 	GOFLAGS := -v -buildmode=exe
 	EXECUTABLE ?= $(EXECUTABLE).exe
+	GO_ENV_WINDOWS := set GOOS=windows&&
 else
 	GOFLAGS := -v
 	EXECUTABLE ?= $(EXECUTABLE)
+	GO_ENV_WINDOWS := GOOS=windows
 endif
 
 STORED_VERSION_FILE := VERSION
@@ -68,19 +76,19 @@ else
 	endif
 endif
 
-GO_PACKAGES_TO_VET ?= $(filter-out gitea.com/gitea/act_runner/internal/pkg/client/mocks,$(shell $(GO) list ./...))
-
-
 TAGS ?=
-LDFLAGS ?= -X "gitea.com/gitea/act_runner/internal/pkg/ver.version=v$(RELASE_VERSION)"
+LDFLAGS ?= -X "gitea.com/gitea/runner/internal/pkg/ver.version=v$(RELASE_VERSION)"
 
+.PHONY: all
 all: build
 
-fmt:
-	@hash gofumpt > /dev/null 2>&1; if [ $$? -ne 0 ]; then \
-		$(GO) install mvdan.cc/gofumpt@latest; \
-	fi
-	$(GOFMT) -w $(GO_FMT_FILES)
+.PHONY: help
+help: Makefile ## print Makefile help information.
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m[TARGETS] default target: build\033[0m\n\n\033[35mTargets:\033[0m\n"} /^[0-9A-Za-z._-]+:.*?##/ { printf "  \033[36m%-45s\033[0m %s\n", $$1, $$2 }' Makefile
+
+.PHONY: fmt
+fmt: ## format the Go code
+	$(GO) run $(GOLANGCI_LINT_PACKAGE) fmt
 
 .PHONY: go-check
 go-check:
@@ -88,100 +96,119 @@ go-check:
 	$(eval MIN_GO_VERSION := $(shell printf "%03d%03d" $(shell echo '$(MIN_GO_VERSION_STR)' | tr '.' ' ')))
 	$(eval GO_VERSION := $(shell printf "%03d%03d" $(shell $(GO) version | grep -Eo '[0-9]+\.[0-9]+' | tr '.' ' ');))
 	@if [ "$(GO_VERSION)" -lt "$(MIN_GO_VERSION)" ]; then \
-		echo "Act Runner requires Go $(MIN_GO_VERSION_STR) or greater to build. You can get it at https://go.dev/dl/"; \
+		echo "Gitea Runner requires Go $(MIN_GO_VERSION_STR) or greater to build. You can get it at https://go.dev/dl/"; \
 		exit 1; \
 	fi
 
 .PHONY: fmt-check
-fmt-check:
-	@hash gofumpt > /dev/null 2>&1; if [ $$? -ne 0 ]; then \
-		$(GO) install mvdan.cc/gofumpt@latest; \
-	fi
-	@diff=$$($(GOFMT) -d $(GO_FMT_FILES)); \
-	if [ -n "$$diff" ]; then \
-		echo "Please run 'make fmt' and commit the result:"; \
-		echo "$${diff}"; \
-		exit 1; \
-	fi;
+fmt-check: ## check the Go code formatting
+	$(GO) run $(GOLANGCI_LINT_PACKAGE) fmt --diff-colored
 
 .PHONY: deps-tools
 deps-tools: ## install tool dependencies
-	$(GO) install $(GOVULNCHECK_PACKAGE)
+	$(GO) install $(GOLANGCI_LINT_PACKAGE) & \
+	$(GO) install $(GXZ_PACKAGE) & \
+	$(GO) install $(XGO_PACKAGE) & \
+	$(GO) install $(GOVULNCHECK_PACKAGE) & \
+	wait
+
+.PHONY: checks
+checks: tidy-check fmt-check security-check ## run the non-lint source checks
 
 .PHONY: lint
-lint: lint-go vet
+lint: lint-go lint-go-windows ## lint everything
 
 .PHONY: lint-go
 lint-go: ## lint go files
 	$(GO) run $(GOLANGCI_LINT_PACKAGE) run
 
+.PHONY: lint-go-windows
+lint-go-windows: ## lint Windows go files
+	$(GO) install $(GOLANGCI_LINT_PACKAGE)
+	$(GO_ENV_WINDOWS) golangci-lint run
+
 .PHONY: lint-go-fix
 lint-go-fix: ## lint go files and fix issues
 	$(GO) run $(GOLANGCI_LINT_PACKAGE) run --fix
 
+.PHONY: lint-pr-title
+lint-pr-title: ## lint PR title against Conventional Commits (set PR_TITLE=...)
+	@node ./tools/lint-pr-title.ts
+
 .PHONY: security-check
-security-check: deps-tools
-	GOEXPERIMENT= $(GO) run $(GOVULNCHECK_PACKAGE) -show color ./... || true
+security-check:
+	$(GO) run $(GOVULNCHECK_PACKAGE) -show color ./... || true
 
 .PHONY: tidy
-tidy:
+tidy: ## run go mod tidy
+	$(eval GO_TOOLCHAIN := $(shell grep -Eo '^toolchain\s+go[0-9.]+' go.mod | cut -d' ' -f2))
 	$(GO) mod tidy
-
-.PHONY: tidy-check
-tidy-check: tidy
-	@diff=$$(git diff -- go.mod go.sum); \
-	if [ -n "$$diff" ]; then \
-		echo "Please run 'make tidy' and commit the result:"; \
-		echo "$${diff}"; \
-		exit 1; \
+	@# workaround https://github.com/golang/go/issues/75331: restore toolchain if tidy dropped it
+	@if [ -n "$(GO_TOOLCHAIN)" ] && ! grep -qE '^toolchain\s' go.mod; then \
+		$(GO) mod edit -toolchain=$(GO_TOOLCHAIN); \
 	fi
 
-test: fmt-check security-check
-	@$(GO) test -race -v -cover -coverprofile coverage.txt ./... && echo "\n==>\033[32m Ok\033[m\n" || exit 1
+.PHONY: tidy-check
+tidy-check: ## check that go.mod and go.sum are tidy
+	$(GO) mod tidy -diff
 
-.PHONY: vet
-vet:
-	@echo "Running go vet..."
-	@$(GO) build code.gitea.io/gitea-vet
-	@$(GO) vet -vettool=gitea-vet $(GO_PACKAGES_TO_VET)
+.PHONY: test
+test: ## test everything (integration tests self-skip without docker/network)
+	@$(GO) test $(GOTEST_FLAGS) -cover -coverprofile coverage.txt ./... && echo "\n==>\033[32m Ok\033[m\n" || exit 1
 
-install: $(GOFILES)
-	$(GO) install -v -tags '$(TAGS)' -ldflags '$(EXTLDFLAGS)-s -w $(LDFLAGS)'
+.PHONY: coverage-report
+coverage-report: ## turn coverage.txt from `make test` into .tmp/coverage.md
+	@mkdir -p .tmp
+	@node ./tools/coverage-report.ts -i coverage.txt -o .tmp/coverage.md
+	@echo "Wrote .tmp/coverage.md"
 
-build: go-check $(EXECUTABLE)
+.PHONY: test-dind
+test-dind: ## run the daemon-facing tests against the built dind image or podman (TARGET=dind|dind-rootless|podman)
+	@PODMAN_TEST_IMAGE=$(PODMAN_TEST_IMAGE) ./scripts/test-dind.sh $(TARGET)
+
+E2E_CONCURRENCY ?= 8
+
+.PHONY: test-e2e
+test-e2e: ## run Gitea compatibility tests against E2E_GITEA_IMAGE
+	@E2E_CONCURRENCY=$(E2E_CONCURRENCY) E2E_GITEA_IMAGE=$(E2E_GITEA_IMAGE) E2E_JOB_IMAGE=$(E2E_JOB_IMAGE) GO=$(GO) SERVICE_IMAGE=$(SERVICE_IMAGE) ./tools/test-e2e.sh
+
+.PHONY: install
+install: $(GOFILES) ## install the runner binary via `go install`
+	$(GO) install -v -tags '$(TAGS)' -ldflags '-s -w $(EXTLDFLAGS) $(LDFLAGS)'
+
+.PHONY: build
+build: go-check $(EXECUTABLE) ## build the runner binary
 
 $(EXECUTABLE): $(GOFILES)
-	$(GO) build -v -tags '$(TAGS)' -ldflags '$(EXTLDFLAGS)-s -w $(LDFLAGS)' -o $@
+	$(GO) build -v -tags '$(TAGS)' -ldflags '-s -w $(EXTLDFLAGS) $(LDFLAGS)' -o $@
 
 .PHONY: deps-backend
-deps-backend:
+deps-backend: ## install backend dependencies
 	$(GO) mod download
-	$(GO) install $(GXZ_PAGAGE)
-	$(GO) install $(XGO_PACKAGE)
 
 .PHONY: release
-release: release-windows release-linux release-darwin release-copy release-compress release-check
+release: release-windows release-linux release-darwin release-copy release-compress release-check ## build release artifacts
 
 $(DIST_DIRS):
 	mkdir -p $(DIST_DIRS)
 
 .PHONY: release-windows
 release-windows: | $(DIST_DIRS)
-	CGO_CFLAGS="$(CGO_CFLAGS)" $(GO) run $(XGO_PACKAGE) -go $(XGO_VERSION) -buildmode exe -dest $(DIST)/binaries -tags 'netgo osusergo $(TAGS)' -ldflags '-linkmode external -extldflags "-static" $(LDFLAGS)' -targets '$(WINDOWS_ARCHS)' -out $(EXECUTABLE)-$(VERSION) .
+	CGO_CFLAGS="$(CGO_CFLAGS)" $(GO) run $(XGO_PACKAGE) -go $(XGO_VERSION) -buildmode exe -dest $(DIST)/binaries -tags 'netgo osusergo $(TAGS)' -ldflags '-s -w -linkmode external -extldflags "-static" $(LDFLAGS)' -targets '$(WINDOWS_ARCHS)' -out $(EXECUTABLE)-$(VERSION) .
 ifeq ($(CI),true)
 	cp -r /build/* $(DIST)/binaries/
 endif
 
 .PHONY: release-linux
 release-linux: | $(DIST_DIRS)
-	CGO_CFLAGS="$(CGO_CFLAGS)" $(GO) run $(XGO_PACKAGE) -go $(XGO_VERSION) -dest $(DIST)/binaries -tags 'netgo osusergo $(TAGS)' -ldflags '-linkmode external -extldflags "-static" $(LDFLAGS)' -targets '$(LINUX_ARCHS)' -out $(EXECUTABLE)-$(VERSION) .
+	CGO_CFLAGS="$(CGO_CFLAGS)" $(GO) run $(XGO_PACKAGE) -go $(XGO_VERSION) -dest $(DIST)/binaries -tags 'netgo osusergo $(TAGS)' -ldflags '-s -w -linkmode external -extldflags "-static" $(LDFLAGS)' -targets '$(LINUX_ARCHS)' -out $(EXECUTABLE)-$(VERSION) .
 ifeq ($(CI),true)
 	cp -r /build/* $(DIST)/binaries/
 endif
 
 .PHONY: release-darwin
 release-darwin: | $(DIST_DIRS)
-	CGO_CFLAGS="$(CGO_CFLAGS)" $(GO) run $(XGO_PACKAGE) -go $(XGO_VERSION) -dest $(DIST)/binaries -tags 'netgo osusergo $(TAGS)' -ldflags '$(LDFLAGS)' -targets '$(DARWIN_ARCHS)' -out $(EXECUTABLE)-$(VERSION) .
+	CGO_CFLAGS="$(CGO_CFLAGS)" $(GO) run $(XGO_PACKAGE) -go $(XGO_VERSION) -dest $(DIST)/binaries -tags 'netgo osusergo $(TAGS)' -ldflags '-s -w $(LDFLAGS)' -targets '$(DARWIN_ARCHS)' -out $(EXECUTABLE)-$(VERSION) .
 ifeq ($(CI),true)
 	cp -r /build/* $(DIST)/binaries/
 endif
@@ -196,18 +223,20 @@ release-check: | $(DIST_DIRS)
 
 .PHONY: release-compress
 release-compress: | $(DIST_DIRS)
-	cd $(DIST)/release/; for file in `find . -type f -name "*"`; do echo "compressing $${file}" && $(GO) run $(GXZ_PAGAGE) -k -9 $${file}; done;
+	cd $(DIST)/release/; for file in `find . -type f -name "*"`; do echo "compressing $${file}" && $(GO) run $(GXZ_PACKAGE) -k -9 $${file}; done;
 
 .PHONY: docker
-docker:
+docker: ## build the docker image
 	if ! docker buildx version >/dev/null 2>&1; then \
 		ARG_DISABLE_CONTENT_TRUST=--disable-content-trust=false; \
 	fi; \
 	docker build $${ARG_DISABLE_CONTENT_TRUST} -t $(DOCKER_REF) .
 
-clean:
+.PHONY: clean
+clean: ## delete binary and coverage files
 	$(GO) clean -x -i ./...
-	rm -rf coverage.txt $(EXECUTABLE) $(DIST)
+	rm -rf coverage.txt .tmp $(EXECUTABLE) $(DIST)
 
-version:
+.PHONY: version
+version: ## print the version
 	@echo $(VERSION)

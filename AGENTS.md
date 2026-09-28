@@ -1,0 +1,19 @@
+- Never assume, verify before claiming
+- Use `make help` to find available development targets
+- PR descriptions: minimal, only what and why, no task lists or file listings
+- Reference issues and PRs by full URL, not by number
+- Use Conventional Commits for commit messages and PR titles, plus the `enhance` type for user-facing enhancements
+- Add an `Assisted-by: AGENT_NAME:MODEL_VERSION` trailer to commit messages, never `Co-Authored-By` or `Signed-off-by`
+- Attribute agent authorship on one trailing line in issue and pull request comments, never as a PR description section
+- Never force-push, amend, or squash unless asked. Use new commits and normal push for pull request updates
+- Comments: write almost none, short and preferably same-line, explaining why for a future reader. Never narrate code, the change or the prompt. Preserve existing ones that still apply
+- Add the current year into the copyright header of new `.go` files
+- Read `DEVELOPMENT.md` for internals and conventions
+- Ensure no trailing whitespace in edited files
+- Run `make fmt` after `.go` edits, `make tidy` after `go.mod` edits, and `make checks` for the non-lint source checks
+- Lint what changed with `make lint-go`, and `make lint-go-windows` for Windows and platform-split files
+- Fix the cause rather than disabling a linter or weakening a test. Where unavoidable, use the narrowest scope with a trailing comment giving the reason
+- Run single go tests with `go test -run '^TestName$' ./modulepath/`. `make test` self-skips the integration tests without docker or network, `make test-dind` runs the daemon-facing tests against the built dind image
+- Write the fewest, fastest tests covering the behavior, extending an existing one where possible. Prefer unit tests where logic is testable in isolation
+- Wait on a deterministic condition rather than `sleep`
+- Update the files under `docs/` when behavior documented there changes

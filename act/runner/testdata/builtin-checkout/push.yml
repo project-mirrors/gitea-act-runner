@@ -1,0 +1,10 @@
+name: builtin-checkout
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: builtin:checkout
+        with:
+          path: ${{ 'sub' }}
+      - run: test -f sub/builtin-checkout/push.yml

@@ -9,25 +9,13 @@ import (
 	"sort"
 	"strings"
 
-	runnerv1 "code.gitea.io/actions-proto-go/runner/v1"
-	"github.com/actions-oss/act-cli/pkg/model"
-	"github.com/actions-oss/act-cli/pkg/schema"
-	"gopkg.in/yaml.v3"
+	"gitea.dev/actionslib/pkg/model"
+	runnerv1 "gitea.dev/actionslib/runner/v1"
+	"go.yaml.in/yaml/v4"
 )
 
 func generateWorkflow(task *runnerv1.Task) (*model.Workflow, string, error) {
-	workflow, err := model.ReadWorkflow(bytes.NewReader(task.WorkflowPayload), model.WorkflowConfig{
-		// Schema: schema.GetGiteaWorkflowSchema(),
-		// Allow everything
-		Schema: &schema.Schema{
-			Definitions: map[string]schema.Definition{
-				"workflow-root": {
-					Context: []string{"github", "gitea", "env", "job", "matrix", "strategy", "inputs", "vars", "runner", "steps", "needs"},
-					OneOf:   &[]string{"any"},
-				},
-			},
-		},
-	})
+	workflow, err := model.ReadWorkflowPayload(bytes.NewReader(task.WorkflowPayload))
 	if err != nil {
 		return nil, "", err
 	}
@@ -60,9 +48,7 @@ func generateWorkflow(task *runnerv1.Task) (*model.Workflow, string, error) {
 		})
 	}
 
-	// TODO GITEA
 	workflow.Jobs[jobID].RawNeeds = rawNeeds
-	workflow.Jobs[jobID].RawRunsOn.Encode("dummy")
 
 	return workflow, jobID, nil
 }

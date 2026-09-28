@@ -1,0 +1,24 @@
+name: issues-597-598
+on: push
+
+
+jobs:
+  my_first_job:
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: My first false step
+        if: "endsWith('Should not', 'o1')"
+        run: exit 1
+      - name: My first true step
+        if: ${{endsWith('Hello world', 'ld')}}
+        run: echo "Renst the Octocat"
+      - name: My second true step
+        if: "!endsWith('Hello world', 'od')"
+        run: echo "Renst the Octocat"
+      - name: My second false step
+        if: "endsWith('Should not evaluate', 'o2')"
+        run: exit 1
+      - name: My third false step
+        if: ${{endsWith('Should not evaluate', 'o3')}}
+        run: exit 1

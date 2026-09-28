@@ -14,17 +14,19 @@ import (
 	"strings"
 	"time"
 
-	pingv1 "code.gitea.io/actions-proto-go/ping/v1"
-	runnerv1 "code.gitea.io/actions-proto-go/runner/v1"
+	"gitea.com/gitea/runner/internal/app/run"
+	"gitea.com/gitea/runner/internal/pkg/client"
+	"gitea.com/gitea/runner/internal/pkg/config"
+	"gitea.com/gitea/runner/internal/pkg/labels"
+	"gitea.com/gitea/runner/internal/pkg/lock"
+	"gitea.com/gitea/runner/internal/pkg/ver"
+
 	"connectrpc.com/connect"
+	pingv1 "gitea.dev/actionslib/ping/v1"
+	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"github.com/mattn/go-isatty"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-
-	"gitea.com/gitea/act_runner/internal/pkg/client"
-	"gitea.com/gitea/act_runner/internal/pkg/config"
-	"gitea.com/gitea/act_runner/internal/pkg/labels"
-	"gitea.com/gitea/act_runner/internal/pkg/ver"
 )
 
 // runRegister registers a runner to the server
@@ -74,6 +76,7 @@ type registerArgs struct {
 	NoInteractive bool
 	InstanceAddr  string
 	Token         string
+	TokenFile     string
 	RunnerName    string
 	Labels        string
 	Ephemeral     bool
@@ -91,6 +94,8 @@ const (
 	StageWaitingForRegistration
 	StageExit
 )
+
+const registerTokenEnvVar = "GITEA_RUNNER_REGISTRATION_TOKEN"
 
 var defaultLabels = []string{
 	"ubuntu-latest:docker://docker.gitea.com/runner-images:ubuntu-latest",
@@ -206,11 +211,28 @@ func (r *registerInputs) assignToNext(stage registerStage, value string, cfg *co
 	return StageUnknown
 }
 
-func initInputs(regArgs *registerArgs) *registerInputs {
+func initInputs(regArgs *registerArgs) (*registerInputs, error) {
+	var token string
+	switch {
+	case regArgs.TokenFile != "":
+		tokenBytes, err := os.ReadFile(regArgs.TokenFile)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read the token file: %s, %v", regArgs.TokenFile, err)
+		}
+		token = string(tokenBytes)
+	case regArgs.Token != "":
+		token = regArgs.Token
+	default:
+		envToken, ok := os.LookupEnv(registerTokenEnvVar)
+		if !ok || envToken == "" {
+			return nil, fmt.Errorf("missing token, token-file argument, or %s environment variable", registerTokenEnvVar)
+		}
+		token = envToken
+	}
 	inputs := &registerInputs{
-		InstanceAddr: regArgs.InstanceAddr,
-		Token:        regArgs.Token,
-		RunnerName:   regArgs.RunnerName,
+		InstanceAddr: strings.TrimSpace(regArgs.InstanceAddr),
+		Token:        strings.TrimSpace(token),
+		RunnerName:   strings.TrimSpace(regArgs.RunnerName),
 		Ephemeral:    regArgs.Ephemeral,
 	}
 	regArgs.Labels = strings.TrimSpace(regArgs.Labels)
@@ -218,7 +240,7 @@ func initInputs(regArgs *registerArgs) *registerInputs {
 	if regArgs.Labels != "" {
 		inputs.Labels = strings.Split(regArgs.Labels, ",")
 	}
-	return inputs
+	return inputs, nil
 }
 
 func registerInteractive(ctx context.Context, configFile string, regArgs *registerArgs) error {
@@ -234,7 +256,10 @@ func registerInteractive(ctx context.Context, configFile string, regArgs *regist
 	if f, err := os.Stat(cfg.Runner.File); err == nil && !f.IsDir() {
 		stage = StageOverwriteLocalConfig
 	}
-	inputs := initInputs(regArgs)
+	inputs, err := initInputs(regArgs)
+	if err != nil {
+		return err
+	}
 
 	for {
 		cmdString := inputs.stageValue(stage)
@@ -251,7 +276,7 @@ func registerInteractive(ctx context.Context, configFile string, regArgs *regist
 		if stage == StageWaitingForRegistration {
 			log.Infof("Registering runner, name=%s, instance=%s, labels=%v.", inputs.RunnerName, inputs.InstanceAddr, inputs.Labels)
 			if err := doRegister(ctx, cfg, inputs); err != nil {
-				return fmt.Errorf("Failed to register runner: %w", err)
+				return fmt.Errorf("failed to register runner: %w", err)
 			}
 			log.Infof("Runner registered successfully.")
 			return nil
@@ -291,7 +316,10 @@ func registerNoInteractive(ctx context.Context, configFile string, regArgs *regi
 	if err != nil {
 		return err
 	}
-	inputs := initInputs(regArgs)
+	inputs, err := initInputs(regArgs)
+	if err != nil {
+		return err
+	}
 	// specify labels in config file.
 	if len(cfg.Runner.Labels) > 0 {
 		if regArgs.Labels != "" {
@@ -312,20 +340,34 @@ func registerNoInteractive(ctx context.Context, configFile string, regArgs *regi
 		return err
 	}
 	if err := doRegister(ctx, cfg, inputs); err != nil {
-		return fmt.Errorf("Failed to register runner: %w", err)
+		return fmt.Errorf("failed to register runner: %w", err)
 	}
 	log.Infof("Runner registered successfully.")
 	return nil
 }
 
 func doRegister(ctx context.Context, cfg *config.Config, inputs *registerInputs) error {
+	// Refuse to rewrite the runner file while another process is using it.
+	releaseLock, err := lock.TryLock(cfg.Runner.File)
+	switch {
+	case errors.Is(err, lock.ErrLocked):
+		return fmt.Errorf("another process is already using %q; stop it before re-registering", cfg.Runner.File)
+	case err != nil:
+		// Best-effort guard: if the lock file can't be created, warn and
+		// register anyway; writing the runner file will surface any real
+		// permission problem with a clearer error.
+		log.Warnf("could not lock runner file %q, continuing without the single-process guard: %v", cfg.Runner.File, err)
+	default:
+		defer func() { _ = releaseLock() }()
+	}
+
 	// initial http client
 	cli := client.New(
 		inputs.InstanceAddr,
 		cfg.Runner.Insecure,
 		"",
 		"",
-		ver.Version(),
+		config.RequestTimeout,
 	)
 
 	for {
@@ -361,17 +403,20 @@ func doRegister(ctx context.Context, cfg *config.Config, inputs *registerInputs)
 
 	ls := make([]string, len(reg.Labels))
 	for i, v := range reg.Labels {
-		l, _ := labels.Parse(v)
+		l, err := labels.Parse(v)
+		if err != nil {
+			return fmt.Errorf("failed to parse label %q: %w", v, err)
+		}
 		ls[i] = l.Name
 	}
 	// register new runner.
 	resp, err := cli.Register(ctx, connect.NewRequest(&runnerv1.RegisterRequest{
-		Name:        reg.Name,
-		Token:       reg.Token,
-		Version:     ver.Version(),
-		AgentLabels: ls, // Could be removed after Gitea 1.20
-		Labels:      ls,
-		Ephemeral:   reg.Ephemeral,
+		Name:         reg.Name,
+		Token:        reg.Token,
+		Version:      ver.Version(),
+		Labels:       ls,
+		Ephemeral:    reg.Ephemeral,
+		Capabilities: run.RunnerCapabilities(),
 	}))
 	if err != nil {
 		log.WithError(err).Error("poller: cannot register new runner")

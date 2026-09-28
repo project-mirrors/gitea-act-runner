@@ -1,0 +1,20 @@
+name: uses-step-if-inputs-not-leaked
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      no-cache:
+        type: boolean
+        default: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: uses-step-with-colliding-input-name
+        uses: docker://node:24-bookworm-slim
+        if: inputs.no-cache
+        with:
+          no-cache: ${{ inputs.no-cache || false }}
+          entrypoint: /bin/sh
+          args: -c 'exit 1'

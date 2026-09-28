@@ -1,5 +1,7 @@
 version: 2
 
+project_name: gitea-runner
+
 before:
   hooks:
     - go mod tidy
@@ -63,7 +65,7 @@ builds:
   flags:
   - -trimpath
   ldflags:
-  - -s -w -X gitea.com/gitea/act_runner/internal/pkg/ver.version={{ .Summary }}
+  - -s -w -X gitea.com/gitea/runner/internal/pkg/ver.version={{ .Summary }}
   binary: >-
     {{ .ProjectName }}-
     {{- .Version }}-
@@ -81,18 +83,37 @@ builds:
       - cmd: sh .goreleaser.checksum.sh {{ .Path }}
       - cmd: sh .goreleaser.checksum.sh {{ .Path }}.xz
 
-blobs:
-  -
-    provider: s3
-    bucket: "{{ .Env.S3_BUCKET }}"
-    region: "{{ .Env.S3_REGION }}"
-    directory: "act_runner/{{.Version}}"
+# Uploads every release artifact to Cloudflare R2. The `blobs:` pipe
+# isn't usable here since it authenticates from the global AWS_* env
+# with no per-entry credentials; `publishers:` supports per-entry
+# `env:` instead, so it's used to invoke scripts/upload-r2.sh once per
+# artifact. Custom publishers inherit almost nothing from the
+# environment, hence the explicit R2_* forwarding below.
+#
+# This publisher fires 109 times for 73 distinct keys because
+# goreleaser's release pipe already registers `release.extra_files`
+# as UploadableFile artifacts, and `internal/exec`'s filterArtifacts
+# appends this block's own extra_files with no de-duplication. It
+# can't be globbed away, since gobwas/glob (via goreleaser/fileglob)
+# has no substring-exclusion matcher. It's harmless: PUT is
+# idempotent, and the `./**.xz` glob below is kept deliberately so
+# this publisher declares its own complete file set rather than
+# implicitly depending on the `release:` block's globs.
+publishers:
+  - name: cloudflare-r2
+    checksum: true
     extra_files:
       - glob: ./**.xz
       - glob: ./**.sha256
+    cmd: sh scripts/upload-r2.sh {{ abs .ArtifactPath }} gitea-runner/{{ .Version }}/{{ .ArtifactName }}
+    env:
+      - R2_ENDPOINT={{ index .Env "R2_ENDPOINT" }}
+      - R2_BUCKET={{ index .Env "R2_BUCKET" }}
+      - R2_ACCESS_KEY_ID={{ index .Env "R2_ACCESS_KEY_ID" }}
+      - R2_SECRET_ACCESS_KEY={{ index .Env "R2_SECRET_ACCESS_KEY" }}
 
 archives:
-  - format: binary
+  - formats: [binary]
     name_template: "{{ .Binary }}"
     allow_different_binary_count: true
 

@@ -1,8 +1,10 @@
-/act_runner
+/gitea-runner
 .env
+!/act/runner/testdata/secrets/.env
 .runner
+.runner.lock
 coverage.txt
-/gitea-vet
+.tmp/
 /config.yaml
 
 # Jetbrains
@@ -11,4 +13,5 @@ coverage.txt
 .vscode
 __debug_bin
 # gorelease binary folder
-dist
+/dist
+.DS_Store

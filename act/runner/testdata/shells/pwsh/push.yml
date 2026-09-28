@@ -1,0 +1,15 @@
+on: push
+env:
+  MY_SHELL: pwsh
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: ${{ env.MY_SHELL }}
+    steps:
+      - shell: ${{ env.MY_SHELL }}
+        run: |
+          $PSVersionTable
+      - run: |
+          $PSVersionTable

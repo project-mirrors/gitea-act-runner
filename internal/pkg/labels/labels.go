@@ -4,26 +4,36 @@
 package labels
 
 import (
-	"fmt"
+	"errors"
 	"strings"
 )
 
 const (
 	SchemeHost   = "host"
 	SchemeDocker = "docker"
+
+	// SelfHostedPlatform is the platform marker act treats as "run on the host".
+	SelfHostedPlatform = "-self-hosted"
 )
 
 type Label struct {
 	Name   string
 	Schema string
 	Arg    string
+	// Opaque marks a label whose name contains a colon but no supported schema,
+	// like "pool:e57e18d4-...". It is kept verbatim and behaves like a host label.
+	Opaque bool
 }
 
 func Parse(str string) (*Label, error) {
+	if str == "" {
+		return nil, errors.New("empty label")
+	}
+
 	splits := strings.SplitN(str, ":", 3)
 	label := &Label{
 		Name:   splits[0],
-		Schema: "host",
+		Schema: SchemeHost,
 		Arg:    "",
 	}
 	if len(splits) >= 2 {
@@ -33,7 +43,12 @@ func Parse(str string) (*Label, error) {
 		label.Arg = splits[2]
 	}
 	if label.Schema != SchemeHost && label.Schema != SchemeDocker {
-		return nil, fmt.Errorf("unsupported schema: %s", label.Schema)
+		// Not a schema we know: the colon belongs to the label name itself.
+		return &Label{
+			Name:   str,
+			Schema: SchemeHost,
+			Opaque: true,
+		}, nil
 	}
 	return label, nil
 }
@@ -49,6 +64,7 @@ func (l Labels) RequireDocker() bool {
 	return false
 }
 
+// PickPlatform returns the platform of the first runs-on entry this runner has a label for, or "".
 func (l Labels) PickPlatform(runsOn []string) string {
 	platforms := make(map[string]string, len(l))
 	for _, label := range l {
@@ -57,9 +73,9 @@ func (l Labels) PickPlatform(runsOn []string) string {
 			// "//" will be ignored
 			platforms[label.Name] = strings.TrimPrefix(label.Arg, "//")
 		case SchemeHost:
-			platforms[label.Name] = "-self-hosted"
+			platforms[label.Name] = SelfHostedPlatform
 		default:
-			// It should not happen, because Parse has checked it.
+			// unreachable: Parse only produces host or docker schemas
 			continue
 		}
 	}
@@ -68,18 +84,7 @@ func (l Labels) PickPlatform(runsOn []string) string {
 			return v
 		}
 	}
-
-	// TODO: support multiple labels
-	// like:
-	//   ["ubuntu-22.04"] => "ubuntu:22.04"
-	//   ["with-gpu"] => "linux:with-gpu"
-	//   ["ubuntu-22.04", "with-gpu"] => "ubuntu:22.04_with-gpu"
-
-	// return default.
-	// So the runner receives a task with a label that the runner doesn't have,
-	// it happens when the user have edited the label of the runner in the web UI.
-	// TODO: it may be not correct, what if the runner is used as host mode only?
-	return "docker.gitea.com/runner-images:ubuntu-latest"
+	return ""
 }
 
 func (l Labels) Names() []string {
@@ -94,7 +99,7 @@ func (l Labels) ToStrings() []string {
 	ls := make([]string, 0, len(l))
 	for _, label := range l {
 		lbl := label.Name
-		if label.Schema != "" {
+		if !label.Opaque && label.Schema != "" {
 			lbl += ":" + label.Schema
 			if label.Arg != "" {
 				lbl += ":" + label.Arg
