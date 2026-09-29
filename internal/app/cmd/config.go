@@ -27,6 +27,19 @@ func loadConfigCmd(configFile *string) *cobra.Command {
 
 	configCmd.AddCommand(loadGenerateConfigCmd("generate"))
 	configCmd.AddCommand(loadInitConfigCmd(configFile))
+	configCmd.AddCommand(&cobra.Command{
+		Use:   "runner-file",
+		Short: "Print the registration file path used by the runner",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.LoadDefault(*configFile)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), cfg.Runner.File)
+			return nil
+		},
+	})
 
 	configCmd.AddCommand(&cobra.Command{
 		Use:   "get <key>",

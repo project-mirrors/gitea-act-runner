@@ -6,12 +6,11 @@ fi
 
 cd /data
 
-RUNNER_STATE_FILE=${RUNNER_STATE_FILE:-'.runner'}
-
 CONFIG_ARG=""
 if [[ ! -z "${CONFIG_FILE}" ]]; then
   CONFIG_ARG="--config ${CONFIG_FILE}"
 fi
+RUNNER_STATE_FILE=${RUNNER_STATE_FILE:-$(gitea-runner ${CONFIG_ARG} config runner-file)}
 LABEL_ARGS=""
 if [[ ! -z "${GITEA_RUNNER_LABELS}" ]]; then
   LABEL_ARGS="--labels ${GITEA_RUNNER_LABELS}"
