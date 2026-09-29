@@ -343,7 +343,7 @@ jobs:
 	require.Nil(t, redis.Cmd)
 }
 
-func TestStartJobContainerEvaluatesContainersOnceAndTrimsDockerPrefix(t *testing.T) {
+func TestStartJobContainerBuildsEvaluatedJobAndServiceInputs(t *testing.T) {
 	inputs := startJobContainerInputs(t, `
 jobs:
   job:
@@ -359,6 +359,7 @@ jobs:
 	require.Equal(t, []string{"/entry.sh"}, redis.Entrypoint)
 	require.Equal(t, []string{"redis-server", "--port", "6380"}, redis.Cmd)
 	require.Equal(t, "node:20", job.Image)
+	require.Equal(t, "sleep", job.Entrypoint[0])
 	require.Equal(t, "--label ${{ github.job }}", job.WorkflowOptions)
 	require.Equal(t, "${{ vars.TITLE }}", job.Password)
 }
