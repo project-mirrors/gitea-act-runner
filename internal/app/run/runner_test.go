@@ -5,6 +5,7 @@ package run
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ import (
 	"connectrpc.com/connect"
 	"gitea.dev/actionslib/pkg/model"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
+	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -402,4 +404,16 @@ func TestRestoreCalledWorkflowContext(t *testing.T) {
 		assert.Nil(t, restoreCalledWorkflowContext(task))
 		assert.Equal(t, "workflow_call", task.Context.AsMap()["event_name"])
 	})
+}
+
+func TestTaskLogFields(t *testing.T) {
+	fields := func(token string) log.Fields {
+		taskContext, err := structpb.NewStruct(map[string]any{"repository": "owner/repo", "run_id": "159", "run_number": "14", "gitea_runtime_token": token})
+		require.NoError(t, err)
+		return taskLogFields(&runnerv1.Task{Id: 72, Context: taskContext}, "build")
+	}
+	want := log.Fields{"task_id": int64(72), "job": "build", "repository": "owner/repo", "run_id": "159", "run_number": "14"}
+	assert.Equal(t, want, fields("malformed"))
+	want["job_id"] = int64(221)
+	assert.Equal(t, want, fields("header."+base64.RawURLEncoding.EncodeToString([]byte(`{"TaskID":72,"JobID":221}`))+".signature"))
 }
