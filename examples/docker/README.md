@@ -1,8 +1,14 @@
 ### Run `gitea-runner` in a Docker Container
 
+The recommended Docker-in-Docker image runs its own Docker daemon for jobs, so they never get the host's Docker socket:
+
 ```sh
-docker run -e GITEA_INSTANCE_URL=http://192.168.8.18:3000 -e GITEA_RUNNER_REGISTRATION_TOKEN=<runner_token> -v /var/run/docker.sock:/var/run/docker.sock -v $PWD/data:/data --name my_runner gitea/runner:nightly
+docker run --privileged \
+  -e GITEA_INSTANCE_URL=http://192.168.8.18:3000 \
+  -e GITEA_RUNNER_REGISTRATION_TOKEN=<runner_token> \
+  -v "$PWD/data:/data" \
+  -v runner-docker:/var/lib/docker \
+  --name my_runner gitea/runner:nightly-dind
 ```
 
-The `/data` directory inside the docker container contains the runner API keys after registration.
-It must be persisted, otherwise the runner would try to register again, using the same, now defunct registration token.
+The volumes keep the runner's registration and the job image cache. See [image flavours](../../README.md#image-flavours) for alternatives.

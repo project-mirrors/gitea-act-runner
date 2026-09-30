@@ -1,5 +1,7 @@
 ### Running `gitea-runner` using `docker-compose`
 
+This uses the recommended Docker-in-Docker image, see [image flavours](../../README.md#image-flavours).
+
 ```yml
 ...
   gitea:
@@ -19,8 +21,9 @@
       # - GITEA_RUNNER_REGISTRATION_TOKEN=<user-defined registration token>
 
   runner:
-    image: gitea/runner
+    image: gitea/runner:latest-dind
     restart: always
+    privileged: true
     depends_on:
       gitea:
         # required so runner can attach to gitea, see "healthcheck"
@@ -28,7 +31,6 @@
         restart: true
     volumes:
       - ./data/runner:/data
-      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - GITEA_INSTANCE_URL=<instance url>
       # When using Docker Secrets, it's also possible to use
@@ -38,10 +40,9 @@
       - GITEA_RUNNER_REGISTRATION_TOKEN=<registration token>
 ```
 
-### Running `gitea-runner` using Docker-in-Docker (DIND)
+### Running `gitea-runner` using rootless Docker-in-Docker
 
-- `privileged` has to be set to `true` because in-container Docker daemon requires a lot of kernel capabilities and file system mounts like `procfs` and `sysfs`
-- `security_opt` sets the `apparmor` profile to `rootlesskit` for hosts running AppArmor (e.g. Ubuntu, Debian), where the kernel might otherwise block user namespace changes that Docker daemon requires for startup. The `rootlesskit` profile is provided by the `docker-ce-rootless-extras` package and is present on hosts where Docker was installed via the official installer or distro packages
+On AppArmor hosts such as Ubuntu and Debian, `security_opt` is needed for the daemon to start. Docker's `docker-ce-rootless-extras` package provides the `rootlesskit` profile.
 
 ```yml
 ...
