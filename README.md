@@ -382,7 +382,7 @@ See **[docs/job-hooks.md](docs/job-hooks.md)** for the execution order, environm
 
 #### OpenTelemetry (`OTEL_*`)
 
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` in the runner's environment to send a trace of every job to an OpenTelemetry collector. See **[docs/telemetry.md](docs/telemetry.md)**.
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` in the runner's environment to send a trace of every job, and the runner's metrics, to an OpenTelemetry collector. See **[docs/telemetry.md](docs/telemetry.md)**.
 
 #### Local job logs (`log.job.dir`)
 

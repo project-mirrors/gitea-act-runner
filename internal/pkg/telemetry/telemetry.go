@@ -6,22 +6,29 @@ package telemetry
 import (
 	"bytes"
 	"cmp"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"gitea.com/gitea/runner/internal/pkg/ver"
 
 	"gitea.dev/actionslib/pkg/model"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"github.com/avast/retry-go/v5"
+	"github.com/docker/go-connections/tlsconfig"
+	"github.com/prometheus/client_golang/prometheus"
+	log "github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
@@ -32,6 +39,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -51,17 +59,48 @@ func SetTracerProvider(provider trace.TracerProvider) {
 	tracer = provider.Tracer(scope)
 }
 
-func Setup(ctx context.Context, uuid, name string) (func(context.Context) error, error) {
+func Setup(ctx context.Context, uuid, name string, gatherer prometheus.Gatherer) (func(context.Context) error, error) {
 	noop := func(context.Context) error { return nil }
-	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-	if base := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); endpoint == "" && base != "" {
-		endpoint = strings.TrimSuffix(base, "/") + "/v1/traces"
-	}
-	if endpoint == "" || strings.EqualFold(os.Getenv("OTEL_SDK_DISABLED"), "true") || strings.EqualFold(os.Getenv("OTEL_TRACES_EXPORTER"), "none") {
+	if strings.EqualFold(os.Getenv("OTEL_SDK_DISABLED"), "true") {
 		return noop, nil
 	}
-	if protocol := cmp.Or(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"), os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL")); protocol != "" && !strings.EqualFold(protocol, "http/protobuf") {
-		return noop, fmt.Errorf("OTLP protocol %q is not supported, only http/protobuf is", protocol)
+	clients := map[string]*client{}
+	for _, signal := range []string{"TRACES", "METRICS"} {
+		endpoint := os.Getenv("OTEL_EXPORTER_OTLP_" + signal + "_ENDPOINT")
+		if base := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); endpoint == "" && base != "" {
+			endpoint = strings.TrimSuffix(base, "/") + "/v1/" + strings.ToLower(signal)
+		}
+		if endpoint == "" || !exportsOTLP(signal) {
+			continue
+		}
+		if protocol := os.Getenv(otlpKey(signal, "PROTOCOL")); protocol != "" && !strings.EqualFold(protocol, "http/protobuf") {
+			return noop, fmt.Errorf("OTLP protocol %q is not supported, only http/protobuf is", protocol)
+		}
+		headers := http.Header{}
+		for _, key := range []string{"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_" + signal + "_HEADERS"} {
+			for pair := range strings.SplitSeq(os.Getenv(key), ",") {
+				key, value, found := strings.Cut(pair, "=")
+				if decoded, err := url.PathUnescape(strings.TrimSpace(value)); found && err == nil {
+					headers.Set(strings.TrimSpace(key), decoded)
+				}
+			}
+		}
+		compressionKey := otlpKey(signal, "COMPRESSION")
+		compression := os.Getenv(compressionKey)
+		if !slices.Contains([]string{"", "none", "gzip"}, strings.ToLower(compression)) {
+			log.Warnf("ignoring unsupported %s=%q", compressionKey, compression)
+		}
+		httpClient, err := newHTTPClient(signal)
+		if err != nil {
+			return noop, err
+		}
+		clients[signal] = &client{
+			endpoint: endpoint, headers: headers, timeout: millis(otlpKey(signal, "TIMEOUT"), 10*time.Second, noLimit),
+			gzip: strings.EqualFold(compression, "gzip"), httpClient: httpClient,
+		}
+	}
+	if len(clients) == 0 {
+		return noop, nil
 	}
 	res, err := resource.New(ctx, resource.WithTelemetrySDK(), resource.WithAttributes(
 		semconv.ServiceName("gitea-runner"),
@@ -73,25 +112,89 @@ func Setup(ctx context.Context, uuid, name string) (func(context.Context) error,
 	if err != nil {
 		return noop, err
 	}
-	headers := http.Header{}
-	for _, key := range []string{"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"} {
-		for pair := range strings.SplitSeq(os.Getenv(key), ",") {
-			key, value, found := strings.Cut(pair, "=")
-			if decoded, err := url.PathUnescape(strings.TrimSpace(value)); found && err == nil {
-				headers.Set(strings.TrimSpace(key), decoded)
-			}
-		}
+	var shutdown []func(context.Context) error
+	if c := clients["TRACES"]; c != nil {
+		provider := sdktrace.NewTracerProvider(sdktrace.WithBatcher(otlptrace.NewUnstarted(c)), sdktrace.WithResource(res))
+		SetTracerProvider(provider)
+		shutdown = append(shutdown, provider.Shutdown)
 	}
-	provider := sdktrace.NewTracerProvider(sdktrace.WithBatcher(otlptrace.NewUnstarted(&client{endpoint, headers})), sdktrace.WithResource(res))
-	SetTracerProvider(provider)
-	return provider.Shutdown, nil
+	if c := clients["METRICS"]; c != nil {
+		shutdown = append(shutdown, pushMetrics(c, res, gatherer))
+	}
+	return func(ctx context.Context) error {
+		var group errgroup.Group
+		for _, fn := range shutdown {
+			group.Go(func() error { return fn(ctx) })
+		}
+		return group.Wait()
+	}, nil
 }
 
-// client replaces otlptracehttp, which links gRPC (+7 MB): https://github.com/open-telemetry/opentelemetry-go/issues/2579
-type client struct {
-	endpoint string
-	headers  http.Header
+func exportsOTLP(signal string) bool {
+	key := "OTEL_" + signal + "_EXPORTER"
+	otlp, known := false, false
+	for value := range strings.SplitSeq(os.Getenv(key), ",") {
+		switch value = strings.TrimSpace(value); strings.ToLower(value) {
+		case "":
+		case "otlp":
+			otlp, known = true, true
+		case "none":
+			known = true
+		default:
+			log.Warnf("ignoring unsupported %s value %q", key, value)
+		}
+	}
+	return otlp || !known
 }
+
+func otlpKey(signal, name string) string {
+	if key := "OTEL_EXPORTER_OTLP_" + signal + "_" + name; os.Getenv(key) != "" {
+		return key
+	}
+	return "OTEL_EXPORTER_OTLP_" + name
+}
+
+const noLimit = math.MaxInt32 * time.Millisecond // the spec's stand-in for a 0 timeout
+
+func millis(key string, fallback, zero time.Duration) time.Duration {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	ms, err := strconv.ParseInt(value, 10, 32)
+	if err != nil || ms < 0 {
+		log.Warnf("ignoring %s=%q, it must be a non-negative number of milliseconds", key, value)
+		return fallback
+	}
+	return cmp.Or(time.Duration(ms)*time.Millisecond, zero)
+}
+
+// newHTTPClient applies the OTLP certificate variables, a configured CA replaces the system roots like in the Go SDK.
+func newHTTPClient(signal string) (*http.Client, error) {
+	caFile, certFile, keyFile := os.Getenv(otlpKey(signal, "CERTIFICATE")), os.Getenv(otlpKey(signal, "CLIENT_CERTIFICATE")), os.Getenv(otlpKey(signal, "CLIENT_KEY"))
+	if caFile == "" && certFile == "" && keyFile == "" {
+		return exportClient, nil
+	}
+	config, err := tlsconfig.Client(tlsconfig.Options{CAFile: caFile, CertFile: certFile, KeyFile: keyFile, ExclusiveRootPools: true})
+	if err != nil {
+		return nil, err
+	}
+	transport, _ := http.DefaultTransport.(*http.Transport)
+	transport = transport.Clone()
+	transport.TLSClientConfig = config
+	return &http.Client{Transport: transport, CheckRedirect: exportClient.CheckRedirect}, nil
+}
+
+// client replaces the otlp*http exporters, which link gRPC (+7 MB): https://github.com/open-telemetry/opentelemetry-go/issues/2579
+type client struct {
+	endpoint   string
+	headers    http.Header
+	timeout    time.Duration
+	gzip       bool
+	httpClient *http.Client
+}
+
+var gzipWriters = sync.Pool{New: func() any { return gzip.NewWriter(io.Discard) }}
 
 // exportClient refuses redirects, which would carry the collector's header credentials to another host.
 var exportClient = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -101,18 +204,36 @@ func (*client) Start(context.Context) error { return nil }
 func (*client) Stop(context.Context) error { return nil }
 
 func (c *client) UploadTraces(ctx context.Context, spans []*tracepb.ResourceSpans) error {
-	body, err := proto.Marshal(&tracepb.TracesData{ResourceSpans: spans})
+	return c.upload(ctx, &tracepb.TracesData{ResourceSpans: spans})
+}
+
+func (c *client) upload(ctx context.Context, data proto.Message) error {
+	body, err := proto.Marshal(data)
 	if err != nil {
 		return err
 	}
-	return retry.New(retry.Context(ctx), retry.Attempts(5), retry.LastErrorOnly(true)).Do(func() error {
+	if c.gzip {
+		var buffer bytes.Buffer
+		writer, _ := gzipWriters.Get().(*gzip.Writer)
+		writer.Reset(&buffer)
+		_, _ = writer.Write(body)
+		_ = writer.Close()
+		gzipWriters.Put(writer)
+		body = buffer.Bytes()
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	return retry.New(retry.Context(ctx), retry.Attempts(5), retry.LastErrorOnly(true), retry.DelayType(retryDelay)).Do(func() error {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 		if err != nil {
 			return retry.Unrecoverable(err)
 		}
 		req.Header = c.headers.Clone()
 		req.Header.Set("Content-Type", "application/x-protobuf")
-		resp, err := exportClient.Do(req)
+		if c.gzip {
+			req.Header.Set("Content-Encoding", "gzip")
+		}
+		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			return err
 		}
@@ -121,12 +242,25 @@ func (c *client) UploadTraces(ctx context.Context, spans []*tracepb.ResourceSpan
 		if resp.StatusCode < http.StatusMultipleChoices {
 			return nil
 		}
-		err = fmt.Errorf("OTLP export failed: %s", resp.Status)
+		err = &statusError{resp.Status, resp.Header.Get("Retry-After")}
 		if slices.Contains([]int{http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout}, resp.StatusCode) {
 			return err
 		}
 		return retry.Unrecoverable(err)
 	})
+}
+
+type statusError struct{ status, retryAfter string }
+
+func (e *statusError) Error() string { return "OTLP export failed: " + e.status }
+
+func retryDelay(attempt uint, err error, config retry.DelayContext) time.Duration {
+	if status := (*statusError)(nil); errors.As(err, &status) {
+		if seconds, err := strconv.ParseUint(status.retryAfter, 10, 31); err == nil {
+			return time.Duration(seconds) * time.Second
+		}
+	}
+	return retry.CombineDelay(retry.BackOffDelay, retry.RandomDelay)(attempt, err, config)
 }
 
 func StartJob(ctx context.Context, task *runnerv1.Task) (context.Context, func(runnerv1.Result)) {

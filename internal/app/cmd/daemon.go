@@ -72,7 +72,7 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 			defer func() { _ = releaseLock() }()
 		}
 
-		shutdownTelemetry, err := telemetry.Setup(ctx, reg.UUID, reg.Name)
+		shutdownTelemetry, err := telemetry.Setup(ctx, reg.UUID, reg.Name, metrics.Registry)
 		if err != nil {
 			log.WithError(err).Warn("OpenTelemetry export failed to start")
 		}
@@ -203,12 +203,12 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 
 		poller := poll.New(cfg, cli, runner)
 
+		metrics.Init() // OTLP exports the registry even without the server
+		metrics.RunnerInfo.WithLabelValues(ver.Version(), resp.Msg.Runner.Name).Set(1)
+		metrics.RunnerCapacity.Set(float64(cfg.Runner.Capacity))
+		metrics.RegisterUptimeFunc(time.Now())
+		metrics.RegisterRunningJobsFunc(runner.RunningCount, cfg.Runner.Capacity)
 		if cfg.Metrics.Enabled {
-			metrics.Init()
-			metrics.RunnerInfo.WithLabelValues(ver.Version(), resp.Msg.Runner.Name).Set(1)
-			metrics.RunnerCapacity.Set(float64(cfg.Runner.Capacity))
-			metrics.RegisterUptimeFunc(time.Now())
-			metrics.RegisterRunningJobsFunc(runner.RunningCount, cfg.Runner.Capacity)
 			metrics.StartServer(ctx, cfg.Metrics.Addr, func() (bool, string) {
 				return poller.Ready(cfg.Metrics.ReadinessGrace)
 			})

@@ -176,7 +176,7 @@ func Init() {
 
 // RegisterUptimeFunc registers a GaugeFunc that reports seconds since startTime.
 func RegisterUptimeFunc(startTime time.Time) {
-	Registry.MustRegister(prometheus.NewGaugeFunc(
+	register(prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
 			Namespace: Namespace,
 			Name:      "uptime_seconds",
@@ -190,7 +190,7 @@ func RegisterUptimeFunc(startTime time.Time) {
 // capacity utilisation ratio, evaluated lazily at Prometheus scrape time.
 func RegisterRunningJobsFunc(countFn func() int64, capacity int) {
 	capF := float64(capacity)
-	Registry.MustRegister(prometheus.NewGaugeFunc(
+	register(prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
 			Namespace: Namespace,
 			Subsystem: "job",
@@ -199,7 +199,7 @@ func RegisterRunningJobsFunc(countFn func() int64, capacity int) {
 		},
 		func() float64 { return float64(countFn()) },
 	))
-	Registry.MustRegister(prometheus.NewGaugeFunc(
+	register(prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
 			Namespace: Namespace,
 			Subsystem: "job",
@@ -213,4 +213,10 @@ func RegisterRunningJobsFunc(countFn func() int64, capacity int) {
 			return float64(countFn()) / capF
 		},
 	))
+}
+
+// register replaces an earlier registration, as the daemon can run more than once per process.
+func register(collector prometheus.Collector) {
+	Registry.Unregister(collector)
+	Registry.MustRegister(collector)
 }
