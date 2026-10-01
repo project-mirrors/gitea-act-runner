@@ -6,6 +6,7 @@ package runner
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -287,6 +288,22 @@ func dockerActionImageTag(repository, actionName string, localAction bool) strin
 	return strings.ToLower(image)
 }
 
+// One image per step and job: its stages share a build, and concurrent jobs never run each other's.
+func (rc *RunContext) dockerActionImage(ctx context.Context, step actionStep, actionName string, localAction bool) string {
+	job := rc.topLevelRunContext()
+	if job.dockerActionImages == nil {
+		job.dockerActionImages = map[*model.Step]string{}
+	}
+	image, ok := job.dockerActionImages[step.getStepModel()]
+	if !ok {
+		image = dockerActionImageTag(step.getGithubContext(ctx).Repository, actionName, localAction) + "-" + strings.ToLower(rand.Text())
+		if !common.Dryrun(ctx) { // a dry run builds nothing to remove
+			job.dockerActionImages[step.getStepModel()] = image
+		}
+	}
+	return image
+}
+
 // TODO: break out parts of function to reduce complexicity
 func execAsDocker(ctx context.Context, step actionStep, actionName, actionDir, basedir string, localAction bool, stage stepStage) error {
 	logger := common.Logger(ctx)
@@ -304,7 +321,7 @@ func execAsDocker(ctx context.Context, step actionStep, actionName, actionDir, b
 		// Apply forcePull only for prebuild docker images
 		forcePull = rc.Config.ForcePull
 	} else {
-		image = dockerActionImageTag(step.getGithubContext(ctx).Repository, actionName, localAction)
+		image = rc.dockerActionImage(ctx, step, actionName, localAction)
 		contextDir, fileName := filepath.Split(filepath.Join(basedir, action.Runs.Image))
 
 		anyArchExists, err := ContainerImageExistsLocally(ctx, image, "any")
@@ -445,6 +462,9 @@ func newStepContainer(ctx context.Context, step step, image string, cmd, entrypo
 	logWriter := rc.commandLogWriter(ctx)
 	envList := make([]string, 0)
 	for k, v := range *step.getEnv() {
+		if rc.IsHostEnv() && strings.EqualFold(k, rc.JobContainer.GetPathVariableName()) && v == rc.JobContainer.DefaultPathVariable() { // the runner's own PATH stays out, as on GitHub
+			continue
+		}
 		envList = append(envList, fmt.Sprintf("%s=%s", k, v))
 	}
 

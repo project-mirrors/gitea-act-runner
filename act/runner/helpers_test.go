@@ -5,6 +5,7 @@ package runner
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"runtime"
 	"testing"
@@ -37,6 +38,16 @@ func requireDocker(t *testing.T) {
 	defer cli.Close()
 	if _, err := cli.Ping(ctx, mobyclient.PingOptions{}); err != nil {
 		t.Skipf("skipping: docker daemon unreachable: %v", err)
+	}
+}
+
+func requireDockerSharingFiles(t *testing.T) {
+	t.Helper()
+	requireDocker(t)
+	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(marker); err == nil {
+			t.Skip("skipping: inside a container, the docker daemon cannot bind-mount this process's files")
+		}
 	}
 }
 

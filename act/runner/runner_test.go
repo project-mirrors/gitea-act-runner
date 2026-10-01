@@ -221,7 +221,6 @@ func (j *TestJobFileInfo) runTest(ctx context.Context, t *testing.T, cfg *Config
 		ContainerNamePrefix: strings.ReplaceAll(t.Name(), "/", "-") + "-" + testRunID,
 		// 0 would run jobs runtime.NumCPU()-wide, making the network peak machine-dependent
 		MaxParallel:           2,
-		ForceRebuild:          true,
 		Env:                   cfg.Env,
 		Secrets:               cfg.Secrets,
 		GitHubInstance:        "github.com",
@@ -434,6 +433,8 @@ func TestRunEventHostEnvironment(t *testing.T) {
 
 		tables = append(tables, []TestJobFileInfo{
 			{workdir, "nix-prepend-path", "push", "", platforms, secrets},
+			{workdir, "uses-docker-url", "push", "", platforms, secrets},
+			{workdir, "local-action-dockerfile", "push", "", platforms, secrets},
 			{workdir, "builtin-checkout", "push", "", platforms, secrets},
 			{workdir, "inputs-via-env-context", "push", "", platforms, secrets},
 			{workdir, "do-not-leak-step-env-in-composite", "push", "", platforms, secrets},
@@ -451,6 +452,8 @@ func TestRunEventHostEnvironment(t *testing.T) {
 				requireHostTools(t, "pwsh")
 			case "nix-prepend-path":
 				requireHostTools(t, "nix")
+			case "uses-docker-url", "local-action-dockerfile":
+				requireDockerSharingFiles(t)
 			}
 			t.Parallel()
 			hostPlanSlots <- struct{}{}

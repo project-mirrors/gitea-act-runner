@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -151,21 +152,34 @@ func TestStepDockerNewStepContainerAllocatePTY(t *testing.T) {
 	}
 }
 
-func TestStepDockerNewStepContainerNetworkMode(t *testing.T) {
+func TestStepDockerNewStepContainerNetworkModeAndPath(t *testing.T) {
+	inheritedPath := (&container.LinuxContainerEnvironmentExtensions{}).DefaultPathVariable()
 	cases := []struct {
 		name          string
 		platform      string
+		path          string
 		expectDefault bool
+		keepsPath     bool
 	}{
 		{
 			name:          "docker mode attaches to job container network",
 			platform:      "node:14",
+			path:          inheritedPath,
 			expectDefault: false,
+			keepsPath:     true,
 		},
 		{
-			name:          "host mode uses default network",
+			name:          "host mode uses default network and the image's PATH",
 			platform:      "-self-hosted",
+			path:          inheritedPath,
 			expectDefault: true,
+		},
+		{
+			name:          "host mode keeps a PATH that is not the runner's",
+			platform:      "-self-hosted",
+			path:          "/custom/bin",
+			expectDefault: true,
+			keepsPath:     true,
 		},
 	}
 
@@ -208,6 +222,7 @@ func TestStepDockerNewStepContainerNetworkMode(t *testing.T) {
 					ID:   "1",
 					Uses: "docker://alpine:3.20",
 				},
+				env: map[string]string{"PATH": tc.path},
 			}
 			sd.RunContext.ExprEval = sd.RunContext.NewExpressionEvaluator(ctx)
 
@@ -215,6 +230,7 @@ func TestStepDockerNewStepContainerNetworkMode(t *testing.T) {
 			assert.Equal(t, tc.expectDefault, sd.RunContext.IsHostEnv(), "IsHostEnv mismatch for platform %q", tc.platform)
 
 			newStepContainer(ctx, sd, "alpine:3.20", []string{"echo", "hello"}, nil, "")
+			assert.Equal(t, tc.keepsPath, slices.Contains(captured.Env, "PATH="+tc.path))
 
 			if tc.expectDefault {
 				assert.Equal(t, "default", captured.NetworkMode,

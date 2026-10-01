@@ -414,6 +414,31 @@ on:
 	assert.Equal(t, map[string]any{"arg": "x"}, getEvaluatorInputs(composite, map[string]any{"arg": "x"}, ghc))
 }
 
+func TestActionInputsShadowDispatchInputs(t *testing.T) {
+	wf, err := model.ReadWorkflow(strings.NewReader(`
+on:
+  workflow_dispatch:
+    inputs:
+      message: {type: string}
+jobs:
+  job1: {}
+`))
+	require.NoError(t, err)
+	rc := newTestRC(wf, nil)
+	rc.Config.EventName = "workflow_dispatch"
+	rc.EventJSON = `{"inputs":{"message":"workflow"}}`
+	step := &stepActionRemote{RunContext: rc, env: map[string]string{"INPUT_MESSAGE": "step"}}
+	assert.Equal(t, "step", rc.NewActionInputsExpressionEvaluator(t.Context(), step).InterpolateName(t.Context(), "${{ inputs.message }}"))
+	assert.Equal(t, "workflow", rc.NewStepExpressionEvaluator(t.Context(), step).InterpolateName(t.Context(), "${{ inputs.message }}"))
+	enabled, err := isStepEnabled(t.Context(), "inputs.message == 'workflow'", step, stepStageMain)
+	require.NoError(t, err)
+	assert.True(t, enabled)
+	step.Step, step.action = &model.Step{}, &model.Action{Inputs: map[string]model.Input{"fallback": {Default: "${{ inputs.message }}"}}}
+	env, err := evaluateCompositeInputAndEnv(t.Context(), rc, step)
+	require.NoError(t, err)
+	assert.Equal(t, "workflow", env["INPUT_FALLBACK"])
+}
+
 func TestResolveWorkflowCallToleratesMismatchesAndPassesInheritedSecretsVerbatim(t *testing.T) {
 	callerWorkflow, err := model.ReadWorkflow(strings.NewReader(`
 jobs:

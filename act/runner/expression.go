@@ -246,18 +246,19 @@ func inputsFromEnv(env map[string]string) map[string]any {
 }
 
 func getEvaluatorInputs(rc *RunContext, stepInputs map[string]any, ghc *model.GithubContext) map[string]any {
+	if stepInputs != nil { // an action's own inputs, which workflow inputs must not shadow
+		return maps.Clone(stepInputs)
+	}
 	inputs := map[string]any{}
 
 	// only a called workflow's job itself takes the inputs Gitea resolved,
 	// composite actions copy its Config but have their own `inputs`
 	if rc.Config.WorkflowCallInputs != nil && rc.Parent == nil {
 		maps.Copy(inputs, rc.Config.WorkflowCallInputs)
-		maps.Copy(inputs, stepInputs)
 		return inputs
 	}
 
 	maps.Copy(inputs, rc.workflowCallInputs)
-	maps.Copy(inputs, stepInputs)
 
 	switch ghc.EventName {
 	case "workflow_dispatch":

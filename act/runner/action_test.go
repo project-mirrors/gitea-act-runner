@@ -513,6 +513,17 @@ func TestDockerActionImageTag(t *testing.T) {
 		dockerActionImageTag("owner/repo", "./", true),
 		dockerActionImageTag("owner/repo", "./sub", true),
 	)
+
+	workflow := &model.Workflow{Jobs: map[string]*model.Job{"job1": {}}}
+	job := newTestRC(workflow, nil)
+	step := &stepActionRemote{Step: &model.Step{}, RunContext: job}
+	image := job.dockerActionImage(t.Context(), step, "abc123", false)
+	assert.True(t, strings.HasPrefix(image, "act-abc123-dockeraction:latest-"))
+	assert.Equal(t, image, (&RunContext{Parent: job}).dockerActionImage(t.Context(), step, "abc123", false))
+	assert.NotEqual(t, image, job.dockerActionImage(t.Context(), &stepActionRemote{Step: &model.Step{}, RunContext: job}, "abc123", false))
+	assert.NotEqual(t, image, newTestRC(workflow, nil).dockerActionImage(t.Context(), step, "abc123", false))
+	job.dockerActionImage(common.WithDryrun(t.Context(), true), &stepActionRemote{Step: &model.Step{}, RunContext: job}, "abc123", false)
+	assert.Len(t, job.dockerActionImages, 2)
 }
 
 func TestExecAsDockerStageEntrypoint(t *testing.T) {

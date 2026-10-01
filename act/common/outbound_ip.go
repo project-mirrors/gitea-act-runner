@@ -10,6 +10,11 @@ import (
 	"strings"
 )
 
+type interfaceIP struct {
+	net.IP
+	net.Interface
+}
+
 // GetOutboundIP returns an outbound IP address of this machine.
 // It tries to access the internet and returns the local IP address of the connection.
 // If the machine cannot access the internet, it returns a preferred IP address from network interfaces.
@@ -26,11 +31,7 @@ func GetOutboundIP() net.IP {
 
 	// So the machine cannot access the internet. Pick an IP address from network interfaces.
 	if ifs, err := net.Interfaces(); err == nil {
-		type IP struct {
-			net.IP
-			net.Interface
-		}
-		var ips []IP
+		var ips []interfaceIP
 		for _, i := range ifs {
 			if addrs, err := i.Addrs(); err == nil {
 				for _, addr := range addrs {
@@ -42,40 +43,45 @@ func GetOutboundIP() net.IP {
 						ip = v.IP
 					}
 					if ip.IsGlobalUnicast() {
-						ips = append(ips, IP{ip, i})
+						ips = append(ips, interfaceIP{ip, i})
 					}
 				}
 			}
 		}
-		if len(ips) > 1 {
-			sort.Slice(ips, func(i, j int) bool {
-				ifi := ips[i].Interface
-				ifj := ips[j].Interface
-
-				// ethernet is preferred
-				if vi, vj := strings.HasPrefix(ifi.Name, "e"), strings.HasPrefix(ifj.Name, "e"); vi != vj {
-					return vi
-				}
-
-				ipi := ips[i].IP
-				ipj := ips[j].IP
-
-				// IPv4 is preferred
-				if vi, vj := ipi.To4() != nil, ipj.To4() != nil; vi != vj {
-					return vi
-				}
-
-				// en0 is preferred to en1
-				if ifi.Name != ifj.Name {
-					return ifi.Name < ifj.Name
-				}
-
-				// fallback
-				return ipi.String() < ipj.String()
-			})
-			return ips[0].IP
-		}
+		return preferredIP(ips)
 	}
 
 	return nil
+}
+
+func preferredIP(ips []interfaceIP) net.IP {
+	if len(ips) == 0 {
+		return nil
+	}
+	sort.Slice(ips, func(i, j int) bool {
+		ifi := ips[i].Interface
+		ifj := ips[j].Interface
+
+		// ethernet is preferred
+		if vi, vj := strings.HasPrefix(ifi.Name, "e"), strings.HasPrefix(ifj.Name, "e"); vi != vj {
+			return vi
+		}
+
+		ipi := ips[i].IP
+		ipj := ips[j].IP
+
+		// IPv4 is preferred
+		if vi, vj := ipi.To4() != nil, ipj.To4() != nil; vi != vj {
+			return vi
+		}
+
+		// en0 is preferred to en1
+		if ifi.Name != ifj.Name {
+			return ifi.Name < ifj.Name
+		}
+
+		// fallback
+		return ipi.String() < ipj.String()
+	})
+	return ips[0].IP
 }

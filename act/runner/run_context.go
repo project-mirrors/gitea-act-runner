@@ -82,6 +82,10 @@ type RunContext struct {
 	jobRunDefaults      model.RunDefaults // defaults.run, resolved once at job setup as GitHub does
 	platformImage       string            // container.image or the runs-on pick, resolved once by isEnabled
 	jobIndex, jobTotal  int               // strategy.job-index and job-total, total 0 when unknown
+
+	jobEnv             map[string]string      // workflow and job env as evaluated for the container and service specs
+	dockerActionImages map[*model.Step]string // Dockerfile action images built for this job, removed when it ends
+
 	// summaryFileInitialized tracks which per-step summary files (workflow/step-summary-N.md)
 	// have already been created on the JobContainer. The runner sets up file-command files
 	// via JobContainer.Copy at the start of every phase, which truncates them — fine for
@@ -256,6 +260,9 @@ const sharedToolCacheVolume = "act-toolcache" // mounted only when the tool cach
 func (rc *RunContext) validVolumes() []string {
 	name := rc.jobContainerName()
 	volumes := slices.Clone(rc.Config.ValidVolumes)
+	if hostEnv, ok := rc.JobContainer.(*container.HostEnvironment); ok {
+		volumes = append(volumes, hostEnv.Path, hostEnv.GetActPath())
+	}
 	if rc.Config.SharedToolCache {
 		volumes = append(volumes, sharedToolCacheVolume)
 	}
@@ -353,6 +360,9 @@ func (rc *RunContext) GetBindsAndMounts(ctx context.Context) ([]string, map[stri
 		if toolCache := rc.toolCache(container.DefaultToolCache); !claimed[toolCache] {
 			mounts[sharedToolCacheVolume] = toolCache
 		}
+	}
+	if hostEnv, ok := rc.JobContainer.(*container.HostEnvironment); ok {
+		binds = append(binds, hostEnv.Path+":"+hostEnv.Path, hostEnv.GetActPath()+":"+hostEnv.GetActPath())
 	}
 	mounts[name+"-env"] = ext.GetActPath() // runner-internal, never overridable
 
@@ -535,6 +545,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 		// For gitea, to support --volumes-from <container_name_or_id> in options.
 		// We need to set the container name to the environment variable.
 		rc.Env["JOB_CONTAINER_NAME"] = name
+		delete(rc.jobEnv, "JOB_CONTAINER_NAME") // the runtime name wins over a workflow env of the same name
 
 		envList := make([]string, 0)
 
@@ -618,7 +629,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 
 func (rc *RunContext) jobServices(ctx context.Context, networkName string) (map[string]*container.NewContainerInput, error) {
 	var services map[string]*model.ContainerSpec
-	if err := model.DecodeEvaluated("job services", rc.Run.Job().RawServices, rc.ExprEval.shared(ctx).EvaluateYamlNode, &services); err != nil {
+	if err := model.DecodeEvaluated("job services", rc.Run.Job().RawServices, rc.NewExpressionEvaluatorWithEnv(ctx, mergeMaps(rc.GetEnv(), rc.jobEnv)).shared(ctx).EvaluateYamlNode, &services); err != nil {
 		return nil, err
 	}
 	inputs := map[string]*container.NewContainerInput{}
@@ -833,6 +844,14 @@ func (rc *RunContext) stopJobContainer() common.Executor {
 			return rc.cleanUpJobContainer(ctx)
 		}
 		return nil
+	}
+}
+
+func (rc *RunContext) removeDockerActionImages(ctx context.Context) {
+	for _, image := range rc.dockerActionImages {
+		if _, err := container.RemoveImage(ctx, image, true, false); err != nil {
+			common.Logger(ctx).Warnf("failed to remove action image %s: %v", image, err)
+		}
 	}
 }
 
@@ -1255,9 +1274,10 @@ func (rc *RunContext) runsOnPlatformNames(ctx context.Context) []string {
 
 // resolvePlatformImage evaluates the job's container once for every consumer, skipping one whose image is empty as GitHub does.
 func (rc *RunContext) resolvePlatformImage(ctx context.Context) error {
+	rc.jobEnv, _ = evaluateJobEnv(ctx, rc) // a broken env fails the job at setup instead
 	withoutEnv, env := splitContainerEnv(rc.Run.Job().RawContainer)
 	var spec model.ContainerSpec
-	if err := model.DecodeEvaluated("container", withoutEnv, rc.ExprEval.shared(ctx).EvaluateYamlNode, &spec); err != nil {
+	if err := model.DecodeEvaluated("container", withoutEnv, rc.NewExpressionEvaluatorWithEnv(ctx, rc.jobEnv).shared(ctx).EvaluateYamlNode, &spec); err != nil {
 		return err
 	}
 	spec.Image = strings.TrimPrefix(spec.Image, "docker://")

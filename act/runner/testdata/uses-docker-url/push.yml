@@ -5,6 +5,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      - run: printf 'workspace=from-host-step\n' > workspace-marker
       - uses: docker://node:24-bookworm-slim
         with:
           somekey: somevalue
@@ -16,8 +17,10 @@ jobs:
         with:
           entrypoint: /bin/sh
           args: -c -- uname -a
-      - uses: docker://node:24-bookworm-slim
+      - id: workspace
+        uses: docker://node:24-bookworm-slim
         with:
           entrypoint: /bin/sh
-          args: -c 'uname -a'
+          args: -c 'uname -a && cat "$GITHUB_WORKSPACE/workspace-marker" >> "$GITHUB_OUTPUT"'
+      - run: test '${{ steps.workspace.outputs.workspace }}' = 'from-host-step'
 
