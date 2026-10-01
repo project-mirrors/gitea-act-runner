@@ -9,11 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	nethttp "net/http"
 	"os"
 	"path"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/internal/pkg/lock"
@@ -22,6 +24,8 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/storer"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/plumbing/transport/client"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/mattn/go-isatty"
 	log "github.com/sirupsen/logrus"
@@ -37,6 +41,20 @@ var (
 
 	ErrShortRef = errors.New("short SHA references are not supported")
 )
+
+func init() {
+	httpClient := newHTTPClient(&nethttp.HTTP2Config{SendPingTimeout: 30 * time.Second})
+	client.InstallProtocol("http", httpClient)
+	client.InstallProtocol("https", httpClient)
+}
+
+// newHTTPClient pings idle HTTP/2 connections to drop stalled ones.
+func newHTTPClient(h2 *nethttp.HTTP2Config) transport.Transport {
+	defaultTransport, _ := nethttp.DefaultTransport.(*nethttp.Transport)
+	httpTransport := defaultTransport.Clone()
+	httpTransport.HTTP2 = h2
+	return http.NewClient(&nethttp.Client{Transport: httpTransport})
+}
 
 // AcquireCloneLock returns an unlock function after locking the per-directory mutex for dir.
 // Only concurrent operations targeting the same directory are serialized; clones into different directories run in parallel.

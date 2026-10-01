@@ -6,7 +6,9 @@ package git
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -755,4 +757,26 @@ func TestNewGitCloneExecutorFetchHonoursContext(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("fetch ignored context cancellation")
 	}
+}
+
+func TestNewGitCloneExecutorFailsOnSilentHTTP2Connection(t *testing.T) {
+	server := httptest.NewUnstartedServer(nil)
+	server.EnableHTTP2 = true
+	server.Config.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){
+		"h2": func(_ *http.Server, conn *tls.Conn, _ http.Handler) { _, _ = io.Copy(io.Discard, conn) },
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	previous := gogitclient.Protocols["https"]
+	gogitclient.InstallProtocol("https", newHTTPClient(&http.HTTP2Config{SendPingTimeout: 50 * time.Millisecond, PingTimeout: 50 * time.Millisecond}))
+	t.Cleanup(func() { gogitclient.InstallProtocol("https", previous) })
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	err := NewGitCloneExecutor(NewGitCloneExecutorInput{
+		URL: server.URL + "/action", Ref: "main", Dir: filepath.Join(t.TempDir(), "action"), InsecureSkipTLS: true,
+	})(ctx)
+	require.Error(t, err)
+	require.NoError(t, ctx.Err())
 }
