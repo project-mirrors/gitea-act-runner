@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+exitcode=$(cat "$(/etc/s6/.s6-svscan/exitcode-path)" 2> /dev/null)
+rm -f /etc/s6/.s6-svscan/exitcode.*
+exit "${exitcode:-0}"

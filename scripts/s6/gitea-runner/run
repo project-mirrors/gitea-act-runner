@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 
-while [ ! -d /etc/s6/docker/supervise ]; do
-    sleep 0.1
+until /etc/s6/docker/data/check &> /dev/null; do # s6-svwait can read missing or stale readiness status
+  sleep 1
 done
-
-s6-svwait -U /etc/s6/docker
 
 exec run.sh

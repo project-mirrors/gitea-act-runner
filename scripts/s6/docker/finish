@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
 
-exec s6-svscanctl -t /etc/s6
+if [ "$1" -eq 256 ]; then
+  set -- "$((128 + $2))"
+fi
+(set -C; echo "$1" > "$(/etc/s6/.s6-svscan/exitcode-path)") 2> /dev/null
 
+s6-svscanctl -t /etc/s6 && exit 125 # 125 keeps s6 from restarting the service during teardown

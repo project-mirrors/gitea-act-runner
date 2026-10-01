@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+(set -C; echo 0 > "$(/etc/s6/.s6-svscan/exitcode-path)") 2> /dev/null
+s6-svc -wD -d /etc/s6/gitea-runner
+exec s6-svscanctl -t /etc/s6

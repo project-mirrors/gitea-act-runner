@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+
+echo "/etc/s6/.s6-svscan/exitcode.$(cat /proc/sys/kernel/random/boot_id).$(cut -d ' ' -f 22 /proc/1/stat)" # unique per container start, so a killed run's record is ignored

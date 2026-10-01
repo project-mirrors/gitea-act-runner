@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+
+exec /etc/s6/.s6-svscan/SIGTERM

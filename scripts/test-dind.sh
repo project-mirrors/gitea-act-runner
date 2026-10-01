@@ -10,8 +10,8 @@
 # Usage: scripts/test-dind.sh [target] [-- go-test-args...]
 #   target:        dind (default), dind-rootless, or podman to run PODMAN_TEST_IMAGE's API service instead
 #   go-test-args:  passed verbatim to `go test`. Defaults cover image env extraction,
-#                  symlink copying and a mounted Docker job using cached images, or the
-#                  Docker proxy probe for podman.
+#                  symlink copying, a mounted Docker job using cached images and the
+#                  image's s6 supervision, or the Docker proxy probe for podman.
 #
 # Env:
 #   DIND_TEST_PORT     host port for the daemon (default 32375)
@@ -33,7 +33,7 @@ host_docker="${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.dock
 test_dir=""
 
 cleanup() {
-  docker -H "$host_docker" rm -fv "$name" >/dev/null 2>&1 || true
+  docker -H "$host_docker" rm -fv "$name" "$name-s6" >/dev/null 2>&1 || true
   if [ -n "$test_dir" ]; then
     rm -rf "$test_dir"
   fi
@@ -147,4 +147,30 @@ if [ "$default_tests" = true ]; then
   echo "==> Running mounted Docker job in a container given the ${target} socket, expecting proxy access"
   docker -H "$host_docker" exec -e DOCKER_HOST="$socket" "$name" docker run --rm -v "${socket#unix://}:/var/run/docker.sock" -v /tmp/gitea-runner-proxy-test:/data -w /data \
     -e ACT_TEST_DOCKER_PROXY=proxy -e ACT_TEST_IMAGE="$job_image" "$job_image" ./runner.test -test.v -test.run '^TestDockerProxyMountedJob$' -test.timeout 3m
+
+  supervised="$name-s6"
+  supervised_exit_is() {
+    if [ "$(docker -H "$host_docker" inspect -f '{{.State.ExitCode}}' "$supervised")" != "$1" ] ||
+      ! docker -H "$host_docker" logs "$supervised" 2>&1 | grep -F "$2" >/dev/null; then
+      docker -H "$host_docker" logs "$supervised" >&2
+      echo "${target} supervision: expected exit $1 after \"$2\"" >&2
+      exit 1
+    fi
+  }
+  echo "==> Checking that a runner failure sets the ${target} container exit code"
+  docker -H "$host_docker" run -d --privileged --name "$supervised" -e DOCKER_TLS_CERTDIR= -e RUNNER_STATE_FILE=/etc/hostname "$image" >/dev/null
+  for _ in $(seq 1 120); do
+    [ "$(docker -H "$host_docker" inspect -f '{{.State.Running}}' "$supervised")" = false ] && break
+    sleep 1
+  done
+  supervised_exit_is 1 'registration file not found'
+  docker -H "$host_docker" rm -fv "$supervised" >/dev/null
+  echo "==> Checking that stopping a started ${target} runner exits 0"
+  docker -H "$host_docker" run -d --privileged --name "$supervised" -e DOCKER_TLS_CERTDIR= "$image" >/dev/null
+  for _ in $(seq 1 120); do
+    docker -H "$host_docker" logs "$supervised" 2>&1 | grep -F 'is missing or not a regular file' >/dev/null && break
+    sleep 1
+  done
+  docker -H "$host_docker" stop "$supervised" >/dev/null
+  supervised_exit_is 0 'is missing or not a regular file'
 fi
