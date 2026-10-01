@@ -36,28 +36,23 @@ fi
 test -f "$RUNNER_STATE_FILE" || echo "$RUNNER_STATE_FILE is missing or not a regular file"
 
 if [[ ! -s "$RUNNER_STATE_FILE" ]]; then
-  try=$((try + 1))
-  success=0
-
-  # The point of this loop is to make it simple, when running both runner and gitea in docker,
-  # for the runner to wait a moment for gitea to become available before erroring out.  Within
-  # the context of a single docker-compose, something similar could be done via healthchecks, but
-  # this is more flexible.
-  while [[ $success -eq 0 ]] && [[ $try -lt ${GITEA_MAX_REG_ATTEMPTS:-10} ]]; do
+  for ((try = 1; ; try++)); do # waits for Gitea like the daemon does, a container may have no restart policy
     gitea-runner register \
       --instance "${GITEA_INSTANCE_URL}" \
       --token    "${GITEA_RUNNER_REGISTRATION_TOKEN}" \
       --name     "${GITEA_RUNNER_NAME:-`hostname`}" \
       ${CONFIG_ARG} ${EXTRA_ARGS} --no-interactive 2>&1 | tee /tmp/reg.log
 
-    cat /tmp/reg.log | grep 'Runner registered successfully' > /dev/null
-    if [[ $? -eq 0 ]]; then
+    if grep -q 'Runner registered successfully' /tmp/reg.log; then
       echo "SUCCESS"
-      success=1
-    else
-      echo "Waiting to retry ..."
-      sleep 5
+      break
     fi
+    if [[ ${GITEA_MAX_REG_ATTEMPTS:-0} -gt 0 ]] && [[ $try -ge $GITEA_MAX_REG_ATTEMPTS ]]; then
+      echo "Registration failed after ${try} attempts"
+      exit 1
+    fi
+    echo "Waiting to retry ..."
+    sleep 5
   done
 fi
 # Prevent reading the token from the gitea-runner process

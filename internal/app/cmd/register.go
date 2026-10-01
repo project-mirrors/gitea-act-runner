@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	goruntime "runtime"
 	"strings"
-	"time"
 
 	"gitea.com/gitea/runner/internal/app/run"
 	"gitea.com/gitea/runner/internal/pkg/client"
@@ -370,28 +369,12 @@ func doRegister(ctx context.Context, cfg *config.Config, inputs *registerInputs)
 		config.RequestTimeout,
 	)
 
-	for {
-		_, err := cli.Ping(ctx, connect.NewRequest(&pingv1.PingRequest{
-			Data: inputs.RunnerName,
-		}))
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if ctx.Err() != nil {
-			break
-		}
-		if err != nil {
-			log.WithError(err).
-				Errorln("Cannot ping the Gitea instance server")
-			// TODO: if ping failed, retry or exit
-			time.Sleep(time.Second)
-		} else {
-			log.Debugln("Successfully pinged the Gitea instance server")
-			break
-		}
+	if _, err := cli.Ping(ctx, connect.NewRequest(&pingv1.PingRequest{
+		Data: inputs.RunnerName,
+	})); err != nil {
+		return fmt.Errorf("cannot ping the Gitea instance server: %w", err)
 	}
+	log.Debugln("Successfully pinged the Gitea instance server")
 
 	reg := &config.Registration{
 		Name:      inputs.RunnerName,

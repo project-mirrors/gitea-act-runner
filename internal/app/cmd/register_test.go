@@ -4,7 +4,11 @@
 package cmd
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"gitea.com/gitea/runner/internal/pkg/config"
@@ -245,4 +249,19 @@ func TestInitInputs(t *testing.T) {
 		})
 		require.Nil(t, inputs.Labels)
 	})
+}
+
+func TestDoRegisterReturnsPingErrorWithoutRetrying(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{}
+	cfg.Runner.File = filepath.Join(t.TempDir(), ".runner")
+	err := doRegister(t.Context(), cfg, &registerInputs{InstanceAddr: server.URL, RunnerName: "runner"})
+	assert.ErrorContains(t, err, "cannot ping the Gitea instance server")
+	assert.Equal(t, int32(1), requests.Load())
 }
