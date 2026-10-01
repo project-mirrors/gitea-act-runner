@@ -22,7 +22,7 @@ func testEphemeralRunner(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("ephemeral runner was not deleted")
 	}
-	if !poller.Unregistered() {
+	if !poller.RegistrationRejected() {
 		t.Fatal("ephemeral runner stopped without being deleted")
 	}
 }

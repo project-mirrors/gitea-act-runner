@@ -52,6 +52,8 @@ type Poller struct {
 
 	done chan struct{}
 
+	registrationRejected atomic.Bool
+
 	// unregistered is set when the server rejects the runner with an
 	// Unauthenticated response, meaning the runner is no longer registered.
 	unregistered       atomic.Bool
@@ -151,7 +153,7 @@ func (p *Poller) Poll() {
 	}
 }
 
-func (p *Poller) PollOnce() {
+func (p *Poller) PollOnce(onTaskFetched func()) {
 	defer close(p.done)
 	s := &workerState{}
 	for {
@@ -173,6 +175,7 @@ func (p *Poller) PollOnce() {
 			continue
 		}
 		s.resetBackoff()
+		onTaskFetched()
 		p.runTaskWithRecover(p.jobsCtx, task)
 		return
 	}
@@ -189,6 +192,11 @@ func (p *Poller) Done() <-chan struct{} {
 // runner as unregistered (an Unauthenticated response).
 func (p *Poller) Unregistered() bool {
 	return p.unregistered.Load()
+}
+
+// RegistrationRejected reports whether polling stopped on an error matching client.IsRegistrationRejected.
+func (p *Poller) RegistrationRejected() bool {
+	return p.registrationRejected.Load()
 }
 
 // Ready reports whether the daemon can currently communicate with Gitea and
@@ -368,9 +376,11 @@ func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task,
 		// An Unauthenticated response means the server no longer knows this
 		// runner (e.g. it was deleted). Retrying forever is pointless, so stop
 		// polling and let the daemon exit with an error instead of spinning.
-		if isUnregistered(err) {
+		rejected := client.IsRegistrationRejected(err)
+		if rejected || connect.CodeOf(err) == connect.CodeUnauthenticated {
 			log.WithError(err).Error("server rejected the runner as unregistered, stopping poller")
 			p.unregistered.Store(true)
+			p.registrationRejected.Store(rejected)
 			p.shutdownPolling()
 			return nil, false
 		}
@@ -413,12 +423,6 @@ func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task,
 
 	metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultTask).Inc()
 	return resp.Msg.Task, true
-}
-
-func isUnregistered(err error) bool {
-	var connectErr *connect.Error
-	return errors.As(err, &connectErr) && (connectErr.Code() == connect.CodeUnauthenticated ||
-		connectErr.Code() == connect.CodeUnknown && connect.IsWireError(err) && connectErr.Message() == "rpc error: code = Unauthenticated desc = unregistered runner")
 }
 
 func (p *Poller) markHealthyPoll() {
