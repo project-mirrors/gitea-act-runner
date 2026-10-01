@@ -56,6 +56,9 @@ func (sd *stepDocker) runUsesContainer() common.Executor {
 	step := sd.Step
 
 	return func(ctx context.Context) error {
+		if rc.kubernetes {
+			return errKubernetesDocker
+		}
 		image := strings.TrimPrefix(step.Uses, "docker://")
 		cmd, err := shellquote.Split(step.With["args"])
 		if err != nil {

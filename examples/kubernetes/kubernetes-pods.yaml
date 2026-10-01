@@ -1,0 +1,83 @@
+apiVersion: v1
+data:
+  token: << base64 encoded registration token >>
+kind: Secret
+metadata:
+  name: runner-secret
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: runner
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["create", "get", "list", "delete"]
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create", "get"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: runner
+subjects:
+- kind: ServiceAccount
+  name: runner
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: runner
+spec:
+  serviceName: runner
+  selector:
+    matchLabels:
+      app: runner
+  template:
+    metadata:
+      labels:
+        app: runner
+    spec:
+      serviceAccountName: runner
+      terminationGracePeriodSeconds: 10800 # keep above runner.shutdown_timeout, see README
+      containers:
+      - name: runner
+        image: gitea/runner:nightly
+        env:
+        - name: GITEA_INSTANCE_URL
+          value: http://gitea-http.gitea.svc.cluster.local:3000
+        - name: GITEA_RUNNER_REGISTRATION_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: runner-secret
+              key: token
+        - name: GITEA_RUNNER_LABELS
+          value: ubuntu-latest:kubernetes://docker.gitea.com/runner-images:ubuntu-latest
+        volumeMounts:
+        - name: runner-data
+          mountPath: /data
+  volumeClaimTemplates:
+  - metadata:
+      name: runner-data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 1Gi

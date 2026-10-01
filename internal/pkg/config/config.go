@@ -63,8 +63,8 @@ type Runner struct {
 	FetchTimeout          time.Duration     `yaml:"fetch_timeout"`            // FetchTimeout specifies the timeout duration for fetching resources.
 	FetchInterval         time.Duration     `yaml:"fetch_interval"`           // FetchInterval specifies the interval duration for fetching resources.
 	FetchIntervalMax      time.Duration     `yaml:"fetch_interval_max"`       // FetchIntervalMax specifies the maximum backoff interval when idle.
-	WorkdirCleanupAge     time.Duration     `yaml:"workdir_cleanup_age"`      // WorkdirCleanupAge removes stale bind-workdir task directories, orphaned host-mode scratch dirs and orphaned docker job resources older than this duration during idle cleanup.
-	IdleCleanupInterval   time.Duration     `yaml:"idle_cleanup_interval"`    // IdleCleanupInterval runs the idle cleanup (stale directories and orphaned docker networks and volumes) periodically while the runner is idle. Set to 0 to disable cleanup cadence.
+	WorkdirCleanupAge     time.Duration     `yaml:"workdir_cleanup_age"`      // WorkdirCleanupAge removes stale bind-workdir task directories, orphaned host-mode scratch dirs and orphaned docker and Kubernetes job resources older than this duration during idle cleanup.
+	IdleCleanupInterval   time.Duration     `yaml:"idle_cleanup_interval"`    // IdleCleanupInterval runs the idle cleanup (stale directories, orphaned docker networks and volumes, orphaned job pods) periodically while the runner is idle. Set to 0 to disable cleanup cadence.
 	LogReportInterval     time.Duration     `yaml:"log_report_interval"`      // LogReportInterval specifies the base interval for periodic log flush.
 	LogReportMaxLatency   time.Duration     `yaml:"log_report_max_latency"`   // LogReportMaxLatency specifies the max time a log row can wait before being sent.
 	LogReportBatchSize    int               `yaml:"log_report_batch_size"`    // LogReportBatchSize triggers immediate log flush when buffer reaches this size.
@@ -194,6 +194,14 @@ type Host struct {
 	WorkdirParent string `yaml:"workdir_parent"` // WorkdirParent specifies the parent directory for the host's working directory.
 }
 
+// Kubernetes configures the pods jobs run in.
+type Kubernetes struct {
+	Kubeconfig   string                    `yaml:"kubeconfig"`    // Kubeconfig to use instead of the in-cluster service account.
+	Namespace    string                    `yaml:"namespace"`     // Namespace of job pods, empty uses the service account's, else the kubeconfig context's, else default.
+	PodTemplate  map[string]any            `yaml:"pod_template"`  // PodTemplate is a pod manifest the runner merges its own onto.
+	PodTemplates map[string]map[string]any `yaml:"pod_templates"` // PodTemplates are merged over PodTemplate, in runs-on order, for jobs whose runs-on has the label they are keyed by.
+}
+
 // Metrics represents the configuration for the Prometheus metrics endpoint.
 type Metrics struct {
 	Enabled        bool          `yaml:"enabled"`         // Enabled indicates whether the metrics endpoint is exposed.
@@ -220,6 +228,7 @@ type Config struct {
 	Host        Host        `yaml:"host"`         // Host represents the configuration for the host.
 	Metrics     Metrics     `yaml:"metrics"`      // Metrics represents the configuration for the Prometheus metrics endpoint.
 	HealthCheck HealthCheck `yaml:"health_check"` // HealthCheck controls opt-in local task-admission checks.
+	Kubernetes  Kubernetes  `yaml:"kubernetes"`
 }
 
 // LoadDefault returns the default configuration.

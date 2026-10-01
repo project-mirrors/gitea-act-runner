@@ -6,6 +6,7 @@
 package e2e
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"os"
@@ -24,10 +25,12 @@ import (
 )
 
 type runnerOptions struct {
-	capacity  int
-	ephemeral bool
-	cacheV2   *bool
-	cacheHost string
+	capacity   int
+	ephemeral  bool
+	cacheV2    *bool
+	cacheHost  string
+	image      string
+	kubernetes *config.Kubernetes
 }
 
 func startRunner(t *testing.T, repo, labelName string, options runnerOptions) *poll.Poller {
@@ -61,7 +64,11 @@ func startRunner(t *testing.T, repo, labelName string, options runnerOptions) *p
 		cfg.Container.Network = fixture.network
 	}
 
-	rawLabel := labelName + ":docker://" + os.Getenv("E2E_JOB_IMAGE")
+	scheme := labels.SchemeDocker
+	if options.kubernetes != nil {
+		scheme, cfg.Kubernetes = labels.SchemeKubernetes, *options.kubernetes
+	}
+	rawLabel := labelName + ":" + scheme + "://" + cmp.Or(options.image, os.Getenv("E2E_JOB_IMAGE"))
 	label, err := labels.Parse(rawLabel)
 	if err != nil {
 		t.Fatalf("parse label %q: %v", rawLabel, err)

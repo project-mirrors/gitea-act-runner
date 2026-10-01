@@ -31,6 +31,7 @@ func TestCompatibility(t *testing.T) {
 	t.Run("cancellation_and_log_streaming", testRunCancellation)
 	t.Run("dispatch", testWorkflowDispatch)
 	t.Run("ephemeral", testEphemeralRunner)
+	t.Run("kubernetes", testKubernetes)
 }
 
 func testPayloads(t *testing.T) {

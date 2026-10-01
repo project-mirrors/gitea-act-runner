@@ -7,6 +7,7 @@ package runner
 import (
 	"archive/tar"
 	"bufio"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -22,6 +23,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +66,7 @@ type RunContext struct {
 	ExprEval            *expressionEvaluator
 	JobContainer        container.ExecutionsEnvironment
 	serviceContainers   []*serviceContainer
+	kubernetes          bool
 	containerSpec       model.ContainerSpec // container:, resolved once with platformImage
 	containerEnv        yaml.Node           // container.env of the kept containerSpec, decoded once the job env resolves
 	JobName             string
@@ -417,11 +420,7 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
 			AllocatePTY: rc.Config.AllocatePTY,
 		}
 		rc.cleanUpJobContainer = rc.JobContainer.Remove()
-		for k, v := range rc.getRunnerContext(ctx) {
-			if v, ok := v.(string); ok {
-				rc.Env["RUNNER_"+strings.ToUpper(k)] = v
-			}
-		}
+		rc.setRunnerContextEnv(ctx)
 		for _, env := range os.Environ() {
 			if k, v, ok := strings.Cut(env, "="); ok {
 				// don't override
@@ -431,16 +430,70 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
 			}
 		}
 
+		return rc.copyWorkflowFiles()(ctx)
+	}
+}
+
+func (rc *RunContext) setRunnerContextEnv(ctx context.Context) {
+	for k, v := range rc.getRunnerContext(ctx) {
+		if v, ok := v.(string); ok {
+			rc.Env["RUNNER_"+strings.ToUpper(k)] = v
+		}
+	}
+}
+
+var errKubernetesDocker = errors.New("docker actions and docker:// steps are not supported on Kubernetes")
+
+func (rc *RunContext) startKubernetesPod() common.Executor {
+	return func(ctx context.Context) error {
+		if rc.containerSpec.Options != "" || len(rc.containerSpec.Volumes) > 0 || rc.containerSpec.Credentials != nil {
+			return errors.New("container options, volumes and credentials are not supported on Kubernetes")
+		}
+		var options container.KubernetesOptions
+		if rc.Config.KubernetesPicker != nil {
+			options = rc.Config.KubernetesPicker(rc.runsOnPlatformNames(ctx))
+		}
+		options.MaxLifetime, options.ForcePull = rc.Config.ContainerMaxLifetime, rc.Config.ForcePull
+		pod, err := container.NewKubernetesPod(options)
+		if err != nil {
+			return err
+		}
+		services, err := rc.jobServices(ctx, "")
+		if err != nil {
+			return err
+		}
+		for _, serviceID := range slices.Sorted(maps0.Keys(services)) {
+			input := services[serviceID]
+			if input.Username != "" || len(input.Binds) > 0 || len(input.Mounts) > 0 {
+				return fmt.Errorf("service %s: volumes and credentials are not supported on Kubernetes", serviceID)
+			}
+			rc.serviceContainers = append(rc.serviceContainers, &serviceContainer{name: serviceID, image: input.Image, container: pod.ServiceContainer(serviceID, input)})
+		}
+
+		logWriter := rc.commandLogWriter(ctx)
+		rc.JobContainer = pod.JobContainer(&container.NewContainerInput{
+			Entrypoint: []string{"tail", "-f", "/dev/null"},
+			WorkingDir: (&container.LinuxContainerEnvironmentExtensions{}).ToContainerPath(rc.Config.Workdir),
+			Image:      rc.platformImage,
+			Name:       rc.jobContainerName(),
+			Env:        []string{"LANG=C.UTF-8"},
+			Stdout:     logWriter,
+			Stderr:     logWriter,
+		})
+		rc.cleanUpJobContainer = func(ctx context.Context) error {
+			rc.printServiceLogs(ctx)
+			return rc.JobContainer.Remove()(ctx)
+		}
+		defer printStartJobContainerGroup(ctx, rc.platformImage, rc.jobContainerName(), "")()
 		return common.NewPipelineExecutor(
-			rc.JobContainer.Copy(rc.JobContainer.GetActPath()+"/", &container.FileEntry{
-				Name: "workflow/event.json",
-				Mode: 0o644,
-				Body: rc.EventJSON,
-			}, &container.FileEntry{
-				Name: "workflow/envs.txt",
-				Mode: 0o666,
-				Body: "",
-			}),
+			rc.JobContainer.Create(nil, nil),
+			rc.startServiceContainers(),
+			rc.JobContainer.Start(false),
+			func(ctx context.Context) error { rc.setRunnerContextEnv(ctx); return nil },
+			rc.captureJobContainerInfo(),
+			rc.copyWorkflowFiles(),
+			rc.reportUnstartedServices(),
+			rc.waitForServiceContainers(),
 		)(ctx)
 	}
 }
@@ -470,7 +523,6 @@ func WithJobVolumeCleanup(ctx context.Context, deferCleanup func(common.Executor
 func (rc *RunContext) startJobContainer() common.Executor {
 	return func(ctx context.Context) error {
 		rc.deferVolumeCleanup, _ = ctx.Value(jobVolumeCleanupKey{}).(func(common.Executor))
-		logger := common.Logger(ctx)
 		image := rc.platformImage
 		logWriter := rc.commandLogWriter(ctx)
 
@@ -495,78 +547,13 @@ func (rc *RunContext) startJobContainer() common.Executor {
 		networkName, createAndDeleteNetwork := rc.networkNameForGitea()
 		rc.cleanUpJobContainer = rc.cleanupJobResources(networkName, createAndDeleteNetwork, false)
 
-		var services map[string]*model.ContainerSpec
-		if err := model.DecodeEvaluated("job services", rc.Run.Job().RawServices, rc.ExprEval.shared(ctx).EvaluateYamlNode, &services); err != nil {
+		services, err := rc.jobServices(ctx, networkName)
+		if err != nil {
 			return err
 		}
 		for _, serviceID := range slices.Sorted(maps0.Keys(services)) {
-			spec := services[serviceID]
-			if spec == nil {
-				return fmt.Errorf("service %s has no container definition", serviceID)
-			}
-			spec.Image = strings.TrimPrefix(spec.Image, "docker://")
-			// GitHub compatibility: skip services whose image evaluates to an
-			// empty string, enabling conditional services via expressions
-			if spec.Image == "" {
-				logger.Infof("The service '%s' will not be started because the container definition has an empty image.", serviceID)
-				continue
-			}
-			envs := make([]string, 0, len(spec.Env)+len(rc.Config.ProxyEnv))
-			// a service reaches the internet the way the job does; its own env still wins
-			for k, v := range mergeMaps(rc.Config.ProxyEnv, spec.Env) {
-				envs = append(envs, fmt.Sprintf("%s=%s", k, v))
-			}
-			// keep these local: reusing username/password would overwrite the
-			// credentials the job container is pulled with further down
-			serviceUsername, servicePassword, err := registryCredentials(spec.Credentials, "")
-			if err != nil {
-				return fmt.Errorf("failed to handle service %s credentials: %w", serviceID, err)
-			}
-			cmd := spec.Cmd
-			if len(cmd) == 0 && spec.Command != "" {
-				if cmd, err = shellquote.Split(spec.Command); err != nil {
-					return fmt.Errorf("failed to parse service %s command: %w", serviceID, err)
-				}
-			}
-			var entrypoint []string
-			if spec.Entrypoint != "" {
-				entrypoint = []string{spec.Entrypoint}
-			}
-
-			serviceBinds, serviceMounts, _ := splitVolumes(spec.Volumes)
-
-			exposedPorts, portBindings, err := nat.ParsePortSpecs(spec.Ports)
-			if err != nil {
-				return fmt.Errorf("failed to parse service %s ports: %w", serviceID, err)
-			}
-
-			serviceContainerName := createContainerName(rc.jobContainerName(), serviceID)
-			serviceLog := common.NewLineWriter(rawLogLine(ctx)) // raw, so a service's output cannot set the job's env, outputs or state
-			c := newContainer(&container.NewContainerInput{
-				Name:            serviceContainerName,
-				Image:           spec.Image,
-				Username:        serviceUsername,
-				Password:        servicePassword,
-				Entrypoint:      entrypoint,
-				Cmd:             cmd,
-				Env:             envs,
-				Mounts:          serviceMounts,
-				Binds:           serviceBinds,
-				Stdout:          serviceLog,
-				Stderr:          serviceLog,
-				Privileged:      rc.Config.Privileged,
-				UsernsMode:      rc.Config.UsernsMode,
-				Platform:        rc.Config.ContainerArchitecture,
-				AutoRemove:      false, // so a dead service's log survives, cleanupJobResources removes it
-				WorkflowOptions: spec.Options,
-				NetworkMode:     networkName,
-				NetworkAliases:  []string{serviceID},
-				ExposedPorts:    exposedPorts,
-				PortBindings:    portBindings,
-				ValidVolumes:    rc.Config.ValidVolumes, // not validVolumes(), a service gets no docker socket
-				AllocatePTY:     rc.Config.AllocatePTY,
-			})
-			rc.serviceContainers = append(rc.serviceContainers, &serviceContainer{name: serviceID, image: spec.Image, container: c})
+			input := services[serviceID]
+			rc.serviceContainers = append(rc.serviceContainers, &serviceContainer{name: serviceID, image: input.Image, container: newContainer(input)})
 		}
 
 		// For Gitea, `jobContainerNetwork` should be the same as `networkName`
@@ -575,7 +562,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 		ext := container.LinuxContainerEnvironmentExtensions{}
 		containerInput := &container.NewContainerInput{
 			Cmd:             nil,
-			Entrypoint:      []string{"sleep", fmt.Sprint(rc.Config.ContainerMaxLifetime.Round(time.Second).Seconds())},
+			Entrypoint:      []string{"sleep", strconv.FormatInt(int64(rc.Config.ContainerMaxLifetime.Round(time.Second).Seconds()), 10)},
 			WorkingDir:      ext.ToContainerPath(rc.Config.Workdir),
 			Image:           image,
 			Username:        username,
@@ -623,18 +610,84 @@ func (rc *RunContext) startJobContainer() common.Executor {
 			rc.JobContainer.Create(rc.Config.ContainerCapAdd, rc.Config.ContainerCapDrop),
 			rc.JobContainer.Start(false),
 			rc.captureJobContainerInfo(),
-			rc.JobContainer.Copy(rc.JobContainer.GetActPath()+"/", &container.FileEntry{
-				Name: "workflow/event.json",
-				Mode: 0o644,
-				Body: rc.EventJSON,
-			}, &container.FileEntry{
-				Name: "workflow/envs.txt",
-				Mode: 0o666,
-				Body: "",
-			}),
+			rc.copyWorkflowFiles(),
 			rc.waitForServiceContainers(),
 		)(ctx)
 	}
+}
+
+func (rc *RunContext) jobServices(ctx context.Context, networkName string) (map[string]*container.NewContainerInput, error) {
+	var services map[string]*model.ContainerSpec
+	if err := model.DecodeEvaluated("job services", rc.Run.Job().RawServices, rc.ExprEval.shared(ctx).EvaluateYamlNode, &services); err != nil {
+		return nil, err
+	}
+	inputs := map[string]*container.NewContainerInput{}
+	for _, serviceID := range slices.Sorted(maps0.Keys(services)) {
+		spec := services[serviceID]
+		if spec == nil {
+			return nil, fmt.Errorf("service %s has no container definition", serviceID)
+		}
+		spec.Image = strings.TrimPrefix(spec.Image, "docker://")
+		// GitHub compatibility: skip services whose image evaluates to an
+		// empty string, enabling conditional services via expressions
+		if spec.Image == "" {
+			common.Logger(ctx).Infof("The service '%s' will not be started because the container definition has an empty image.", serviceID)
+			continue
+		}
+		envs := make([]string, 0, len(spec.Env)+len(rc.Config.ProxyEnv))
+		// a service reaches the internet the way the job does; its own env still wins
+		for k, v := range mergeMaps(rc.Config.ProxyEnv, spec.Env) {
+			envs = append(envs, fmt.Sprintf("%s=%s", k, v))
+		}
+		serviceUsername, servicePassword, err := registryCredentials(spec.Credentials, "")
+		if err != nil {
+			return nil, fmt.Errorf("failed to handle service %s credentials: %w", serviceID, err)
+		}
+		cmd := spec.Cmd
+		if len(cmd) == 0 && spec.Command != "" {
+			if cmd, err = shellquote.Split(spec.Command); err != nil {
+				return nil, fmt.Errorf("failed to parse service %s command: %w", serviceID, err)
+			}
+		}
+		var entrypoint []string
+		if spec.Entrypoint != "" {
+			entrypoint = []string{spec.Entrypoint}
+		}
+
+		serviceBinds, serviceMounts, _ := splitVolumes(spec.Volumes)
+
+		exposedPorts, portBindings, err := nat.ParsePortSpecs(spec.Ports)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse service %s ports: %w", serviceID, err)
+		}
+
+		serviceLog := common.NewLineWriter(rawLogLine(ctx)) // raw, so a service's output cannot set the job's env, outputs or state
+		inputs[serviceID] = &container.NewContainerInput{
+			Name:            createContainerName(rc.jobContainerName(), serviceID),
+			Image:           spec.Image,
+			Username:        serviceUsername,
+			Password:        servicePassword,
+			Entrypoint:      entrypoint,
+			Cmd:             cmd,
+			Env:             envs,
+			Mounts:          serviceMounts,
+			Binds:           serviceBinds,
+			Stdout:          serviceLog,
+			Stderr:          serviceLog,
+			Privileged:      rc.Config.Privileged,
+			UsernsMode:      rc.Config.UsernsMode,
+			Platform:        rc.Config.ContainerArchitecture,
+			AutoRemove:      false, // so a dead service's log survives, cleanupJobResources removes it
+			WorkflowOptions: spec.Options,
+			NetworkMode:     networkName,
+			NetworkAliases:  []string{serviceID},
+			ExposedPorts:    exposedPorts,
+			PortBindings:    portBindings,
+			ValidVolumes:    rc.Config.ValidVolumes, // not validVolumes(), a service gets no docker socket
+			AllocatePTY:     rc.Config.AllocatePTY,
+		}
+	}
+	return inputs, nil
 }
 
 func (rc *RunContext) commandLogWriter(ctx context.Context) io.Writer {
@@ -975,6 +1028,13 @@ func (svc *serviceContainer) healthOutputSuffix() string {
 	return ": " + svc.info.HealthOutput
 }
 
+func (rc *RunContext) copyWorkflowFiles() common.Executor {
+	return rc.JobContainer.Copy(rc.JobContainer.GetActPath()+"/",
+		&container.FileEntry{Name: "workflow/event.json", Mode: 0o644, Body: rc.EventJSON},
+		&container.FileEntry{Name: "workflow/envs.txt", Mode: 0o666},
+	)
+}
+
 // captureJobContainerInfo is a convenience: failing to describe the container must not
 // fail the job.
 func (rc *RunContext) captureJobContainerInfo() common.Executor {
@@ -1043,9 +1103,12 @@ func (rc *RunContext) interpolateOutputs() common.Executor {
 func (rc *RunContext) startContainer() common.Executor {
 	return func(ctx context.Context) error {
 		var err error
-		if rc.IsHostEnv() {
+		switch {
+		case rc.kubernetes:
+			err = rc.startKubernetesPod()(ctx)
+		case rc.IsHostEnv():
 			err = rc.startHostEnvironment()(ctx)
-		} else {
+		default:
 			err = rc.startJobContainer()(ctx)
 		}
 		if err != nil {
@@ -1154,7 +1217,7 @@ func (rc *RunContext) Executor() (common.Executor, error) {
 }
 
 func (rc *RunContext) runsOnImage(ctx context.Context) (string, error) {
-	if rc.Run.Job().RunsOn() == nil {
+	if rc.Run.Job().RunsOn() == nil && rc.containerSpec.Image == "" {
 		common.Logger(ctx).Errorf("'runs-on' key not defined in %s", rc.String())
 	}
 
@@ -1201,13 +1264,13 @@ func (rc *RunContext) resolvePlatformImage(ctx context.Context) error {
 	if spec.Image != "" || imagelessContainer(withoutEnv) {
 		rc.containerSpec, rc.containerEnv = spec, env
 	}
-	if rc.containerSpec.Image != "" {
-		rc.platformImage = rc.containerSpec.Image
-		return nil
-	}
 	image, err := rc.runsOnImage(ctx)
-	rc.platformImage = image
-	return err
+	if err != nil {
+		return err
+	}
+	image, rc.kubernetes = strings.CutPrefix(image, "kubernetes://")
+	rc.platformImage = cmp.Or(rc.containerSpec.Image, image)
+	return nil
 }
 
 // imagelessContainer reports a container: mapping without an image key, which configures the runs-on image.

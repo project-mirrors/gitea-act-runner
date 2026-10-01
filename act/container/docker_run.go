@@ -7,7 +7,6 @@
 package container
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
@@ -25,16 +24,12 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
-	"gitea.com/gitea/runner/act/filecollector"
 
 	"dario.cat/mergo"
 	"github.com/bmatcuk/doublestar/v4"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/cli/cli/compose/loader"
 	"github.com/docker/cli/cli/connhelper"
-	"github.com/go-git/go-billy/v5/helper/polyfill"
-	"github.com/go-git/go-billy/v5/osfs"
-	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/joho/godotenv"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
@@ -982,42 +977,7 @@ func (cr *containerReference) copyDir(dstPath, srcPath string, useGitIgnore, ski
 				logger.Error(err)
 			}
 		}(tarFile)
-		tw := tar.NewWriter(tarFile)
-
-		srcPrefix := filepath.Dir(srcPath)
-		if !strings.HasSuffix(srcPrefix, string(filepath.Separator)) {
-			srcPrefix += string(filepath.Separator)
-		}
-		logger.Debugf("Stripping prefix:%s src:%s", srcPrefix, srcPath)
-
-		var ignorer gitignore.Matcher
-		if useGitIgnore {
-			ps, err := gitignore.ReadPatterns(polyfill.New(osfs.New(srcPath)), nil)
-			if err != nil {
-				logger.Debugf("Error loading .gitignore: %v", err)
-			}
-
-			ignorer = gitignore.NewMatcher(ps)
-		}
-
-		fc := &filecollector.FileCollector{
-			Ignorer:    ignorer,
-			SrcPath:    srcPath,
-			SrcPrefix:  srcPrefix,
-			SkipGitDir: skipGitDir,
-			Handler: &filecollector.TarCollector{
-				TarWriter: tw,
-				UID:       cr.UID,
-				GID:       cr.GID,
-				DstDir:    dstPath[1:],
-			},
-		}
-
-		err = filepath.Walk(srcPath, fc.CollectFiles(ctx, []string{}))
-		if err != nil {
-			return err
-		}
-		if err := tw.Close(); err != nil {
+		if err := writeDirTar(ctx, tarFile, dstPath, srcPath, useGitIgnore, skipGitDir, cr.UID, cr.GID); err != nil {
 			return err
 		}
 
@@ -1042,30 +1002,12 @@ func (cr *containerReference) copyContent(dstPath string, files ...*FileEntry) c
 		if cr.id == "" {
 			return cr.missingContainerError("copy to %s", dstPath)
 		}
-		logger := common.Logger(ctx)
 		var buf bytes.Buffer
-		tw := tar.NewWriter(&buf)
-		for _, file := range files {
-			logger.Debugf("Writing entry to tarball %s len:%d", file.Name, len(file.Body))
-			hdr := &tar.Header{
-				Name: file.Name,
-				Mode: file.Mode,
-				Size: int64(len(file.Body)),
-				Uid:  cr.UID,
-				Gid:  cr.GID,
-			}
-			if err := tw.WriteHeader(hdr); err != nil {
-				return err
-			}
-			if _, err := tw.Write([]byte(file.Body)); err != nil {
-				return err
-			}
-		}
-		if err := tw.Close(); err != nil {
+		if err := writeFilesTar(ctx, &buf, cr.UID, cr.GID, files...); err != nil {
 			return err
 		}
 
-		logger.Debugf("Extracting content to '%s'", dstPath)
+		common.Logger(ctx).Debugf("Extracting content to '%s'", dstPath)
 		_, err := cr.cli.CopyToContainer(ctx, cr.id, client.CopyToContainerOptions{
 			DestinationPath: dstPath,
 			Content:         &buf,

@@ -292,6 +292,9 @@ func execAsDocker(ctx context.Context, step actionStep, actionName, actionDir, b
 	logger := common.Logger(ctx)
 	rc := step.getRunContext()
 	action := step.getActionModel()
+	if rc.kubernetes {
+		return errKubernetesDocker
+	}
 
 	var prepImage common.Executor
 	var image string

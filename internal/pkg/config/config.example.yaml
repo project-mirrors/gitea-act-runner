@@ -53,12 +53,13 @@ runner:
   # scratch directories (left behind when a host cleanup delete stalls) older than
   # this duration. Setting either workdir_cleanup_age or idle_cleanup_interval to 0
   # (or any non-positive value) disables stale-directory cleanup entirely, along with
-  # the docker network and volume cleanup below.
+  # the docker and Kubernetes cleanup below.
   #workdir_cleanup_age: 24h
   # Cadence for the idle cleanup pass. Besides the directories above, on runners that use
   # docker it removes the per-job networks and volumes of jobs this runner did not live to
   # tear down, which would otherwise hold a subnet of the daemon address pool and the job's
-  # workspace contents until the host is rebuilt.
+  # workspace contents until the host is rebuilt. On runners with kubernetes labels it
+  # removes such jobs' pods and Secrets.
   #idle_cleanup_interval: 10m
   # The base interval for periodic log flush to the Gitea instance.
   # Logs may be sent earlier if the buffer reaches log_report_batch_size
@@ -106,8 +107,7 @@ runner:
   # terminal; tools like `docker build` emit redrawing progress frames into the captured log
   # when a TTY is present.
   #allocate_pty: false
-  # Image for a job whose runs-on matches none of the labels above. A runner without a
-  # docker daemon runs such a job on the host instead.
+  # Image for a job whose runs-on matches none of the labels above, see the Labels section of the README for where it runs.
   #default_image: "docker.gitea.com/runner-images:ubuntu-latest"
   # What to mount at RUNNER_TOOL_CACHE (/opt/hostedtoolcache), where setup actions install tools:
   #   none:   nothing. A docker job sees what its image ships there, a host job an empty dir, and
@@ -279,6 +279,14 @@ host:
   # The parent directory of a job's working directory.
   # If it's empty, $HOME/.cache/act/ will be used.
   #workdir_parent:
+
+# Jobs that run as Kubernetes pods, see docs/kubernetes.md.
+kubernetes:
+  #kubeconfig: ""
+  #namespace: ""
+  #pod_template: {}
+  # Pod templates merged over pod_template, in runs-on order, for jobs whose runs-on has the label they are keyed by.
+  #pod_templates: {}
 
 # Optional local task-admission checks. Disabled by default. When enabled, low
 # disk space or a failing script pauses new task fetching; existing jobs continue.

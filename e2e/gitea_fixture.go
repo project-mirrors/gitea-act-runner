@@ -23,6 +23,7 @@ import (
 
 	"gitea.com/gitea/runner/act/container"
 
+	"github.com/moby/moby/api/pkg/stdcopy"
 	apicontainer "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	mobyclient "github.com/moby/moby/client"
@@ -306,9 +307,14 @@ func randomToken(n int) string {
 }
 
 func (f *GiteaFixture) exec(ctx context.Context, cmd []string) (string, error) {
-	created, err := f.cli.ExecCreate(ctx, f.id, mobyclient.ExecCreateOptions{
+	return containerExec(ctx, f.cli, f.id, "git", nil, cmd...) // gitea refuses root
+}
+
+func containerExec(ctx context.Context, cli mobyclient.APIClient, id, user string, stdin io.Reader, cmd ...string) (string, error) {
+	created, err := cli.ExecCreate(ctx, id, mobyclient.ExecCreateOptions{
 		Cmd:          cmd,
-		User:         "git", // gitea refuses root
+		User:         user,
+		AttachStdin:  stdin != nil,
 		AttachStdout: true,
 		AttachStderr: true,
 	})
@@ -316,18 +322,24 @@ func (f *GiteaFixture) exec(ctx context.Context, cmd []string) (string, error) {
 		return "", err
 	}
 
-	attached, err := f.cli.ExecAttach(ctx, created.ID, mobyclient.ExecAttachOptions{})
+	attached, err := cli.ExecAttach(ctx, created.ID, mobyclient.ExecAttachOptions{})
 	if err != nil {
 		return "", err
 	}
 	defer attached.Close()
+	if stdin != nil {
+		go func() {
+			_, _ = io.Copy(attached.Conn, stdin)
+			_ = attached.CloseWrite()
+		}()
+	}
 
 	var out bytes.Buffer
-	if _, err := io.Copy(&out, attached.Reader); err != nil {
+	if _, err := stdcopy.StdCopy(&out, &out, attached.Reader); err != nil {
 		return "", err
 	}
 
-	inspected, err := f.cli.ExecInspect(ctx, created.ID, mobyclient.ExecInspectOptions{})
+	inspected, err := cli.ExecInspect(ctx, created.ID, mobyclient.ExecInspectOptions{})
 	if err != nil {
 		return "", err
 	}

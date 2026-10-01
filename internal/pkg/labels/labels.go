@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	SchemeHost   = "host"
-	SchemeDocker = "docker"
+	SchemeHost       = "host"
+	SchemeDocker     = "docker"
+	SchemeKubernetes = "kubernetes"
 
 	// SelfHostedPlatform is the platform marker act treats as "run on the host".
 	SelfHostedPlatform = "-self-hosted"
@@ -42,8 +43,9 @@ func Parse(str string) (*Label, error) {
 	if len(splits) >= 3 {
 		label.Arg = splits[2]
 	}
-	if label.Schema != SchemeHost && label.Schema != SchemeDocker {
-		// Not a schema we know: the colon belongs to the label name itself.
+	kubernetes := label.Schema == SchemeKubernetes && strings.HasPrefix(label.Arg, "//") && len(label.Arg) > 2
+	if label.Schema != SchemeHost && label.Schema != SchemeDocker && !kubernetes {
+		// Not a schema we know, or kubernetes without an image: the colon belongs to the label name itself.
 		return &Label{
 			Name:   str,
 			Schema: SchemeHost,
@@ -72,10 +74,11 @@ func (l Labels) PickPlatform(runsOn []string) string {
 		case SchemeDocker:
 			// "//" will be ignored
 			platforms[label.Name] = strings.TrimPrefix(label.Arg, "//")
+		case SchemeKubernetes:
+			platforms[label.Name] = SchemeKubernetes + ":" + label.Arg
 		case SchemeHost:
 			platforms[label.Name] = SelfHostedPlatform
 		default:
-			// unreachable: Parse only produces host or docker schemas
 			continue
 		}
 	}

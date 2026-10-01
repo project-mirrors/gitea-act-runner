@@ -24,10 +24,6 @@ import (
 const (
 	networkCreateAttempts   = 3
 	networkCreateRetryDelay = time.Second
-
-	// marks the networks a runner creates for its jobs, so it can tell its own leftovers from
-	// those of another runner sharing the daemon
-	runnerUUIDLabel = "com.gitea.runner.uuid"
 )
 
 // RemoveOrphanNetworks removes the networks this runner created for jobs whose teardown did

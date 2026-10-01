@@ -172,15 +172,21 @@ A label is written as:
 | Part | Meaning |
 | --- | --- |
 | `name` | The name a workflow refers to in `runs-on`, e.g. `ubuntu-latest`. |
-| `schema` | Either `docker` or `host`. Defaults to `host` when omitted. |
-| `args` | Only used by the `docker` schema: the image to run the job in. |
+| `schema` | `docker`, `kubernetes` or `host`. Defaults to `host` when omitted. |
+| `args` | Only used by the `docker` and `kubernetes` schemas: the image to run the job in. |
 
-Two schemas are supported:
+Three schemas are supported:
 
 - **`docker://<image>`** — the job runs inside a container created from `<image>`:
 
   ```text
   ubuntu-latest:docker://docker.gitea.com/runner-images:ubuntu-latest
+  ```
+
+- **`kubernetes://<image>`** — the job runs as a Kubernetes pod created from `<image>`, see **[docs/kubernetes.md](docs/kubernetes.md)**:
+
+  ```text
+  ubuntu-latest:kubernetes://docker.gitea.com/runner-images:ubuntu-latest
   ```
 
 - **`host`** — the job's steps run directly on the machine the runner is on, using the tools installed there:
@@ -197,9 +203,9 @@ ubuntu-latest:docker://docker.gitea.com/runner-images:ubuntu-latest,macos:host
 
 a workflow with `runs-on: ubuntu-latest` is executed in the `runner-images:ubuntu-latest` container, and one with `runs-on: macos` is executed directly on the host.
 
-Names may themselves contain a colon (for example `pool:e57e18d4-10d4-406f-93bf-60f127221bdd`); only `host` and `docker` are treated as schemas.
+Names may themselves contain a colon, for example `pool:e57e18d4-10d4-406f-93bf-60f127221bdd`. Only `host`, `docker` and `kubernetes` are treated as schemas.
 
-If a job's `runs-on` matches none of the runner's labels, or sets no `runs-on` at all, it still runs: in `runner.default_image` where docker is available, on the host where it is not. Images maintained for this purpose are listed at [gitea/runner-images](https://gitea.com/gitea/runner-images).
+If a job's `runs-on` matches none of the runner's labels, or sets no `runs-on` at all, it still runs in `runner.default_image`: as a container when the runner has `docker` labels, as a pod when it has `kubernetes` labels, else as a container where docker is available and on the host where it is not. Images maintained for this purpose are listed at [gitea/runner-images](https://gitea.com/gitea/runner-images).
 
 Labels are chosen at registration time (`--labels`, or the interactive prompt) and can be changed afterwards by editing `runner.labels` in the config file, or in the Gitea UI under the runner's settings.
 
@@ -351,6 +357,7 @@ While the runner is idle it cleans up after earlier jobs:
 - only purely numeric subdirectories under `container.workdir_parent` are treated as task workspaces and may be removed
 - cleanup assumes `container.workdir_parent` is not shared across multiple runners
 - on runners that use docker, per-job networks left behind by jobs the runner did not live to tear down are removed, identified by the `com.gitea.runner.uuid` label carrying this runner's uuid
+- on runners with `kubernetes` labels, job pods with that label older than `runner.workdir_cleanup_age` are removed the same way, together with their Secrets
 - cleanup runs every `runner.idle_cleanup_interval` (default: `10m`; set `0` to disable), and setting either knob to `0` disables all of the above
 
 #### Post-task script (`runner.post_task_script`)

@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"gitea.com/gitea/runner/act/container"
 	"gitea.com/gitea/runner/internal/pkg/config"
+	"gitea.com/gitea/runner/internal/pkg/labels"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -329,8 +331,20 @@ func TestRunnerOnIdleRemovesOrphanNetworks(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { removeOrphanJobVolumes = origRemoveOrphanJobVolumes })
+	var sweptPods []string
+	origRemoveOrphanKubernetesResources := removeOrphanKubernetesResources
+	removeOrphanKubernetesResources = func(ctx context.Context, options container.KubernetesOptions, createdBefore time.Time) error {
+		_, hasDeadline := ctx.Deadline()
+		assert.True(t, hasDeadline)
+		sweptPods = append(sweptPods, options.RunnerUUID)
+		assert.Equal(t, now.Add(-24*time.Hour), createdBefore)
+		return nil
+	}
+	t.Cleanup(func() { removeOrphanKubernetesResources = origRemoveOrphanKubernetesResources })
+	kubernetesLabel, err := labels.Parse("k8s:kubernetes://node")
+	require.NoError(t, err)
 
-	r := &Runner{uuid: "runner-1", cfg: cfg, now: func() time.Time { return now }}
+	r := &Runner{uuid: "runner-1", cfg: cfg, labels: labels.Labels{kubernetesLabel}, now: func() time.Time { return now }}
 	r.isolatedCacheContainer = func() string { return "a1b2c3d4e5f6" }
 	r.OnIdle(context.Background())
 	assert.Equal(t, []string{"runner-1"}, swept)
@@ -353,4 +367,5 @@ func TestRunnerOnIdleRemovesOrphanNetworks(t *testing.T) {
 	hostOnly.OnIdle(context.Background())
 	assert.Equal(t, []string{"runner-1", "runner-2"}, sweptVolumes)
 	assert.Equal(t, []string{"a1b2c3d4e5f6", ""}, detached)
+	assert.Equal(t, []string{"runner-1"}, sweptPods)
 }

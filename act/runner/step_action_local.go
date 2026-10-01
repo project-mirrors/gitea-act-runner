@@ -61,11 +61,14 @@ func (sal *stepActionLocal) main() common.Executor {
 				treader := tar.NewReader(tars)
 				header, err := treader.Next()
 				if errors.Is(err, io.EOF) {
+					tars.Close()
 					return nil, nil, os.ErrNotExist
 				} else if err != nil {
+					tars.Close()
 					return nil, nil, err
 				}
 				if header.FileInfo().Mode()&os.ModeSymlink == os.ModeSymlink {
+					tars.Close()
 					spath, err = symlinkJoin(spath, header.Linkname, containerActionPath)
 					if err != nil {
 						return nil, nil, err

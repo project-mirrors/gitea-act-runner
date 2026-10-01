@@ -1,0 +1,20 @@
+name: kubernetes
+on: push
+jobs:
+  pod:
+    runs-on: e2e-kubernetes
+    services:
+      web:
+        image: ${{ vars.E2E_SERVICE_IMAGE }}
+        env:
+          NGINX_ENTRYPOINT_QUIET_LOGS: 1
+        options: --health-cmd "wget -q -O /dev/null http://localhost/" --health-interval 1s
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          test -f .gitea/workflows/kubernetes.yml
+          echo "FROM_ENV=exported" >> "$GITHUB_ENV"
+      - run: |
+          test "$FROM_ENV" = exported
+          test -n "$KUBERNETES_SERVICE_HOST" -a -n "${{ runner.arch }}"
+          curl -fsS -o /dev/null http://web/

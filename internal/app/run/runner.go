@@ -153,6 +153,8 @@ var removeOrphanNetworks = container.RemoveOrphanNetworks
 
 var removeOrphanJobVolumes = container.RemoveOrphanJobVolumes
 
+var removeOrphanKubernetesResources = container.RemoveOrphanKubernetesResources
+
 // OnIdle performs lightweight maintenance during polling idle windows.
 // It runs synchronously on the poller goroutine; shouldRunIdleCleanup
 // throttles invocations to runner.idle_cleanup_interval so the impact on
@@ -175,6 +177,13 @@ func (r *Runner) OnIdle(ctx context.Context) {
 		r.cleanupStaleDirs(ctx, hostRoot, isHostScratchDir)
 	}
 	r.cleanupOrphanDockerResources(ctx)
+	if r.uuid != "" && r.usesKubernetes() {
+		ctx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		if err := removeOrphanKubernetesResources(ctx, r.kubernetesOptions(nil), r.now().Add(-r.cfg.Runner.WorkdirCleanupAge)); err != nil {
+			log.Warnf("failed to clean up job pods left behind by earlier jobs: %v", err)
+		}
+	}
 }
 
 func (r *Runner) cleanupOrphanDockerResources(ctx context.Context) {
@@ -402,10 +411,36 @@ func (r *Runner) requiresDocker() bool {
 	return r.labels.RequireDocker() || r.cfg.Container.RequireDocker
 }
 
+func (r *Runner) usesKubernetes() bool {
+	return slices.ContainsFunc(r.labels, func(label *labels.Label) bool { return label.Schema == labels.SchemeKubernetes })
+}
+
+// kubernetesOptions layers the pod templates of the runner labels a job runs on, in runs-on order, over the shared one.
+func (r *Runner) kubernetesOptions(runsOn []string) container.KubernetesOptions {
+	options := container.KubernetesOptions{
+		Kubeconfig:   r.cfg.Kubernetes.Kubeconfig,
+		Namespace:    r.cfg.Kubernetes.Namespace,
+		PodTemplates: []map[string]any{r.cfg.Kubernetes.PodTemplate},
+		RunnerUUID:   r.uuid,
+	}
+	names := r.labels.Names()
+	for index, name := range runsOn {
+		if template, ok := r.cfg.Kubernetes.PodTemplates[name]; ok && slices.Contains(names, name) && !slices.Contains(runsOn[:index], name) {
+			options.PodTemplates = append(options.PodTemplates, template)
+		}
+	}
+	return options
+}
+
 // fallbackPlatform is where a job runs whose runs-on matches no label, as any job without a
 // runs-on does, since Gitea sends those to every runner.
 func (r *Runner) fallbackPlatform(ctx context.Context) string {
-	if r.requiresDocker() || dockerReachable(ctx) {
+	switch {
+	case r.requiresDocker():
+		return r.cfg.Runner.DefaultImage
+	case r.usesKubernetes():
+		return labels.SchemeKubernetes + "://" + r.cfg.Runner.DefaultImage
+	case dockerReachable(ctx):
 		return r.cfg.Runner.DefaultImage
 	}
 	return labels.SelfHostedPlatform
@@ -449,7 +484,8 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		}
 		return fallbackPlatform()
 	}
-	cacheURL, cacheContainer := r.cacheForJob(job, platformPicker)
+	platform := platformPicker(job.RunsOn())
+	cacheURL, cacheContainer := r.cacheForJob(job, platform)
 	if cacheURL != "" {
 		envs["ACTIONS_CACHE_URL"] = cacheURL + "/"
 	}
@@ -458,7 +494,13 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	// act reaches them by their workflow key.
 	var services map[string]yaml.Node
 	_ = job.RawServices.Decode(&services) // a whole-value expression names no service before evaluation
-	proxyEnv := JobProxyEnv(envs, cacheURL, slices.Sorted(maps.Keys(services)))
+	serviceNames := slices.Sorted(maps.Keys(services))
+	if strings.HasPrefix(platform, labels.SchemeKubernetes+"://") {
+		for index, name := range serviceNames {
+			serviceNames[index] = container.KubernetesServiceName(name)
+		}
+	}
+	proxyEnv := JobProxyEnv(envs, cacheURL, serviceNames)
 	maps.Copy(envs, proxyEnv)
 
 	if r.capabilities != "" {
@@ -585,6 +627,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		SharedToolCache:                   r.cfg.Runner.ToolCacheMode == config.ToolCacheModeShared,
 		InsecureSkipTLS:                   r.cfg.Runner.Insecure,
 		RunnerName:                        r.name,
+		KubernetesPicker:                  r.kubernetesOptions,
 	}
 
 	rr, err := runner.New(runnerConfig)
@@ -867,10 +910,10 @@ func warnIgnoredCacheSecret(cfg *config.Config) {
 }
 
 // cacheForJob returns the cache address for the job, and the container to attach to its network to reach it there.
-func (r *Runner) cacheForJob(job *model.Job, pickPlatform func([]string) string) (string, string) {
+func (r *Runner) cacheForJob(job *model.Job, platform string) (string, string) {
 	jobContainer := job.Container()
 	cacheContainer := ""
-	if jobContainer != nil && jobContainer.Image != "" || pickPlatform(job.RunsOn()) != labels.SelfHostedPlatform {
+	if !strings.HasPrefix(platform, labels.SchemeKubernetes+"://") && (jobContainer != nil && jobContainer.Image != "" || platform != labels.SelfHostedPlatform) {
 		cacheContainer = r.isolatedCacheContainer()
 	}
 	if cacheContainer == "" {

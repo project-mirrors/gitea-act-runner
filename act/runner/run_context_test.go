@@ -1629,10 +1629,13 @@ func createRunsOnRunContext(t *testing.T, runsOn string) *RunContext {
 	})
 }
 
-func TestRunContextContainerImageCannotSelectHost(t *testing.T) {
+func TestRunContextContainerImageCannotSelectBackend(t *testing.T) {
 	rc := createIfTestRunContext(map[string]*model.Job{"job1": createJob(t, "container: -self-hosted", "")})
 	require.NoError(t, rc.resolvePlatformImage(t.Context()))
 	assert.False(t, rc.IsHostEnv())
+
+	rc = createIfTestRunContext(map[string]*model.Job{"job1": createJob(t, "runs-on: ${{ fromJSON('x') }}\ncontainer: node", "")})
+	require.ErrorContains(t, rc.resolvePlatformImage(t.Context()), "runs-on")
 }
 
 func TestRunContextImageOS(t *testing.T) {

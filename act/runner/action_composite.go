@@ -104,6 +104,7 @@ func newCompositeRunContext(ctx context.Context, parent *RunContext, step action
 		Parent:        parent,
 		EventJSON:     parent.EventJSON,
 		platformImage: parent.platformImage,
+		kubernetes:    parent.kubernetes,
 		jobIndex:      parent.jobIndex,
 		jobTotal:      parent.jobTotal,
 	}

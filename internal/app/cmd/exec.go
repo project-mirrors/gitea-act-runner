@@ -618,7 +618,7 @@ func loadExecCmd(ctx context.Context) *cobra.Command {
 	execCmd.PersistentFlags().BoolVarP(&execArg.noSkipCheckout, "no-skip-checkout", "", false, "Do not skip actions/checkout")
 	execCmd.PersistentFlags().BoolVarP(&execArg.debug, "debug", "d", false, "enable debug log")
 	execCmd.PersistentFlags().BoolVarP(&execArg.dryrun, "dryrun", "n", false, "dryrun mode")
-	execCmd.PersistentFlags().StringVarP(&execArg.image, "image", "i", config.DefaultImage, "Docker image to use. Use \"-self-hosted\" to run directly on the host.")
+	execCmd.PersistentFlags().StringVarP(&execArg.image, "image", "i", config.DefaultImage, "Docker image to use. Use \"kubernetes://<image>\" to run it as a pod, \"-self-hosted\" to run directly on the host.")
 	execCmd.PersistentFlags().StringVarP(&execArg.toolCacheMode, "tool-cache-mode", "", config.ToolCacheModeNone, "What to mount at RUNNER_TOOL_CACHE: none, or shared to reuse one tool cache across runs")
 	execCmd.PersistentFlags().StringVarP(&execArg.network, "network", "", "", "Specify the network to which the container will connect")
 	execCmd.PersistentFlags().StringVarP(&execArg.githubInstance, "gitea-instance", "", "", "Gitea instance to use.")

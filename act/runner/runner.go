@@ -75,6 +75,7 @@ type Config struct {
 	// AppURL. It is never set for github.com or a GithubMirror, so the token stays on-instance.
 	DefaultActionInstanceIsSelfHosted bool
 	PlatformPicker                    func(labels []string) string
+	KubernetesPicker                  func(labels []string) container.KubernetesOptions
 	JobLoggerLevel                    *log.Level    // the level of job logger
 	ValidVolumes                      []string      // only volumes (and bind mounts) in this slice can be mounted on the job container or service containers
 	SharedToolCache                   bool          // one tool cache for all jobs instead of one per job

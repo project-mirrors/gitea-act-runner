@@ -75,6 +75,9 @@ const (
 	HealthUnhealthy = string(container.Unhealthy)
 )
 
+// marks what a runner creates for its jobs, telling its leftovers from another runner's
+const runnerUUIDLabel = "com.gitea.runner.uuid"
+
 // ErrContainerNotFound reports a container the daemon no longer knows. Its text is a
 // fragment, missingContainerError composes it into the message every operation shares.
 var ErrContainerNotFound = errors.New("does not exist")

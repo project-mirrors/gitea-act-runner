@@ -115,6 +115,7 @@ func TestPickPlatform(t *testing.T) {
 	ls := mustParse(t,
 		"ubuntu:docker://node:18",
 		"self-hosted:host",
+		"k8s:kubernetes://node:24",
 	)
 
 	tests := []struct {
@@ -123,6 +124,7 @@ func TestPickPlatform(t *testing.T) {
 		want   string
 	}{
 		{"docker strips leading slashes", []string{"ubuntu"}, "node:18"},
+		{"kubernetes keeps its scheme", []string{"k8s"}, "kubernetes://node:24"},
 		{"host maps to self-hosted marker", []string{"self-hosted"}, SelfHostedPlatform},
 		{"first match wins", []string{"self-hosted", "ubuntu"}, SelfHostedPlatform},
 		{"unknown label picks nothing", []string{"windows"}, ""},
