@@ -1,9 +1,7 @@
 name: checks
 on:
-  push:
-    branches:
-      - main
   pull_request:
+  workflow_dispatch:
 
 env:
   # The runner image ships a stale docker.io login; point docker at an empty config so
