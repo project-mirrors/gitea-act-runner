@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -229,6 +230,15 @@ func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
 	require.NoError(t, archive.Close())
 	_, err = job.GetContainerArchive(ctx, workdir+"/missing")
 	require.Error(t, err)
+
+	actionDir := filepath.Join(t.TempDir(), "action")
+	require.NoError(t, os.MkdirAll(actionDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(actionDir, "index.js"), []byte("main()"), 0o644))
+	require.NoError(t, job.CopyDir(workdir+"/act/actions/sha/", actionDir+"/", false, false)(ctx))
+	script, err := os.ReadFile(workdir + "/act/actions/sha/index.js")
+	require.NoError(t, err)
+	assert.Equal(t, "main()", string(script))
+	assert.Contains(t, cluster.requests["exec"][len(cluster.requests["exec"])-1], "command="+url.QueryEscape(workdir+"/act/actions/sha/"))
 
 	pathEnv := map[string]string{}
 	require.NoError(t, job.UpdateFromImageEnv(&pathEnv)(ctx))
