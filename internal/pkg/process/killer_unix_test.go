@@ -36,9 +36,8 @@ func processAlive(pid int) bool {
 	if b, readErr := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); readErr == nil {
 		// Format: "pid (comm) state ..." — state follows the closing ')' of the
 		// command name (which may itself contain spaces and parens).
-		rest := string(b)
-		if idx := strings.LastIndex(rest, ") "); idx >= 0 {
-			fields := strings.Fields(rest[idx+2:])
+		if _, after, found := strings.CutLast(string(b), ") "); found {
+			fields := strings.Fields(after)
 			if len(fields) > 0 && fields[0] == "Z" {
 				return false // zombie: terminated but not yet reaped
 			}
