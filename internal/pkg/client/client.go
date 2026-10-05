@@ -6,6 +6,7 @@ package client
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"connectrpc.com/connect"
 	"gitea.dev/actionslib/runner/v1"
@@ -20,9 +21,8 @@ type Client interface {
 	UpdateTask(context.Context, *connect.Request[runnerv1.UpdateTaskRequest]) (*connect.Response[runnerv1.UpdateTaskResponse], error)
 }
 
-// IsRegistrationRejected reports whether Gitea itself answered "unregistered runner", unlike a proxy's bare 401.
+// IsRegistrationRejected reports whether Gitea itself answered "unregistered runner", unlike a proxy's 401.
 func IsRegistrationRejected(err error) bool {
 	var connectErr *connect.Error
-	return errors.As(err, &connectErr) && connectErr.Code() == connect.CodeUnknown && connect.IsWireError(err) &&
-		connectErr.Message() == "rpc error: code = Unauthenticated desc = unregistered runner"
+	return errors.As(err, &connectErr) && strings.HasSuffix(connectErr.Message(), "unregistered runner")
 }

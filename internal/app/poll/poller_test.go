@@ -110,8 +110,8 @@ func TestPoller_FetchUnauthenticatedStopsPolling(t *testing.T) {
 		fetchErr error
 		rejected bool
 	}{
-		"connect": {connect_go.NewError(connect_go.CodeUnauthenticated, errors.New("unregistered runner")), false},
-		"gitea":   {connect_go.NewWireError(connect_go.CodeUnknown, errors.New("rpc error: code = Unauthenticated desc = unregistered runner")), true},
+		"proxy": {connect_go.NewError(connect_go.CodeUnauthenticated, errors.New("401 Unauthorized")), false},
+		"gitea": {connect_go.NewWireError(connect_go.CodeUnknown, errors.New("rpc error: code = Unauthenticated desc = unregistered runner")), true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			client := mocks.NewClient(t)

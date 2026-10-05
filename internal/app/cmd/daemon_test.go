@@ -128,6 +128,7 @@ func TestDaemonRemovesOnlyConsumedEphemeralRegistration(t *testing.T) {
 		{"ephemeral interrupted before task", true, true, nil, nil, false},
 		{"persistent once", false, false, nil, nil, false},
 		{"ephemeral rejected on fetch", true, false, nil, errUnregisteredRunner, true},
+		{"ephemeral rejected on fetch with 401", true, false, nil, connect.NewError(connect.CodeUnauthenticated, errors.New("unregistered runner")), true},
 		{"ephemeral proxy 401 on fetch", true, false, nil, connect.NewError(connect.CodeUnauthenticated, errors.New("HTTP status 401 Unauthorized")), false},
 		{"ephemeral rejected on declare", true, false, errUnregisteredRunner, nil, true},
 		{"persistent rejected on declare", false, false, errUnregisteredRunner, nil, false},
