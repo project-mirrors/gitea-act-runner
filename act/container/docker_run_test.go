@@ -762,6 +762,22 @@ func TestCheckVolumesRejectsEscapingHostPaths(t *testing.T) {
 	assert.Empty(t, hostConf.Binds)
 }
 
+func TestSanitizeConfigKeepsTmpfsMounts(t *testing.T) {
+	hostConfig, _ := mergeOptions(t, "", "--mount type=tmpfs,dst=/var/lib/mysql", false)
+	require.Len(t, hostConfig.Mounts, 1)
+
+	for _, validVolumes := range [][]string{nil, {"data"}} {
+		logger, hook := test.NewNullLogger()
+		_, sanitized := (&containerReference{input: &NewContainerInput{ValidVolumes: validVolumes}}).sanitizeConfig(common.WithLogger(context.Background(), logger), &container.Config{}, &container.HostConfig{Mounts: []mount.Mount{
+			hostConfig.Mounts[0],
+			{Type: mount.TypeVolume, Target: "/anonymous"},
+			{Type: mount.TypeTmpfs, Source: "/etc", Target: "/etc-copy"},
+		}})
+		assert.Equal(t, hostConfig.Mounts, sanitized.Mounts)
+		assert.Len(t, hook.AllEntries(), 2)
+	}
+}
+
 func TestContainerInfoFromInspect(t *testing.T) {
 	t.Run("reports no healthcheck when the image declares none", func(t *testing.T) {
 		info := containerInfoFromInspect(container.InspectResponse{

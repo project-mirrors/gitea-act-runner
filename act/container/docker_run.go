@@ -1158,9 +1158,9 @@ func parseOptionsHostConfig(options string) (*container.HostConfig, error) {
 // sanitizeConfig remove the invalid configurations from `config` and `hostConfig`
 func (cr *containerReference) sanitizeConfig(ctx context.Context, config *container.Config, hostConfig *container.HostConfig) (*container.Config, *container.HostConfig) {
 	logger := common.Logger(ctx)
+	matcher := newValidVolumeMatcher(ctx, cr.input.ValidVolumes)
 
 	if len(cr.input.ValidVolumes) > 0 {
-		matcher := newValidVolumeMatcher(ctx, cr.input.ValidVolumes)
 		// sanitize binds
 		sanitizedBinds := make([]string, 0, len(hostConfig.Binds))
 		for _, bind := range hostConfig.Binds {
@@ -1181,26 +1181,22 @@ func (cr *containerReference) sanitizeConfig(ctx context.Context, config *contai
 			}
 		}
 		hostConfig.Binds = sanitizedBinds
-		// sanitize mounts
-		sanitizedMounts := make([]mount.Mount, 0, len(hostConfig.Mounts))
-		for _, mt := range hostConfig.Mounts {
-			if matcher.isValid(mt.Source, mt.Type) {
-				sanitizedMounts = append(sanitizedMounts, mt)
-			} else {
-				logger.Warnf("[%s] is not a valid volume, will be ignored", mt.Source)
-			}
-		}
-		hostConfig.Mounts = sanitizedMounts
 	} else {
 		for _, bind := range hostConfig.Binds {
 			logger.Warnf("[%s] is not a valid volume, will be ignored", bind)
 		}
-		for _, mt := range hostConfig.Mounts {
+		hostConfig.Binds = []string{}
+	}
+	// sanitize mounts
+	sanitizedMounts := make([]mount.Mount, 0, len(hostConfig.Mounts))
+	for _, mt := range hostConfig.Mounts {
+		if matcher.isValid(mt.Source, mt.Type) {
+			sanitizedMounts = append(sanitizedMounts, mt)
+		} else {
 			logger.Warnf("[%s] is not a valid volume, will be ignored", mt.Source)
 		}
-		hostConfig.Binds = []string{}
-		hostConfig.Mounts = []mount.Mount{}
 	}
+	hostConfig.Mounts = sanitizedMounts
 
 	return config, hostConfig
 }
@@ -1282,6 +1278,9 @@ func newValidVolumeMatcher(ctx context.Context, validVolumes []string) validVolu
 
 func (m validVolumeMatcher) isValid(source string, sourceType mount.Type) bool {
 	if m.allowAll {
+		return true
+	}
+	if sourceType == mount.TypeTmpfs && source == "" { // backed by memory, exposes nothing from the host, same as --tmpfs
 		return true
 	}
 	if isHostVolumeSource(source, sourceType) {
