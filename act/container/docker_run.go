@@ -1117,6 +1117,10 @@ func sanitizeOptionsHostConfig(logger logrus.FieldLogger, hostConfig, trusted *c
 	// systempaths=unconfined lands in these two rather than in SecurityOpt
 	resetOption(logger, "--security-opt", &hostConfig.MaskedPaths, trusted.MaskedPaths)
 	resetOption(logger, "--security-opt", &hostConfig.ReadonlyPaths, trusted.ReadonlyPaths)
+	resetOption(logger, "--log-driver", &hostConfig.LogConfig.Type, trusted.LogConfig.Type) // drivers run in the daemon, egressing from its network
+	resetOption(logger, "--log-opt", &hostConfig.LogConfig.Config, trusted.LogConfig.Config)
+	resetOption(logger, "--oom-score-adj", &hostConfig.OomScoreAdj, trusted.OomScoreAdj) // -1000 exempts it from the host OOM killer
+	resetOption(logger, "--oom-kill-disable", &hostConfig.OomKillDisable, trusted.OomKillDisable)
 
 	// a driver mounts what it likes, e.g. local with device= binds any host path, which
 	// valid_volumes never gets to see

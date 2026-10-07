@@ -666,6 +666,9 @@ func TestSanitizeOptionsHostConfig(t *testing.T) {
 		DeviceCgroupRules: []string{"a *:* rwm"},
 		DeviceRequests:    []container.DeviceRequest{{Count: -1, Capabilities: [][]string{{"gpu"}}}},
 		Sysctls:           map[string]string{"net.ipv4.ip_forward": "1"},
+		LogConfig:         container.LogConfig{Type: "syslog", Config: map[string]string{"syslog-address": "tcp://169.254.169.254:514"}},
+		OomScoreAdj:       -1000,
+		OomKillDisable:    new(true),
 	}
 
 	sanitizeOptionsHostConfig(logger, hostConfig, &container.HostConfig{})
@@ -699,7 +702,9 @@ func TestMergeContainerConfigsStripsDangerousOptionsWhenUnprivileged(t *testing.
 	const dangerousOptions = "--pid=host --ipc=host --uts=host --cgroupns=host " +
 		"--userns=host --cap-add=ALL --security-opt seccomp=unconfined " +
 		"--security-opt apparmor=unconfined --volumes-from other --isolation process " +
-		"--runtime runc --cgroup-parent /custom --sysctl net.ipv4.ip_forward=1"
+		"--runtime runc --cgroup-parent /custom --sysctl net.ipv4.ip_forward=1 " +
+		"--log-driver=syslog --log-opt syslog-address=tcp://169.254.169.254:514 " +
+		"--oom-score-adj=-1000 --oom-kill-disable"
 
 	// whatever the workflow adds, an unprivileged container comes out exactly as the runner's
 	// own options alone describe it, field for field
