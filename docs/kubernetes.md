@@ -45,7 +45,7 @@ kubernetes:
           nvidia.com/gpu.present: "true"
 ```
 
-A job with `runs-on: [linux, gpu]` gets the `linux` and then the `gpu` entry of `pod_templates` merged over `pod_template`, while its image comes from the first of its labels the runner has. A template volume named `workspace` or `act` replaces the `emptyDir` the runner mounts at the workspace or at `/var/run/act`, for example to limit its size. Images are pulled by the cluster's `imagePullPolicy` default, a template's, or always with `container.force_pull`.
+A job with `runs-on: [linux, gpu]` gets the `linux` and then the `gpu` entry of `pod_templates` merged over `pod_template`, while its image comes from the first of its labels the runner has. A template volume named `workspace` or `act` replaces the `emptyDir` the runner mounts at the workspace or at `/var/run/act`, for example to limit its size. Images are pulled by the cluster's `imagePullPolicy` default, a template's, or always with `container.force_pull`. Like every config value, templates expand `${NAME}` from the runner's environment, so a shell command in a template writes `$${NAME}` for the pod's own variable.
 
 Job pods mount no service account token unless the template sets `automountServiceAccountToken: true`. Job pods and their Secrets are labeled `app.kubernetes.io/managed-by: gitea-runner` and `com.gitea.runner.uuid: <runner UUID>`. The idle cleanup removes those the runner did not get to remove, once they are older than `runner.workdir_cleanup_age`.
 

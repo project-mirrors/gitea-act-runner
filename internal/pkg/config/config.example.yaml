@@ -1,5 +1,6 @@
 # Every option with its default value, all commented out. Read this file, do not copy it.
 # `./gitea-runner config init` writes a config file to copy the lines you change into.
+# Values may read the runner's environment as ${NAME}, an unset NAME fails the load. $${NAME} is a literal ${NAME}.
 
 # Logging for the runner process itself (messages printed to stderr), plus the copy of
 # each task's log kept under log.job. Neither controls how workflow step output is streamed

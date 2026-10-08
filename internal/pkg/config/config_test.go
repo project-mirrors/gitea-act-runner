@@ -42,6 +42,38 @@ cache:
 	require.NoError(t, err)
 }
 
+func TestLoadDefault_ExpandsEnvironmentValues(t *testing.T) {
+	t.Setenv("RUNNER_CAPACITY", "4")
+	t.Setenv("RUNNER_LABEL", "linux:host")
+	t.Setenv("RUNNER_KEY", "fetch_timeout")
+	t.Setenv("RUNNER_EMPTY", "")
+	t.Setenv("RUNNER_MISSING", "")
+	require.NoError(t, os.Unsetenv("RUNNER_MISSING"))
+	path := write(t, `runner:
+  capacity: ${RUNNER_CAPACITY}
+  labels:
+    - ${RUNNER_LABEL}
+  envs:
+    LITERAL: $${RUNNER_LABEL}
+  ${RUNNER_KEY}: 1s
+cache:
+  enabled: ${RUNNER_EMPTY}
+`)
+
+	cfg, err := LoadDefault(path)
+	require.NoError(t, err)
+	assert.Equal(t, 4, cfg.Runner.Capacity)
+	assert.Equal(t, []string{"linux:host"}, cfg.Runner.Labels)
+	assert.Equal(t, map[string]string{"LITERAL": "${RUNNER_LABEL}"}, cfg.Runner.Envs)
+	assert.Equal(t, 5*time.Second, cfg.Runner.FetchTimeout)
+	assert.True(t, *cfg.Cache.Enabled)
+
+	_, err = LoadDefault(write(t, "runner:\n\n  capacity: ${RUNNER_MISSING}\n  file: ${RUNNER_MISSING}\n"))
+	require.ErrorContains(t, err, "line 3: ${RUNNER_MISSING} is not set\nline 4: ${RUNNER_MISSING} is not set")
+	_, err = LoadDefault(write(t, "runner:\n\n  capacity: ${RUNNER_LABEL}\n"))
+	require.ErrorContains(t, err, "line 3:")
+}
+
 func TestLoadDefault_CacheS3(t *testing.T) {
 	dir := t.TempDir()
 	accessPath := filepath.Join(dir, "access.key")

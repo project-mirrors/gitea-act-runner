@@ -4,12 +4,12 @@
 package config
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -32,6 +32,8 @@ const DefaultImage = "docker.gitea.com/runner-images:ubuntu-latest"
 // applied both at config load (for a configured script) and at the point of use
 // (so a programmatically built config still gets a sane bound).
 const DefaultPostTaskScriptTimeout = 5 * time.Minute
+
+var environmentReference = regexp.MustCompile(`\$?\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
 
 // Minimal is the smallest config file that runs the runner: options it does not
 // name keep their default, and it names none.
@@ -244,14 +246,18 @@ func LoadDefault(file string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open config file %q: %w", file, err)
 		}
-		if err := yaml.Unmarshal(content, cfg); err != nil {
+		var document yaml.Node
+		if err := yaml.Unmarshal(content, &document); err != nil {
 			return nil, fmt.Errorf("parse config file %q: %w", file, err)
 		}
-		warnUnknownKeys(file, content)
-		definedRunnerKeys, err = definedRunnerConfigKeys(content)
-		if err != nil {
-			return nil, fmt.Errorf("parse config file %q for defaults metadata: %w", file, err)
+		if err := expandEnvironment(&document); err != nil {
+			return nil, fmt.Errorf("parse config file %q: %w", file, err)
 		}
+		if err := document.Load(cfg, yaml.WithV3Defaults()); err != nil {
+			return nil, fmt.Errorf("parse config file %q: %w", file, err)
+		}
+		warnUnknownKeys(file, &document)
+		definedRunnerKeys = definedRunnerConfigKeys(&document)
 	}
 
 	if cfg.Runner.EnvFile != "" {
@@ -416,30 +422,53 @@ func LoadDefault(file string) (*Config, error) {
 	return cfg, nil
 }
 
+// expandEnvironment replaces ${NAME} in values and retypes them, so ${CAPACITY} can be an int and an empty value is unset.
+func expandEnvironment(node *yaml.Node) error {
+	var errs []error
+	if node.Kind == yaml.ScalarNode {
+		expanded := environmentReference.ReplaceAllStringFunc(node.Value, func(match string) string {
+			if strings.HasPrefix(match, "$$") {
+				return match[1:]
+			}
+			value, ok := os.LookupEnv(strings.Trim(match, "${}"))
+			if !ok {
+				errs = append(errs, fmt.Errorf("line %d: %s is not set", node.Line, match))
+			}
+			return value
+		})
+		if expanded != node.Value && node.Style&yaml.TaggedStyle == 0 {
+			node.Tag = ""
+			if expanded == "" && node.Style == 0 {
+				node.Tag = "!!null"
+			}
+		}
+		node.Value = expanded
+		return errors.Join(errs...)
+	}
+	for index, child := range node.Content {
+		if node.Kind != yaml.MappingNode || index%2 == 1 {
+			errs = append(errs, expandEnvironment(child))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // warnUnknownKeys reports keys the config does not define, which are otherwise ignored
 // without a trace. It only warns, so a config carrying keys from another runner version
 // still loads.
-func warnUnknownKeys(file string, content []byte) {
-	decoder := yaml.NewDecoder(bytes.NewReader(content))
-	decoder.KnownFields(true)
-
+func warnUnknownKeys(file string, document *yaml.Node) {
 	var loadErrs *yaml.LoadErrors
-	if err := decoder.Decode(&Config{}); errors.As(err, &loadErrs) {
+	if err := document.Load(&Config{}, yaml.WithV3Defaults(), yaml.WithKnownFields()); errors.As(err, &loadErrs) {
 		for _, loadErr := range loadErrs.Errors {
 			log.Warnf("config file %q: %s, it will be ignored", file, loadErr)
 		}
 	}
 }
 
-func definedRunnerConfigKeys(content []byte) (map[string]bool, error) {
-	var root yaml.Node
-	if err := yaml.Unmarshal(content, &root); err != nil {
-		return nil, err
-	}
-
+func definedRunnerConfigKeys(root *yaml.Node) map[string]bool {
 	defined := map[string]bool{}
 	if len(root.Content) == 0 {
-		return defined, nil
+		return defined
 	}
 
 	doc := root.Content[0]
@@ -455,7 +484,7 @@ func definedRunnerConfigKeys(content []byte) (map[string]bool, error) {
 		break
 	}
 
-	return defined, nil
+	return defined
 }
 
 func validateExtraHeaders(headers map[string]string) error {

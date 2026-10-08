@@ -169,7 +169,7 @@ Of the [runner images](https://gitea.com/gitea/runner-images), the `-full` flavo
 
 #### Environment variables
 
-Earlier releases let a few environment variables (`GITEA_DEBUG`, `GITEA_TRACE`, `GITEA_RUNNER_CAPACITY`, `GITEA_RUNNER_FILE`, `GITEA_RUNNER_ENVIRON`, `GITEA_RUNNER_ENV_FILE`) override parts of the config. They are gone, use the YAML file for all settings. The Docker images still read their own variables, such as `RUNNER_STATE_FILE`, see [scripts/run.sh](scripts/run.sh) and the container documentation below.
+Earlier releases let a few environment variables (`GITEA_DEBUG`, `GITEA_TRACE`, `GITEA_RUNNER_CAPACITY`, `GITEA_RUNNER_FILE`, `GITEA_RUNNER_ENVIRON`, `GITEA_RUNNER_ENV_FILE`) override parts of the config. They are gone, use the YAML file for all settings. Config values can read the runner's environment as `${NAME}`, for example `capacity: ${RUNNER_CAPACITY}`. An unset `NAME` fails the load, and `$${NAME}` is a literal `${NAME}`. The Docker images still read their own variables, such as `RUNNER_STATE_FILE`, see [scripts/run.sh](scripts/run.sh) and the container documentation below.
 
 ### Labels
 
