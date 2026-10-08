@@ -181,6 +181,7 @@ type Container struct {
 	DockerTimeout        time.Duration                 `yaml:"docker_timeout"`         // Timeout to wait for the docker daemon to be reachable, if docker is required by require_docker or runner
 	BindWorkdir          bool                          `yaml:"bind_workdir"`           // BindWorkdir mounts the workspace from a host directory instead of a Docker volume.
 	ServiceReadyTimeout  time.Duration                 `yaml:"service_ready_timeout"`  // ServiceReadyTimeout bounds how long a job waits for a service container that declares a healthcheck to report healthy. Negative disables waiting.
+	Sweep                *bool                         `yaml:"sweep"`                  // Sweep removes the containers, networks and volumes a job creates through its Docker proxy when the job ends. Unset means enabled.
 }
 
 // Values of Runner.ToolCacheMode: the runner mounts no tool cache, or one that every job reuses.

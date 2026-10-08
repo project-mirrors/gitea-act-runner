@@ -725,7 +725,7 @@ func (rc *RunContext) cleanupJobResources(networkName string, createAndDeleteNet
 			logger.Infof("Cleaning up services for job %s", rc.JobName)
 			errs = append(errs, rc.stopServiceContainers()(ctx))
 		}
-		if !common.Dryrun(ctx) && (preclean || rc.hadDockerProxy) {
+		if !common.Dryrun(ctx) && !rc.Config.NoSweep && (preclean || rc.hadDockerProxy) {
 			errs = append(errs, container.RemoveDockerJobResources(ctx, rc.jobContainerName()))
 		}
 		if preclean || rc.deferVolumeCleanup == nil {

@@ -778,9 +778,10 @@ func TestRemoveDockerActionImagesByTag(t *testing.T) {
 func TestCleanupJobResourcesContinuesAfterFailure(t *testing.T) {
 	t.Setenv("TMPDIR", "/tmp")
 	proxyDir := t.TempDir()
-	for _, name := range []string{"synchronous", "proxy", "closed proxy", "deferred", "preclean deferred", "canceled"} {
+	for _, name := range []string{"synchronous", "proxy", "closed proxy", "kept proxy", "deferred", "preclean deferred", "canceled"} {
 		t.Run(name, func(t *testing.T) {
 			proxy, preclean, deferred := strings.HasSuffix(name, "proxy"), strings.HasPrefix(name, "preclean"), strings.HasSuffix(name, "deferred")
+			removesLabelled := (proxy || preclean) && name != "kept proxy"
 			if proxy && runtime.GOOS == "windows" {
 				t.Skip("Unix socket ownership is unavailable on Windows")
 			}
@@ -790,7 +791,7 @@ func TestCleanupJobResourcesContinuesAfterFailure(t *testing.T) {
 			service.On("Remove").Return(func(context.Context) error { return removeError }).Once()
 			service.On("Close").Return(func(context.Context) error { return closeError }).Once()
 			rc := &RunContext{
-				Config:            &Config{CacheContainer: "cache-container"},
+				Config:            &Config{CacheContainer: "cache-container", NoSweep: name == "kept proxy"},
 				Run:               &model.Run{Workflow: &model.Workflow{Name: "wf"}, JobID: "job"},
 				JobContainer:      job,
 				serviceContainers: []*serviceContainer{{name: "svc", container: service}},
@@ -846,8 +847,8 @@ func TestCleanupJobResourcesContinuesAfterFailure(t *testing.T) {
 				}
 				assert.Equal(t, 2, volumeRemovals)
 			}
-			assert.Equal(t, proxy || preclean, strings.Contains(err.Error(), "labelled GET /containers/json"))
-			if proxy || preclean {
+			assert.Equal(t, removesLabelled, strings.Contains(err.Error(), "labelled GET /containers/json"))
+			if removesLabelled {
 				require.ErrorContains(t, err, "labelled GET /networks")
 				require.ErrorContains(t, err, "labelled GET /volumes")
 			}

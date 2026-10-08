@@ -87,6 +87,7 @@ type Config struct {
 	MaxParallel                       int           // max parallel jobs to run across all workflows (0 = no limit, uses CPU count)
 	AllocatePTY                       bool          // allocate a pseudo-TTY for each step's process
 	ServiceReadyTimeout               time.Duration // how long a job waits for its service containers to report healthy (0 uses the default)
+	NoSweep                           bool          // keep the containers, networks and volumes a job creates through its docker proxy
 	RunnerName                        string        // name this runner registered with, reported as `runner.name`, defaults to the hostname
 	JobStartedHook                    string        // script run inside the job environment before the job's first step; ACTIONS_RUNNER_HOOK_JOB_STARTED is read from Env when empty
 	JobCompletedHook                  string        // script run inside the job environment after the job's last step; ACTIONS_RUNNER_HOOK_JOB_COMPLETED is read from Env when empty
