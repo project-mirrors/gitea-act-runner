@@ -74,6 +74,7 @@ type Runner struct {
 	capabilities string
 
 	isolatedCacheContainer func() string
+	instanceTransport      http.RoundTripper
 
 	runningTasks            sync.Map
 	runningCount            atomic.Int64
@@ -140,6 +141,7 @@ func NewRunner(cfg *config.Config, reg *config.Registration, cli client.Client) 
 		runHealthCheck: executeHealthCheck,
 	}
 	runner.isolatedCacheContainer = sync.OnceValue(runner.detectIsolatedCacheContainer)
+	runner.instanceTransport = client.NewTransport(cli.Address(), cfg.Runner.TLSConfig())
 	return runner
 }
 
@@ -626,6 +628,9 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		ValidVolumes:                      r.cfg.Container.ValidVolumes,
 		SharedToolCache:                   r.cfg.Runner.ToolCacheMode == config.ToolCacheModeShared,
 		InsecureSkipTLS:                   r.cfg.Runner.Insecure,
+		ClientCertFile:                    r.cfg.Runner.ClientCertFile,
+		ClientKeyFile:                     r.cfg.Runner.ClientKeyFile,
+		InstanceTransport:                 r.instanceTransport,
 		RunnerName:                        r.name,
 		KubernetesPicker:                  r.kubernetesOptions,
 	}

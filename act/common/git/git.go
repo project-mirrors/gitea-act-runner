@@ -168,7 +168,8 @@ type NewGitCloneExecutorInput struct {
 	Quiet bool
 
 	// For Gitea
-	InsecureSkipTLS bool
+	InsecureSkipTLS               bool
+	ClientCertFile, ClientKeyFile string // PEM, absolute as git runs in other directories
 }
 
 // CloneIfRequired reports whether an existing local clone was reused.
@@ -367,6 +368,9 @@ func runGit(ctx context.Context, dir string, input *NewGitCloneExecutorInput, ar
 	config := []string{"core.autocrlf=false", "core.eol=lf"} // keep action files LF
 	if input != nil {
 		config = append(config, RemoteConfig(input.Token, input.InsecureSkipTLS)...)
+		if input.ClientCertFile != "" {
+			config = append(config, "http.sslCert="+input.ClientCertFile, "http.sslKey="+input.ClientKeyFile)
+		}
 	}
 	if dir != "" {
 		args = append([]string{"-C", dir}, args...)

@@ -363,7 +363,7 @@ func doRegister(ctx context.Context, cfg *config.Config, inputs *registerInputs)
 	// initial http client
 	cli := client.New(
 		inputs.InstanceAddr,
-		cfg.Runner.Insecure,
+		cfg.Runner.TLSConfig(),
 		"",
 		"",
 		config.RequestTimeout,

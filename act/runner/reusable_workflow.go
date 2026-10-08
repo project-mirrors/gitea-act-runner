@@ -39,11 +39,8 @@ func newLocalReusableWorkflowExecutor(rc *RunContext) common.Executor {
 
 	workflowDir := fmt.Sprintf("%s/%s", rc.ActionCacheDir(), safeFilename(uses))
 
-	// If the repository is private, we need a token to clone it
-	token := rc.Config.GetToken()
-
 	return common.NewPipelineExecutor(
-		cloneRemoteReusableWorkflow(rc, remoteReusableWorkflow.CloneURL(), remoteReusableWorkflow.Ref, workflowDir, token),
+		cloneRemoteReusableWorkflow(rc, remoteReusableWorkflow.CloneURL(), remoteReusableWorkflow.Ref, workflowDir),
 		newReusableWorkflowExecutor(rc, workflowDir, remoteReusableWorkflow.Path),
 	)
 }
@@ -60,10 +57,8 @@ func newRemoteReusableWorkflowExecutor(rc *RunContext) common.Executor {
 	filename := fmt.Sprintf("%s/%s@%s", remoteReusableWorkflow.Owner, remoteReusableWorkflow.Repo, remoteReusableWorkflow.Ref)
 	workflowDir := fmt.Sprintf("%s/%s", rc.ActionCacheDir(), safeFilename(filename))
 
-	token := getGitCloneToken(rc.Config, remoteReusableWorkflow.CloneURL())
-
 	return common.NewPipelineExecutor(
-		cloneRemoteReusableWorkflow(rc, remoteReusableWorkflow.CloneURL(), remoteReusableWorkflow.Ref, workflowDir, token),
+		cloneRemoteReusableWorkflow(rc, remoteReusableWorkflow.CloneURL(), remoteReusableWorkflow.Ref, workflowDir),
 		newReusableWorkflowExecutor(rc, workflowDir, remoteReusableWorkflow.Path),
 	)
 }
@@ -76,20 +71,19 @@ func newRemoteReusableWorkflowExecutor(rc *RunContext) common.Executor {
 //  2. Gitea has already full URL with rc.Config.GitHubInstance when calling newRemoteReusableWorkflow
 //
 // remoteReusableWorkflow.URL = rc.getGithubContext(ctx).ServerURL
-func cloneRemoteReusableWorkflow(rc *RunContext, cloneURL, ref, targetDirectory, token string) common.Executor {
+func cloneRemoteReusableWorkflow(rc *RunContext, cloneURL, ref, targetDirectory string) common.Executor {
 	return func(ctx context.Context) error {
 		interpolatedURL, err := rc.NewExpressionEvaluator(ctx).Interpolate(ctx, cloneURL)
 		if err != nil {
 			return fmt.Errorf("unable to interpolate the workflow clone URL: %w", err)
 		}
-		return git.NewGitCloneExecutor(git.NewGitCloneExecutorInput{
+		return git.NewGitCloneExecutor(rc.Config.withInstanceAuth(git.NewGitCloneExecutorInput{
 			URL:         interpolatedURL,
 			Ref:         ref,
 			Dir:         targetDirectory,
-			Token:       token,
 			OfflineMode: rc.Config.ActionOfflineMode,
 			Depth:       rc.Config.ActionCloneDepth,
-		})(ctx)
+		}, rc.Config.GetToken()))(ctx)
 	}
 }
 
@@ -208,13 +202,18 @@ func setReusedWorkflowCallerResult(rc *RunContext, runner *runnerImpl) common.Ex
 }
 
 // For Gitea
-// getGitCloneToken returns GITEA_TOKEN when shouldCloneURLUseToken returns true,
-// otherwise returns an empty string
-func getGitCloneToken(conf *Config, cloneURL string) string {
-	if !shouldCloneURLUseToken(conf.GitHubInstance, conf.trustedActionInstance(), cloneURL) {
-		return ""
+// withInstanceAuth passes instance credentials only to clones from this Gitea instance, and runner.insecure only to its registered address.
+func (c Config) withInstanceAuth(input git.NewGitCloneExecutorInput, token string) git.NewGitCloneExecutorInput {
+	u, err := url.Parse(input.URL)
+	if err != nil || !onInstanceHost(u.Host, c.GitHubInstance, c.trustedActionInstance()) {
+		return input
 	}
-	return conf.GetToken()
+	input.ClientCertFile, input.ClientKeyFile = c.ClientCertFile, c.ClientKeyFile
+	input.InsecureSkipTLS = c.InsecureSkipTLS && onInstanceHost(u.Host, c.GitHubInstance)
+	if u.User == nil {
+		input.Token = token
+	}
+	return input
 }
 
 // For Gitea
@@ -228,26 +227,16 @@ func (c Config) trustedActionInstance() string {
 }
 
 // For Gitea
-// shouldCloneURLUseToken returns true when the following conditions are met:
-//  1. cloneURL's host matches this Gitea instance: either the registered instance
-//     (instanceURL) or, for DEFAULT_ACTIONS_URL=self on a different hostname, the
-//     self-hosted action instance (trustedActionInstance, "" when not trusted)
-//  2. the cloneURL does not have basic auth embedded
-func shouldCloneURLUseToken(instanceURL, trustedActionInstance, cloneURL string) bool {
-	u2, err := url.Parse(cloneURL)
-	if err != nil || u2.User != nil {
-		return false
-	}
-
-	for _, candidate := range []string{instanceURL, trustedActionInstance} {
+// onInstanceHost reports whether host is that of one of the instance URLs, which may lack a scheme.
+func onInstanceHost(host string, instanceURLs ...string) bool {
+	for _, candidate := range instanceURLs {
 		if candidate == "" {
 			continue
 		}
-		if !strings.HasPrefix(candidate, "http://") &&
-			!strings.HasPrefix(candidate, "https://") {
+		if !strings.HasPrefix(candidate, "http://") && !strings.HasPrefix(candidate, "https://") {
 			candidate = "https://" + candidate
 		}
-		if u1, err := url.Parse(candidate); err == nil && u1.Host == u2.Host {
+		if u, err := url.Parse(candidate); err == nil && u.Host == host {
 			return true
 		}
 	}

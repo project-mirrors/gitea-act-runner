@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -121,6 +122,26 @@ func Main(ctx context.Context, c *action.Context) (err error) {
 	config, remoteConfig := serverConfig(ghc.ServerURL, cmp.Or(c.Inputs["token"], ghc.Token), c.InsecureSkipTLS, co.submodules != "" && sshKey == "")
 	if boolInput(c.Inputs, "set-safe-directory", true) {
 		remoteConfig = append(remoteConfig, "safe.directory=*") // a bound workdir belongs to the host user
+	}
+	if c.ClientCertFile != "" { // only for this step, later steps never get the runner's key
+		var certPEM, keyPEM []byte
+		if certPEM, err = os.ReadFile(c.ClientCertFile); err != nil {
+			return err
+		}
+		if keyPEM, err = os.ReadFile(c.ClientKeyFile); err != nil {
+			return err
+		}
+		cert, key := fmt.Sprintf("git-client-cert-%x.pem", digest[:8]), fmt.Sprintf("git-client-key-%x.pem", digest[:8])
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+			defer cancel()
+			err = errors.Join(err, c.Container.Copy(runnerTemp, &container.FileEntry{Name: key, Mode: 0o600})(cleanupCtx))
+		}()
+		if err := c.Container.Copy(runnerTemp, &container.FileEntry{Name: cert, Mode: 0o600, Body: string(certPEM)}, &container.FileEntry{Name: key, Mode: 0o600, Body: string(keyPEM)})(ctx); err != nil {
+			return err
+		}
+		scope := "http." + strings.TrimSuffix(ghc.ServerURL, "/") + "/."
+		remoteConfig = append(remoteConfig, scope+"sslCert="+path.Join(runnerTemp, cert), scope+"sslKey="+path.Join(runnerTemp, key))
 	}
 	env := gitEnv(c, remoteConfig)
 	env["GIT_LFS_SKIP_SMUDGE"] = strconv.FormatBool(!co.lfs || len(co.sparse) == 0) // lfs pull fetches the objects of a full checkout in one go

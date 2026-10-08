@@ -6,8 +6,13 @@ package checkout
 import (
 	"cmp"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -284,6 +289,41 @@ exec sh -c "$(printf '%s' "$last" | sed "s#git-upload-pack '/\(.*\)\.git'#git up
 			}
 		})
 	}
+}
+
+func TestCheckoutOffersClientCertOnlyDuringTheStep(t *testing.T) {
+	var gotCert bool
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCert = len(r.TLS.PeerCertificates) > 0
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	server.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
+	server.StartTLS()
+	defer server.Close()
+	pair := server.TLS.Certificates[0]
+	keyDER, err := x509.MarshalPKCS8PrivateKey(pair.PrivateKey)
+	require.NoError(t, err)
+	dir, workspace, runnerTemp := t.TempDir(), t.TempDir(), t.TempDir()
+	certFile, keyFile := filepath.Join(dir, "client.crt"), filepath.Join(dir, "client.key")
+	require.NoError(t, os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: pair.Certificate[0]}), 0o600))
+	require.NoError(t, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600))
+
+	require.ErrorContains(t, Main(t.Context(), &action.Context{
+		Container:       &container.HostEnvironment{Path: workspace, TmpDir: runnerTemp, StdOut: io.Discard},
+		Github:          &model.GithubContext{Repository: "org/repo", Ref: "refs/heads/main", ServerURL: server.URL},
+		Inputs:          map[string]string{"repository": "other/repo"},
+		Workspace:       workspace,
+		InsecureSkipTLS: true,
+		ClientCertFile:  certFile,
+		ClientKeyFile:   keyFile,
+		Env:             map[string]string{"PATH": os.Getenv("PATH"), "GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1"},
+	}), "checkout: other/repo@")
+	require.True(t, gotCert)
+	keys, _ := filepath.Glob(filepath.Join(runnerTemp, "git-client-key-*"))
+	require.Len(t, keys, 1)
+	key, err := os.ReadFile(keys[0])
+	require.NoError(t, err)
+	require.Empty(t, key)
 }
 
 func publish(t *testing.T, server, name string, files, submodules map[string]string) {

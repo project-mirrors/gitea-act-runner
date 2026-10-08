@@ -41,6 +41,9 @@ runner:
   #shutdown_timeout: 0s
   # Whether skip verifying the TLS certificate of the Gitea instance.
   #insecure: false
+  # PEM client certificate and key for a Gitea instance that requires mutual TLS.
+  #client_cert_file: /etc/gitea-runner/client.crt
+  #client_key_file: /etc/gitea-runner/client.key
   # The timeout for fetching the job from the Gitea instance.
   # Values above the 60s RPC timeout are capped to it.
   #fetch_timeout: 5s

@@ -4,6 +4,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"maps"
@@ -63,6 +64,8 @@ type Runner struct {
 	Timeout               time.Duration     `yaml:"timeout"`                  // Timeout specifies the duration for runner timeout.
 	ShutdownTimeout       time.Duration     `yaml:"shutdown_timeout"`         // ShutdownTimeout specifies the duration to wait for running jobs to complete during a shutdown of the runner.
 	Insecure              bool              `yaml:"insecure"`                 // Insecure indicates whether the runner operates in an insecure mode.
+	ClientCertFile        string            `yaml:"client_cert_file"`         // ClientCertFile is the PEM certificate presented to a Gitea instance that requires mutual TLS.
+	ClientKeyFile         string            `yaml:"client_key_file"`          // ClientKeyFile is the PEM private key paired with ClientCertFile.
 	ExtraHeaders          map[string]string `yaml:"extra_headers"`            // ExtraHeaders adds HTTP headers to runner API requests to Gitea.
 	FetchTimeout          time.Duration     `yaml:"fetch_timeout"`            // FetchTimeout specifies the timeout duration for fetching resources.
 	FetchInterval         time.Duration     `yaml:"fetch_interval"`           // FetchInterval specifies the interval duration for fetching resources.
@@ -272,6 +275,21 @@ func LoadDefault(file string) (*Config, error) {
 			maps.Copy(cfg.Runner.Envs, envs)
 		}
 	}
+	if (cfg.Runner.ClientCertFile == "") != (cfg.Runner.ClientKeyFile == "") {
+		return nil, errors.New("runner.client_cert_file and runner.client_key_file must be set together")
+	}
+	if cfg.Runner.ClientCertFile != "" {
+		if _, err := tls.LoadX509KeyPair(cfg.Runner.ClientCertFile, cfg.Runner.ClientKeyFile); err != nil {
+			return nil, fmt.Errorf("load runner client certificate: %w", err)
+		}
+		for _, file := range []*string{&cfg.Runner.ClientCertFile, &cfg.Runner.ClientKeyFile} {
+			abs, err := filepath.Abs(*file) // git resolves a relative path against the repository it runs in
+			if err != nil {
+				return nil, err
+			}
+			*file = abs
+		}
+	}
 
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "info"
@@ -420,6 +438,20 @@ func LoadDefault(file string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func (r *Runner) TLSConfig() *tls.Config {
+	tlsConfig := &tls.Config{InsecureSkipVerify: r.Insecure}
+	if r.ClientCertFile != "" {
+		tlsConfig.GetClientCertificate = func(info *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			pair, err := tls.LoadX509KeyPair(r.ClientCertFile, r.ClientKeyFile) // per handshake, so renewed files apply
+			if err != nil || info.SupportsCertificate(&pair) != nil {
+				return &tls.Certificate{}, err
+			}
+			return &pair, nil
+		}
+	}
+	return tlsConfig
 }
 
 // expandEnvironment replaces ${NAME} in values and retypes them, so ${CAPACITY} can be an int and an empty value is unset.

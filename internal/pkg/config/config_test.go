@@ -4,6 +4,13 @@
 package config
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,6 +47,49 @@ cache:
 
 	_, err := LoadDefault(path)
 	require.NoError(t, err)
+}
+
+func TestClientCertIsValidatedAndAbsoluteOnLoadReadOnUseAndOfferedOnlyWhenAccepted(t *testing.T) {
+	require.True(t, (&Runner{Insecure: true}).TLSConfig().InsecureSkipVerify)
+
+	dir := t.TempDir()
+	certPath, keyPath := filepath.Join(dir, "client.crt"), filepath.Join(dir, "client.key")
+	writePair := func() []byte {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		require.NoError(t, err)
+		template := &x509.Certificate{SerialNumber: big.NewInt(1)}
+		der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+		require.NoError(t, err)
+		keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600))
+		require.NoError(t, os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600))
+		return der
+	}
+	load := func(certFile, keyFile string) (*Config, error) {
+		return LoadDefault(write(t, "runner:\n  client_cert_file: '"+certFile+"'\n  client_key_file: '"+keyFile+"'\n"))
+	}
+	writePair()
+
+	_, err := load(certPath, "")
+	require.ErrorContains(t, err, "must be set together")
+	_, err = load(keyPath, keyPath)
+	require.ErrorContains(t, err, "load runner client certificate")
+
+	t.Chdir(dir)
+	cfg, err := load("client.crt", "client.key")
+	require.NoError(t, err)
+	require.True(t, filepath.IsAbs(cfg.Runner.ClientCertFile))
+	require.True(t, filepath.IsAbs(cfg.Runner.ClientKeyFile))
+	renewed := writePair()
+	info := &tls.CertificateRequestInfo{Version: tls.VersionTLS13, SignatureSchemes: []tls.SignatureScheme{tls.ECDSAWithP256AndSHA256}}
+	pair, err := cfg.Runner.TLSConfig().GetClientCertificate(info)
+	require.NoError(t, err)
+	require.Equal(t, renewed, pair.Certificate[0])
+	info.AcceptableCAs = [][]byte{[]byte("another CA")}
+	pair, err = cfg.Runner.TLSConfig().GetClientCertificate(info)
+	require.NoError(t, err)
+	require.Empty(t, pair.Certificate)
 }
 
 func TestLoadDefault_ExpandsEnvironmentValues(t *testing.T) {

@@ -532,7 +532,7 @@ func tryUploadJobSummary(ctx context.Context, rc *RunContext) {
 		"/jobs/" + strconv.FormatInt(jobID, 10) + "/steps/"
 	actPath := rc.JobContainer.GetActPath()
 	// Reuse a single client across all step uploads so connections can be pooled.
-	client := &http.Client{Timeout: jobSummaryUploadRequestTimeout}
+	client := &http.Client{Timeout: jobSummaryUploadRequestTimeout, Transport: rc.Config.instanceTransportFor(base)}
 	for i := range rc.Run.Job().Steps {
 		summaryPath := path.Join(actPath, "workflow", "step-summary-"+strconv.Itoa(i)+".md")
 		body, ok := readSingleFileFromContainerArchive(ctx, rc.JobContainer, summaryPath, maxJobSummaryBytes)
@@ -542,6 +542,15 @@ func tryUploadJobSummary(ctx context.Context, rc *RunContext) {
 		// Gitea renders summaries on the run page, so mask before the upload.
 		uploadJobSummary(ctx, client, base+strconv.Itoa(i)+"/summary", runtimeToken, []byte(rc.maskSecrets(string(body))))
 	}
+}
+
+// For Gitea
+// instanceTransportFor returns InstanceTransport only for URLs on the registered address, as steps can rewrite the summary URL through GITHUB_ENV.
+func (c Config) instanceTransportFor(rawURL string) http.RoundTripper {
+	if !strings.HasPrefix(rawURL, c.GitHubInstance+"/") {
+		return nil
+	}
+	return c.InstanceTransport
 }
 
 // extractJobIDFromRuntimeToken returns the JobID claim from an ACTIONS_RUNTIME_TOKEN JWT

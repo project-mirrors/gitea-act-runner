@@ -5,7 +5,12 @@ package runner
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,7 +64,7 @@ func TestReusableWorkflowCachedBranchRefRefreshes(t *testing.T) {
 	}
 	cacheDir := t.TempDir()
 
-	require.NoError(t, cloneRemoteReusableWorkflow(rc, remoteDir, "master", cacheDir, "")(context.Background()))
+	require.NoError(t, cloneRemoteReusableWorkflow(rc, remoteDir, "master", cacheDir)(context.Background()))
 	got, err := os.ReadFile(filepath.Join(cacheDir, workflowPath))
 	require.NoError(t, err)
 	require.Equal(t, tmpl("v1"), string(got))
@@ -69,7 +74,7 @@ func TestReusableWorkflowCachedBranchRefRefreshes(t *testing.T) {
 	gitMust(t, workDir, "commit", "-am", "v2")
 	gitMust(t, workDir, "push", "origin", "master")
 
-	require.NoError(t, cloneRemoteReusableWorkflow(rc, remoteDir, "master", cacheDir, "")(context.Background()))
+	require.NoError(t, cloneRemoteReusableWorkflow(rc, remoteDir, "master", cacheDir)(context.Background()))
 	got, err = os.ReadFile(filepath.Join(cacheDir, workflowPath))
 	require.NoError(t, err)
 	require.Equal(t, tmpl("v2"), string(got), "cached workflow file must reflect the updated branch tip")
@@ -123,107 +128,79 @@ func TestNewLocalReusableWorkflowExecutorFindsSameRepositoryPaths(t *testing.T) 
 	}
 }
 
-func TestGetGitCloneTokenWithSchemalessGiteaInstance(t *testing.T) {
-	conf := &Config{
-		GitHubInstance: "gitea.example.net",
-		Secrets: map[string]string{
-			"GITEA_TOKEN": "token-value",
+func TestCloneRemoteReusableWorkflowSendsInstanceTokenAndClientCert(t *testing.T) {
+	var gotCert bool
+	var gotToken string
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCert = len(r.TLS.PeerCertificates) > 0
+		_, gotToken, _ = r.BasicAuth()
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	server.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
+	server.StartTLS()
+	defer server.Close()
+	pair := server.TLS.Certificates[0]
+	keyDER, err := x509.MarshalPKCS8PrivateKey(pair.PrivateKey)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	certFile, keyFile := filepath.Join(dir, "client.crt"), filepath.Join(dir, "client.key")
+	require.NoError(t, os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: pair.Certificate[0]}), 0o600))
+	require.NoError(t, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600))
+	rc := &RunContext{
+		Config: &Config{
+			GitHubInstance:  server.URL,
+			Secrets:         map[string]string{"GITEA_TOKEN": "token"},
+			InsecureSkipTLS: true,
+			ClientCertFile:  certFile,
+			ClientKeyFile:   keyFile,
 		},
+		Run: &model.Run{JobID: "j1", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"j1": {}}}},
 	}
 
-	token := getGitCloneToken(conf, "https://gitea.example.net/actions/tools")
-
-	require.Equal(t, "token-value", token)
+	require.Error(t, cloneRemoteReusableWorkflow(rc, server.URL+"/owner/repo", "main", t.TempDir())(t.Context()))
+	require.True(t, gotCert)
+	require.Equal(t, "token", gotToken)
 }
 
-func TestGetGitCloneTokenSelfHostedActionsDifferentHost(t *testing.T) {
-	// The runner registered with one hostname while DEFAULT_ACTIONS_URL=self resolves
-	// actions against AppURL on a different hostname for the same instance.
-	conf := &Config{
-		GitHubInstance:                    "gitea.local",
-		DefaultActionInstance:             "https://gitea.my-nas.lan",
-		DefaultActionInstanceIsSelfHosted: true,
-		Secrets: map[string]string{
-			"GITEA_TOKEN": "token-value",
-		},
-	}
-
-	token := getGitCloneToken(conf, "https://gitea.my-nas.lan/owner/action")
-
-	require.Equal(t, "token-value", token)
-}
-
-func TestShouldCloneURLUseToken(t *testing.T) {
-	tests := []struct {
-		name                  string
-		instanceURL           string
-		trustedActionInstance string
-		cloneURL              string
-		want                  bool
+func TestInstanceAuthAndTransportOnlyApplyToTheInstance(t *testing.T) {
+	for _, tt := range []struct {
+		name, instanceURL, trustedActionInstance, cloneURL string
+		token, cert, insecure                              bool
 	}{
-		{
-			name:        "same host with schemaless instance",
-			instanceURL: "gitea.example.net",
-			cloneURL:    "https://gitea.example.net/actions/tools",
-			want:        true,
-		},
-		{
-			name:        "same host with schemaless instance and port",
-			instanceURL: "gitea.example.net:3000",
-			cloneURL:    "https://gitea.example.net:3000/actions/tools",
-			want:        true,
-		},
-		{
-			name:        "different host",
-			instanceURL: "gitea.example.net",
-			cloneURL:    "https://github.com/actions/tools",
-			want:        false,
-		},
-		{
-			name:        "embedded basic auth",
-			instanceURL: "gitea.example.net",
-			cloneURL:    "https://user:pass@gitea.example.net/actions/tools",
-			want:        false,
-		},
-		{
-			name:        "invalid clone URL",
-			instanceURL: "gitea.example.net",
-			cloneURL:    "://gitea.example.net/actions/tools",
-			want:        false,
-		},
-		{
-			// self-hosted DEFAULT_ACTIONS_URL on a different hostname than the
-			// registered instance: the token must still be attached.
-			name:                  "self-hosted action instance on different host",
-			instanceURL:           "gitea.local",
-			trustedActionInstance: "https://gitea.my-nas.lan",
-			cloneURL:              "https://gitea.my-nas.lan/owner/action",
-			want:                  true,
-		},
-		{
-			// embedded basic auth must still be rejected even when the host matches
-			// the trusted action instance.
-			name:                  "self-hosted action instance with embedded basic auth",
-			instanceURL:           "gitea.local",
-			trustedActionInstance: "https://gitea.my-nas.lan",
-			cloneURL:              "https://user:pass@gitea.my-nas.lan/owner/action",
-			want:                  false,
-		},
-		{
-			// github.com / mirror hosts are never trusted: trustedActionInstance is
-			// empty in github mode, so an off-instance clone URL gets no token.
-			name:        "github mode does not trust mirror host",
-			instanceURL: "gitea.local",
-			cloneURL:    "https://mirror.example.com/owner/action",
-			want:        false,
-		},
-	}
-
-	for _, tt := range tests {
+		{"same host with schemaless instance", "gitea.example.net", "", "https://gitea.example.net/actions/tools", true, true, true},
+		{"same host with schemaless instance and port", "gitea.example.net:3000", "", "https://gitea.example.net:3000/actions/tools", true, true, true},
+		{"different host", "gitea.example.net", "", "https://github.com/actions/tools", false, false, false},
+		{"embedded basic auth keeps its own credentials", "gitea.example.net", "", "https://user:pass@gitea.example.net/actions/tools", false, true, true},
+		{"invalid clone URL", "gitea.example.net", "", "://gitea.example.net/actions/tools", false, false, false},
+		{"self-hosted action instance on different host skips no verification", "gitea.local", "https://gitea.my-nas.lan", "https://gitea.my-nas.lan/owner/action", true, true, false},
+		{"self-hosted action instance with embedded basic auth", "gitea.local", "https://gitea.my-nas.lan", "https://user:pass@gitea.my-nas.lan/owner/action", false, true, false},
+		{"github mode does not trust mirror host", "gitea.local", "", "https://mirror.example.com/owner/action", false, false, false},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, shouldCloneURLUseToken(tt.instanceURL, tt.trustedActionInstance, tt.cloneURL))
+			conf := Config{
+				GitHubInstance:                    tt.instanceURL,
+				DefaultActionInstance:             tt.trustedActionInstance,
+				DefaultActionInstanceIsSelfHosted: tt.trustedActionInstance != "",
+				InsecureSkipTLS:                   true,
+				ClientCertFile:                    "/cert",
+				ClientKeyFile:                     "/key",
+			}
+			want := git.NewGitCloneExecutorInput{URL: tt.cloneURL, InsecureSkipTLS: tt.insecure}
+			if tt.token {
+				want.Token = "token"
+			}
+			if tt.cert {
+				want.ClientCertFile, want.ClientKeyFile = conf.ClientCertFile, conf.ClientKeyFile
+			}
+			require.Equal(t, want, conf.withInstanceAuth(git.NewGitCloneExecutorInput{URL: tt.cloneURL}, "token"))
 		})
 	}
+
+	transport := &http.Transport{}
+	conf := Config{GitHubInstance: "https://gitea.local", InstanceTransport: transport}
+	require.Same(t, transport, conf.instanceTransportFor("https://gitea.local/api/actions_pipeline/"))
+	require.Nil(t, conf.instanceTransportFor("https://gitea.local.example/api/actions_pipeline/"))
+	require.Nil(t, conf.instanceTransportFor("https://other.example/x#/api/actions_pipeline/"))
 }
 
 func gitMust(t *testing.T, dir string, args ...string) {

@@ -858,7 +858,7 @@ func TestTryUploadJobSummaryStopsAtPhaseTimeout(t *testing.T) {
 	cm.AssertExpectations(t)
 }
 
-func TestTryUploadJobSummaryUploadsEachStepIndependently(t *testing.T) {
+func TestTryUploadJobSummaryUploadsEachStepIndependentlyWithInstanceTransport(t *testing.T) {
 	runtimeToken := fakeRuntimeToken(34)
 
 	type upload struct {
@@ -866,7 +866,7 @@ func TestTryUploadJobSummaryUploadsEachStepIndependently(t *testing.T) {
 		body string
 	}
 	var got []upload
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		assert.NoError(t, err)
 		got = append(got, upload{r.URL.Path, string(body)})
@@ -896,6 +896,7 @@ func TestTryUploadJobSummaryUploadsEachStepIndependently(t *testing.T) {
 		"ACTIONS_RUNTIME_TOKEN":      runtimeToken,
 		"GITEA_RUN_ID":               "12",
 	}, cm, 3)
+	rc.Config.GitHubInstance, rc.Config.InstanceTransport = server.URL, server.Client().Transport
 
 	tryUploadJobSummary(ctx, rc)
 

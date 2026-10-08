@@ -20,5 +20,7 @@ type Context struct {
 	NoSkipCheckout  bool
 	UseGitIgnore    bool
 	InsecureSkipTLS bool
+	ClientCertFile  string
+	ClientKeyFile   string
 	Env             map[string]string
 }

@@ -34,6 +34,6 @@ Works like `actions/checkout` with these inputs. Any other input fails the step.
 
 A branch is checked out as a local branch tracking `origin`, a tag or commit as a detached `HEAD`. A triggering tag that moved since the event fails the step. The step outputs `ref` and `commit` like `actions/checkout`.
 
-Persisted credentials end with the job. `token` is only sent to `github.server_url`, while `ssh-key` is offered to any SSH host, as with `actions/checkout`. Without `ssh-key`, submodule URLs of the form `git@<server host>:` are fetched from `github.server_url` with `token`. With `ssh-key`, the repository is fetched from the SSH URL in the event's `repository.ssh_url`, or from the server's host on port 22.
+Persisted credentials end with the job. `token` is only sent to `github.server_url`, while `ssh-key` is offered to any SSH host, as with `actions/checkout`. The runner's `client_cert_file` is only offered to `github.server_url` and only during the step, so later steps do not get it. Without `ssh-key`, submodule URLs of the form `git@<server host>:` are fetched from `github.server_url` with `token`. With `ssh-key`, the repository is fetched from the SSH URL in the event's `repository.ssh_url`, or from the server's host on port 22.
 
 With `gitea-runner exec`, checking out the workflow's own repository copies your local working directory, unless `--no-skip-checkout` or `ssh-key` is set.
