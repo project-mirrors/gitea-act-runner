@@ -75,7 +75,7 @@ func startRunner(t *testing.T, repo, labelName string, options runnerOptions) *p
 	}
 	labelNames := []string{label.Name}
 
-	pingCli := client.New(fixture.baseURL, cfg.Runner.Insecure, "", "", config.RequestTimeout)
+	pingCli := client.New(fixture.baseURL, cfg.Runner.Insecure, "", "", config.RequestTimeout, cfg.Runner.ExtraHeaders)
 	if _, err := pingCli.Ping(ctx, connect.NewRequest(&pingv1.PingRequest{Data: t.Name()})); err != nil {
 		t.Fatalf("ping %s: %v", fixture.baseURL, err)
 	}
@@ -105,7 +105,7 @@ func startRunner(t *testing.T, repo, labelName string, options runnerOptions) *p
 		Ephemeral: regResp.Msg.Runner.Ephemeral,
 	}
 
-	cli := client.New(fixture.baseURL, cfg.Runner.Insecure, reg.UUID, reg.Token, config.RequestTimeout)
+	cli := client.New(fixture.baseURL, cfg.Runner.Insecure, reg.UUID, reg.Token, config.RequestTimeout, cfg.Runner.ExtraHeaders)
 
 	runner := run.NewRunner(cfg, reg, cli)
 	declResp, err := runner.Declare(ctx, labelNames)

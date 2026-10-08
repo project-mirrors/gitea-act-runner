@@ -367,6 +367,7 @@ func doRegister(ctx context.Context, cfg *config.Config, inputs *registerInputs)
 		"",
 		"",
 		config.RequestTimeout,
+		cfg.Runner.ExtraHeaders,
 	)
 
 	if _, err := cli.Ping(ctx, connect.NewRequest(&pingv1.PingRequest{

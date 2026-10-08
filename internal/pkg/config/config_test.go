@@ -89,6 +89,25 @@ func TestLoadDefault_ToolCacheMode(t *testing.T) {
 	assert.Contains(t, err.Error(), "tool_cache_mode")
 }
 
+func TestLoadDefault_LoadsExtraHeaders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("runner:\n  extra_headers:\n    X-Proxy-Token: proxy-token\n"), 0o600))
+
+	cfg, err := LoadDefault(path)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"X-Proxy-Token": "proxy-token"}, cfg.Runner.ExtraHeaders)
+
+	for _, headers := range []string{
+		"X-Proxy Token: proxy-token\n",
+		"X-Proxy-Token: |\n      proxy-token\n",
+		"X-Proxy-Token: a\n    x-proxy-token: b\n",
+	} {
+		require.NoError(t, os.WriteFile(path, []byte("runner:\n  extra_headers:\n    "+headers), 0o600))
+		_, err = LoadDefault(path)
+		assert.ErrorContains(t, err, "runner.extra_headers", headers)
+	}
+}
+
 func TestLoadDefault_DefaultsWorkdirCleanupAge(t *testing.T) {
 	cfg, err := LoadDefault("")
 	require.NoError(t, err)

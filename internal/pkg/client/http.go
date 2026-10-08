@@ -6,6 +6,7 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -18,7 +19,7 @@ import (
 	"gitea.dev/actionslib/runner/v1/runnerv1connect"
 )
 
-func getHTTPClient(endpoint string, insecure bool, timeout time.Duration) *http.Client {
+func getHTTPClient(endpoint string, insecure bool, timeout time.Duration, extraHeaders map[string]string) *http.Client {
 	transport := &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
 		MaxIdleConns:        10,
@@ -30,17 +31,39 @@ func getHTTPClient(endpoint string, insecure bool, timeout time.Duration) *http.
 			InsecureSkipVerify: true,
 		}
 	}
-	return &http.Client{Transport: transport, Timeout: timeout}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 { // a custom CheckRedirect replaces net/http's own limit
+				return errors.New("stopped after 10 redirects")
+			}
+			from, to := via[0].URL, req.URL
+			if from.Hostname() != to.Hostname() || from.Scheme == "https" && to.Scheme != "https" {
+				for name, value := range extraHeaders {
+					if req.Header.Get(name) == value {
+						req.Header.Del(name)
+					}
+				}
+			}
+			return nil
+		},
+	}
 }
 
 // New returns a new runner client. timeout bounds every RPC: without it a
 // stalled connection parks the reporter for the whole job context, so logs and
 // heartbeats stop together and the task is reaped as a zombie.
-func New(endpoint string, insecure bool, uuid, token string, timeout time.Duration, opts ...connect.ClientOption) *HTTPClient {
+func New(endpoint string, insecure bool, uuid, token string, timeout time.Duration, extraHeaders map[string]string, opts ...connect.ClientOption) *HTTPClient {
 	baseURL := strings.TrimRight(endpoint, "/") + "/api/actions"
 
 	opts = append(opts, connect.WithInterceptors(connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			for name, value := range extraHeaders {
+				if req.Header().Get(name) == "" { // keep protocol headers such as Content-Type
+					req.Header().Set(name, value)
+				}
+			}
 			req.Header().Set("User-Agent", "gitea-runner/"+ver.Version())
 			if uuid != "" {
 				req.Header().Set(protocol.UUIDHeader, uuid)
@@ -52,7 +75,7 @@ func New(endpoint string, insecure bool, uuid, token string, timeout time.Durati
 		}
 	})))
 
-	httpClient := getHTTPClient(endpoint, insecure, timeout)
+	httpClient := getHTTPClient(endpoint, insecure, timeout, extraHeaders)
 	return &HTTPClient{
 		PingServiceClient: pingv1connect.NewPingServiceClient(
 			httpClient,

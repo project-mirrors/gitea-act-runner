@@ -83,6 +83,11 @@ runner:
   # and github_mirror is not empty. In this case,
   # it replaces https://github.com with the value here, which is useful for some special network environments.
   #github_mirror: ''
+  # Extra HTTP headers for runner API requests to Gitea, e.g. reverse proxy authentication.
+  # Not used for action clones, artifacts, job summaries or jobs. Runner headers take precedence.
+  # Dropped on redirects to another hostname, or to HTTP if the instance URL uses HTTPS.
+  #extra_headers:
+  #  X-Proxy-Token: 'example'
   # When true (the default), fetch only the requested ref of an action repository (e.g. actions/checkout@v4) at depth 1 instead of cloning every branch's full history.
   # Set to false to clone the full history.
   #action_shallow_clone: true
