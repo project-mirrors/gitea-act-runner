@@ -205,7 +205,7 @@ a workflow with `runs-on: ubuntu-latest` is executed in the `runner-images:ubunt
 
 Names may themselves contain a colon, for example `pool:e57e18d4-10d4-406f-93bf-60f127221bdd`. Only `host`, `docker` and `kubernetes` are treated as schemas.
 
-If a job's `runs-on` matches none of the runner's labels, or sets no `runs-on` at all, it still runs in `runner.default_image`: as a container when the runner has `docker` labels, as a pod when it has `kubernetes` labels, else as a container where docker is available and on the host where it is not. Images maintained for this purpose are listed at [gitea/runner-images](https://gitea.com/gitea/runner-images).
+Jobs run on `runner.default_image` when no runner label matches their `runs-on`: as a pod on runners with `kubernetes` labels, otherwise in a container, or on the host when docker is unavailable. Suitable images are listed at [gitea/runner-images](https://gitea.com/gitea/runner-images).
 
 Labels are chosen at registration time (`--labels`, or the interactive prompt) and can be changed afterwards by editing `runner.labels` in the config file, or in the Gitea UI under the runner's settings.
 

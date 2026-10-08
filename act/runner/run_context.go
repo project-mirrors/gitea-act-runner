@@ -1236,10 +1236,6 @@ func (rc *RunContext) Executor() (common.Executor, error) {
 }
 
 func (rc *RunContext) runsOnImage(ctx context.Context) (string, error) {
-	if rc.Run.Job().RunsOn() == nil && rc.containerSpec.Image == "" {
-		common.Logger(ctx).Errorf("'runs-on' key not defined in %s", rc.String())
-	}
-
 	runsOn := rc.Run.Job().RunsOn()
 	for i, v := range runsOn {
 		var err error
@@ -1708,9 +1704,7 @@ func parentDir(p string) string {
 // still names a release when the label is a rolling one such as ubuntu-latest.
 func (rc *RunContext) imageOS(ctx context.Context) string {
 	if rc.Run.Job().RunsOn() == nil {
-		// A composite action runs on a synthetic job, and resolving its image would only
-		// log that runs-on is missing.
-		return ""
+		return "" // a composite action runs on a synthetic job without runs-on
 	}
 	if imageOS := imageOSFromImage(rc.platformImage); imageOS != "" {
 		return imageOS

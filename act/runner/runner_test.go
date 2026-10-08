@@ -22,6 +22,7 @@ import (
 	"github.com/joho/godotenv"
 	log "github.com/sirupsen/logrus"
 	assert "github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -149,6 +150,21 @@ func TestGraphWithSomeMissing(t *testing.T) {
 	assert.Contains(t, buf.String(), "unable to build dependency graph for missing (missing.yml)")
 	assert.Contains(t, buf.String(), "unable to build dependency graph for no first (no-first.yml)")
 	log.SetOutput(out)
+}
+
+func TestNewPlanExecutorRequiresRunsOnBeforeRunningAnyJob(t *testing.T) {
+	for _, runsOn := range []string{"", "if: false", "runs-on: [ubuntu-latest, '']"} {
+		workflow, err := model.ReadWorkflow(strings.NewReader("jobs:\n  first:\n    runs-on: ubuntu-latest\n    steps: [run: echo]\n  test:\n    needs: first\n    " + runsOn + "\n    steps: [run: echo]\n"))
+		require.NoError(t, err)
+		plan, err := model.CombineWorkflowPlanner(workflow).PlanJob("test")
+		require.NoError(t, err)
+		require.ErrorContains(t, (&runnerImpl{config: &Config{}}).NewPlanExecutor(plan)(t.Context()), `job "test" requires a non-empty 'runs-on'`, runsOn)
+		assert.Empty(t, workflow.Jobs["first"].Result, runsOn)
+	}
+
+	workflow := &model.Workflow{Jobs: map[string]*model.Job{"build": {Result: "success"}}}
+	require.NoError(t, (&runnerImpl{config: &Config{}}).NewPlanExecutor(&model.Plan{Stages: []*model.Stage{{Runs: []*model.Run{{Workflow: workflow, JobID: "build"}}}}})(t.Context()))
+	assert.Equal(t, "success", workflow.Jobs["build"].Result)
 }
 
 func TestGraphEvent(t *testing.T) {

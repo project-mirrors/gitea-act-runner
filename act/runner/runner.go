@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -173,6 +174,15 @@ func maxParallelFor(strategy *model.Strategy, combinations int) int {
 
 // NewPlanExecutor ...
 func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
+	for _, stage := range plan.Stages {
+		for _, run := range stage.Runs {
+			job := run.Job()
+			if runsOn := job.RunsOn(); job.Uses == "" && len(job.Steps) > 0 && (len(runsOn) == 0 || slices.Contains(runsOn, "")) { // Gitea's needs placeholders carry no steps
+				return common.NewErrorExecutor(fmt.Errorf("job %q requires a non-empty 'runs-on'", run.JobID))
+			}
+		}
+	}
+
 	maxJobNameLen := 0
 
 	stagePipeline := make([]common.Executor, 0)
