@@ -12,6 +12,8 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -154,9 +156,10 @@ func TestExportRetriesAndMatchesOTLP(t *testing.T) {
 	assert.Equal(t, "op", tracesData.GetResourceSpans()[0].GetScopeSpans()[0].GetSpans()[0].GetName())
 
 	resourceMetrics := metricsData.GetResourceMetrics()[0]
-	assert.True(t, slices.ContainsFunc(resourceMetrics.GetResource().GetAttributes(), func(kv *commonpb.KeyValue) bool {
-		return proto.Equal(kv, keyValue("service.name", "gitea-runner"))
-	}))
+	pid := &commonpb.KeyValue{Key: "process.pid", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(os.Getpid())}}}
+	for _, want := range []*commonpb.KeyValue{keyValue("service.name", "gitea-runner"), keyValue("process.creation.time", processCreation.UTC().Format(time.RFC3339Nano)), pid} {
+		assert.True(t, slices.ContainsFunc(resourceMetrics.GetResource().GetAttributes(), func(kv *commonpb.KeyValue) bool { return proto.Equal(kv, want) }), want.GetKey())
+	}
 	assert.InDelta(t, 2, resourceMetrics.GetScopeMetrics()[0].GetMetrics()[0].GetGauge().GetDataPoints()[0].GetAsDouble(), 0)
 }
 
@@ -165,31 +168,76 @@ func TestConvert(t *testing.T) {
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "jobs_total", Help: "Jobs."}, []string{"status"})
 	histogram := prometheus.NewHistogram(prometheus.HistogramOpts{Name: "duration_seconds", Unit: "seconds", Buckets: []float64{1, 2}})
 	summary := prometheus.NewSummary(prometheus.SummaryOpts{Name: "gc_seconds", Objectives: map[float64]float64{0.5: 0.05}})
-	registry.MustRegister(counter, histogram, summary)
+	jobs := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gitea_runner_job_total"}, []string{"status"})
+	running := prometheus.NewGauge(prometheus.GaugeOpts{Name: "gitea_runner_job_running"})
+	gauges := map[string]float64{
+		"go_info": 1, "go_gc_gomemlimit_bytes": math.MaxInt64,
+		"go_memstats_sys_bytes": 100, "go_memstats_heap_released_bytes": 30, "go_memstats_stack_inuse_bytes": 20,
+	}
+	for name, value := range gauges {
+		registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: name}, func() float64 { return value }))
+	}
+	state := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "gitea_runner_state"}, []string{"state"})
+	clientErrors := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gitea_runner_client_errors_total"}, []string{"method", "code"})
+	registry.MustRegister(counter, histogram, summary, jobs, running, state, clientErrors)
 	counter.WithLabelValues("success").Add(3)
 	for _, value := range []float64{0.5, 1.5, 3} {
 		histogram.Observe(value)
 	}
 	summary.Observe(4)
+	jobs.WithLabelValues("cancelled").Inc()
+	running.Set(2)
+	state.WithLabelValues("idle").Set(1)
+	state.WithLabelValues("unavailable").Set(0)
+	clientErrors.WithLabelValues("FetchTask", "unavailable").Inc()
 	families, err := registry.Gather()
 	require.NoError(t, err)
 
-	exported := convert(families)
-	assert.Equal(t, "s", exported[0].GetUnit())
-	buckets := exported[0].GetHistogram().GetDataPoints()[0]
+	exported := map[string]*metricpb.Metric{}
+	for _, metric := range convert(families) {
+		exported[metric.GetName()] = metric
+	}
+	assert.ElementsMatch(t, []string{
+		"duration_seconds", "gc_seconds", "jobs_total", "gitea.runner.jobs", "gitea.runner.job.active", "cicd.system.errors",
+		"go_memstats_sys_bytes", "go_memstats_heap_released_bytes", "go_memstats_stack_inuse_bytes", "go.memory.used", "cicd.worker.count",
+	}, slices.Collect(maps.Keys(exported)))
+	assert.Equal(t, "s", exported["duration_seconds"].GetUnit())
+	buckets := exported["duration_seconds"].GetHistogram().GetDataPoints()[0]
 	assert.Equal(t, []float64{1, 2}, buckets.GetExplicitBounds())
 	assert.Equal(t, []uint64{1, 1, 1}, buckets.GetBucketCounts())
 	assert.Equal(t, uint64(3), buckets.GetCount())
 	assert.InDelta(t, 5, buckets.GetSum(), 0)
-	assert.InDelta(t, 4, exported[1].GetSummary().GetDataPoints()[0].GetQuantileValues()[0].GetValue(), 0)
-	sum := exported[2].GetSum()
-	assert.Equal(t, "Jobs.", exported[2].GetDescription())
-	assert.True(t, proto.Equal(keyValue("prometheus.type", "counter"), exported[2].GetMetadata()[0]))
+	assert.InDelta(t, 4, exported["gc_seconds"].GetSummary().GetDataPoints()[0].GetQuantileValues()[0].GetValue(), 0)
+	sum := exported["jobs_total"].GetSum()
+	assert.Equal(t, "Jobs.", exported["jobs_total"].GetDescription())
+	assert.True(t, proto.Equal(keyValue("prometheus.type", "counter"), exported["jobs_total"].GetMetadata()[0]))
 	assert.NotZero(t, sum.GetDataPoints()[0].GetStartTimeUnixNano())
 	assert.True(t, sum.GetIsMonotonic())
 	assert.Equal(t, cumulative, sum.GetAggregationTemporality())
 	assert.InDelta(t, 3, sum.GetDataPoints()[0].GetAsDouble(), 0)
 	assert.True(t, proto.Equal(keyValue("status", "success"), sum.GetDataPoints()[0].GetAttributes()[0]))
+
+	assert.True(t, proto.Equal(keyValue("cicd.pipeline.result", "cancellation"), exported["gitea.runner.jobs"].GetSum().GetDataPoints()[0].GetAttributes()[0]))
+	active := exported["gitea.runner.job.active"]
+	assert.Equal(t, "{job}", active.GetUnit())
+	assert.False(t, active.GetSum().GetIsMonotonic())
+	assert.InDelta(t, 2, active.GetSum().GetDataPoints()[0].GetAsDouble(), 0)
+	attributes := func(points []*metricpb.NumberDataPoint, key string) map[string]float64 {
+		values := map[string]float64{}
+		for _, point := range points {
+			for _, kv := range point.GetAttributes() {
+				if kv.GetKey() == key {
+					values[kv.GetValue().GetStringValue()] = point.GetAsDouble()
+				}
+			}
+		}
+		return values
+	}
+	assert.Equal(t, map[string]float64{"stack": 20, "other": 50}, attributes(exported["go.memory.used"].GetSum().GetDataPoints(), "go.memory.type"))
+	assert.Equal(t, map[string]float64{"available": 1, "offline": 0}, attributes(exported["cicd.worker.count"].GetSum().GetDataPoints(), "cicd.worker.state"))
+	assert.True(t, proto.Equal(&commonpb.KeyValueList{Values: []*commonpb.KeyValue{
+		keyValue("error.type", "unavailable"), keyValue("rpc.method", "runner.v1.RunnerService/FetchTask"), keyValue("cicd.system.component", "runner"),
+	}}, &commonpb.KeyValueList{Values: exported["cicd.system.errors"].GetSum().GetDataPoints()[0].GetAttributes()}))
 }
 
 func TestExportRefusesRedirects(t *testing.T) {

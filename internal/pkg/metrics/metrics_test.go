@@ -34,6 +34,11 @@ func TestResultToStatusLabel(t *testing.T) {
 			require.Equal(t, tt.want, ResultToStatusLabel(tt.result))
 		})
 	}
+	expired, cancel := context.WithDeadline(t.Context(), time.Time{})
+	defer cancel()
+	require.Equal(t, LabelStatusTimeout, JobStatus(expired, runnerv1.Result_RESULT_FAILURE))
+	require.Equal(t, LabelStatusSuccess, JobStatus(expired, runnerv1.Result_RESULT_SUCCESS))
+	require.Equal(t, LabelStatusCancelled, JobStatus(t.Context(), runnerv1.Result_RESULT_CANCELLED))
 }
 
 func TestInitAndDynamicMetricRegistration(t *testing.T) {
@@ -50,6 +55,8 @@ func TestInitAndDynamicMetricRegistration(t *testing.T) {
 	RunnerInfo.WithLabelValues("test", "runner").Set(1)
 	RegisterUptimeFunc(time.Now().Add(-time.Second))
 	RegisterRunningJobsFunc(func() int64 { return 2 }, 4)
+	RegisterStateFunc(func() string { return LabelStateIdle })
+	RegisterStateFunc(func() string { return LabelStateBusy })
 
 	metrics, err := Registry.Gather()
 	require.NoError(t, err)
@@ -58,6 +65,15 @@ func TestInitAndDynamicMetricRegistration(t *testing.T) {
 	require.True(t, hasMetric(metrics, "gitea_runner_uptime_seconds"))
 	require.True(t, hasMetric(metrics, "gitea_runner_job_running"))
 	require.True(t, hasMetric(metrics, "gitea_runner_job_capacity_utilization_ratio"))
+	states := map[string]float64{}
+	for _, mf := range metrics {
+		if mf.GetName() == "gitea_runner_state" {
+			for _, m := range mf.GetMetric() {
+				states[m.GetLabel()[0].GetValue()] = m.GetGauge().GetValue()
+			}
+		}
+	}
+	require.Equal(t, map[string]float64{LabelStateBusy: 1, LabelStateIdle: 0, LabelStateUnavailable: 0}, states)
 }
 
 func TestRegisterRunningJobsFuncZeroCapacity(t *testing.T) {

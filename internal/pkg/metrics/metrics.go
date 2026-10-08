@@ -4,6 +4,8 @@
 package metrics
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -20,6 +22,7 @@ const Namespace = "gitea_runner"
 //
 // LabelResult* values are used on metrics with label key "result" (RPC outcomes).
 // LabelStatus* values are used on metrics with label key "status" (job outcomes).
+// LabelState* values are used on metrics with label key "state" (runner state).
 const (
 	LabelResultTask    = "task"
 	LabelResultEmpty   = "empty"
@@ -35,6 +38,11 @@ const (
 	LabelStatusCancelled = "cancelled"
 	LabelStatusSkipped   = "skipped"
 	LabelStatusUnknown   = "unknown"
+	LabelStatusTimeout   = "timeout"
+
+	LabelStateBusy        = "busy"
+	LabelStateIdle        = "idle"
+	LabelStateUnavailable = "unavailable"
 )
 
 // rpcDurationBuckets covers the expected latency range for short-running
@@ -55,6 +63,15 @@ func ResultToStatusLabel(r runnerv1.Result) string {
 	default:
 		return LabelStatusUnknown
 	}
+}
+
+// JobStatus reports an unsuccessful job past its deadline as timeout, like the job's trace span.
+func JobStatus(ctx context.Context, r runnerv1.Result) string {
+	status := ResultToStatusLabel(r)
+	if status != LabelStatusSuccess && status != LabelStatusSkipped && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return LabelStatusTimeout
+	}
+	return status
 }
 
 var (
@@ -96,7 +113,7 @@ var (
 		Namespace: Namespace,
 		Subsystem: "job",
 		Name:      "total",
-		Help:      "Total jobs processed by status (success, failure, cancelled, skipped, unknown).",
+		Help:      "Total jobs processed by status (success, failure, cancelled, skipped, timeout, unknown).",
 	}, []string{"status"})
 
 	JobDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
@@ -148,8 +165,8 @@ var (
 		Namespace: Namespace,
 		Subsystem: "client",
 		Name:      "errors_total",
-		Help:      "Total client RPC errors by method.",
-	}, []string{"method"})
+		Help:      "Total client RPC errors by method and connect code.",
+	}, []string{"method", "code"})
 )
 
 // Registry is the custom Prometheus registry used by the runner.
@@ -219,4 +236,29 @@ func RegisterRunningJobsFunc(countFn func() int64, capacity int) {
 func register(collector prometheus.Collector) {
 	Registry.Unregister(collector)
 	Registry.MustRegister(collector)
+}
+
+// RegisterStateFunc registers gitea_runner_state, 1 for the state stateFn reports and 0 for the others.
+func RegisterStateFunc(stateFn func() string) {
+	register(stateCollector{prometheus.NewDesc(prometheus.BuildFQName(Namespace, "", "state"),
+		"Runner state (busy, idle, unavailable). 1 for the current state.", []string{"state"}, nil), stateFn})
+}
+
+// stateCollector reads the state once per collection, so a scrape never reports two states.
+type stateCollector struct {
+	desc  *prometheus.Desc
+	state func() string
+}
+
+func (c stateCollector) Describe(ch chan<- *prometheus.Desc) { ch <- c.desc }
+
+func (c stateCollector) Collect(ch chan<- prometheus.Metric) {
+	current := c.state()
+	for _, state := range []string{LabelStateBusy, LabelStateIdle, LabelStateUnavailable} {
+		value := 0.0
+		if state == current {
+			value = 1
+		}
+		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, value, state)
+	}
 }

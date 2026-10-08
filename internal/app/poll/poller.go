@@ -206,6 +206,9 @@ func (p *Poller) Ready(grace time.Duration) (bool, string) {
 	if p.unregistered.Load() {
 		return false, "runner is no longer registered"
 	}
+	if p.pollingCtx.Err() != nil {
+		return false, "runner is shutting down"
+	}
 	p.availabilityMu.Lock()
 	ready, reason := p.availabilityReady, p.availabilityReason
 	p.availabilityMu.Unlock()
@@ -394,7 +397,7 @@ func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task,
 		p.lastPollFailed.Store(true)
 		s.consecutiveErrors++
 		metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultError).Inc()
-		metrics.ClientErrors.WithLabelValues(metrics.LabelMethodFetchTask).Inc()
+		metrics.ClientErrors.WithLabelValues(metrics.LabelMethodFetchTask, connect.CodeOf(err).String()).Inc()
 		return nil, false
 	}
 	p.markHealthyPoll()

@@ -624,7 +624,7 @@ func (r *Reporter) reportLog(noMore bool) (bool, error) {
 	metrics.ReportLogDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
 		metrics.ReportLogTotal.WithLabelValues(metrics.LabelResultError).Inc()
-		metrics.ClientErrors.WithLabelValues(metrics.LabelMethodUpdateLog).Inc()
+		metrics.ClientErrors.WithLabelValues(metrics.LabelMethodUpdateLog, connect.CodeOf(err).String()).Inc()
 		return false, err
 	}
 	metrics.ReportLogTotal.WithLabelValues(metrics.LabelResultSuccess).Inc()
@@ -701,7 +701,7 @@ func (r *Reporter) ReportState(reportResult bool) error {
 	metrics.ReportStateDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
 		metrics.ReportStateTotal.WithLabelValues(metrics.LabelResultError).Inc()
-		metrics.ClientErrors.WithLabelValues(metrics.LabelMethodUpdateTask).Inc()
+		metrics.ClientErrors.WithLabelValues(metrics.LabelMethodUpdateTask, connect.CodeOf(err).String()).Inc()
 		r.stateMu.Lock()
 		r.stateChanged = true
 		r.stateMu.Unlock()

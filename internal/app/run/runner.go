@@ -334,7 +334,7 @@ func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) error {
 		}
 
 		metrics.JobDuration.Observe(time.Since(start).Seconds())
-		metrics.JobsTotal.WithLabelValues(metrics.ResultToStatusLabel(reporter.Result())).Inc()
+		metrics.JobsTotal.WithLabelValues(metrics.JobStatus(ctx, reporter.Result())).Inc()
 		endJob(reporter.Result())
 	}()
 	reporter.RunDaemon()

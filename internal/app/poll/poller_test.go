@@ -227,6 +227,11 @@ func TestPollerReady(t *testing.T) {
 	assert.False(t, ready)
 	assert.Equal(t, "unable to poll Gitea", reason)
 
+	poller.shutdownPolling()
+	ready, reason = poller.Ready(time.Second)
+	assert.False(t, ready)
+	assert.Equal(t, "runner is shutting down", reason)
+
 	poller.unregistered.Store(true)
 	ready, reason = poller.Ready(time.Second)
 	assert.False(t, ready)

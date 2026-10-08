@@ -209,6 +209,15 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 		metrics.RunnerCapacity.Set(float64(cfg.Runner.Capacity))
 		metrics.RegisterUptimeFunc(time.Now())
 		metrics.RegisterRunningJobsFunc(runner.RunningCount, cfg.Runner.Capacity)
+		metrics.RegisterStateFunc(func() string {
+			if runner.RunningCount() > 0 {
+				return metrics.LabelStateBusy
+			}
+			if ready, _ := poller.Ready(cfg.Metrics.ReadinessGrace); !ready {
+				return metrics.LabelStateUnavailable
+			}
+			return metrics.LabelStateIdle
+		})
 		if cfg.Metrics.Enabled {
 			metrics.StartServer(ctx, cfg.Metrics.Addr, func() (bool, string) {
 				return poller.Ready(cfg.Metrics.ReadinessGrace)

@@ -31,7 +31,7 @@ Except for the endpoint, each `OTEL_EXPORTER_OTLP_*` variable has `TRACES` and `
 
 - A span per job, named `RUN {workflow} {job}`, with the repository, ref, commit, run URL, run number, attempt and result.
 - A span per step, named as in Gitea's step list, including `Pre` and `Post` stages and the steps of composite actions, with the step's result.
-- The runner's name, UUID and version.
+- The runner's name, UUID, version, process ID and start time, and the Go version.
 
 Logs, step output and secrets are never sent. Step names are taken from the workflow file as written, without expanding `${{ }}` expressions.
 
@@ -41,7 +41,23 @@ Jobs receive `TRACEPARENT`, so tools in a job that use OpenTelemetry can add the
 
 ## Metrics
 
-The metrics of the Prometheus endpoint are also exported, under the same names and whether or not `metrics.enabled` is set. They are sent every export interval and once more on shutdown. If your collector only accepts traces, set `OTEL_METRICS_EXPORTER=none`.
+The metrics of the Prometheus endpoint are also exported, whether or not `metrics.enabled` is set, except `gitea_runner_info`, `go_info` and `process_start_time_seconds`, which are sent as resource attributes. They are sent every export interval and once more on shutdown. To turn them off, set `OTEL_METRICS_EXPORTER=none`.
+
+Metrics are named after the [OpenTelemetry semantic conventions](https://opentelemetry.io/docs/specs/semconv/) where one exists, and under `gitea.runner.*` otherwise. Other Go and process metrics, such as `go_memstats_heap_alloc_bytes`, keep their Prometheus names.
+
+| Metric | Attributes |
+| --- | --- |
+| `cicd.worker.count` | `cicd.worker.state` |
+| `cicd.system.errors` | `cicd.system.component`, `rpc.method`, `error.type` |
+| `gitea.runner.jobs` | `cicd.pipeline.result` |
+| `gitea.runner.job.active`, `gitea.runner.job.limit`, `gitea.runner.job.utilization`, `gitea.runner.job.duration` | |
+| `gitea.runner.poll.fetches` | `gitea.runner.poll.result` |
+| `gitea.runner.uptime`, `gitea.runner.poll.backoff`, `gitea.runner.poll.fetch.duration` | |
+| `gitea.runner.report.log.requests`, `gitea.runner.report.state.requests` | `gitea.runner.report.result` |
+| `gitea.runner.report.log.buffer`, `gitea.runner.report.log.duration`, `gitea.runner.report.state.duration` | |
+| `go.memory.used` | `go.memory.type` |
+| `go.goroutine.count`, `go.memory.allocated`, `go.memory.gc.goal`, `go.memory.gc.cycles`, `go.memory.limit`, `go.config.gogc`, `go.processor.limit` | |
+| `process.memory.usage`, `process.memory.virtual`, `process.unix.file_descriptor.count` (`process.windows.handle.count` on Windows) | |
 
 ## Security
 
