@@ -53,6 +53,12 @@ func (a *GiteaAPI) CreateFile(ctx context.Context, repo, path, content, message 
 	return a.doJSON(ctx, http.MethodPost, url, body, nil)
 }
 
+func (a *GiteaAPI) CreateTag(ctx context.Context, repo, name string) error {
+	body := map[string]any{"tag_name": name}
+	url := fmt.Sprintf("/api/v1/repos/%s/%s/tags", giteaAdminUser, repo)
+	return a.doJSON(ctx, http.MethodPost, url, body, nil)
+}
+
 func (a *GiteaAPI) CreateSecret(ctx context.Context, repo, name, value string) error {
 	body := map[string]any{"data": value}
 	url := fmt.Sprintf("/api/v1/repos/%s/%s/actions/secrets/%s", giteaAdminUser, repo, name)

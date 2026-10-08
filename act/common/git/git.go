@@ -6,28 +6,23 @@ package git
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
-	nethttp "net/http"
 	"os"
-	"path"
+	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
+	"slices"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/internal/pkg/lock"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/storer"
-	"github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/go-git/go-git/v5/plumbing/transport/client"
-	"github.com/go-git/go-git/v5/plumbing/transport/http"
-	"github.com/mattn/go-isatty"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -36,25 +31,18 @@ var (
 	codeCommitSSHRegex  = regexp.MustCompile(`ssh://git-codecommit\.(.+)\.amazonaws.com/v1/repos/(.+)$`)
 	githubHTTPRegex     = regexp.MustCompile(`^https?://.*github.com.*/(.+)/(.+?)(?:.git)?$`)
 	githubSSHRegex      = regexp.MustCompile(`github.com[:/](.+)/(.+?)(?:.git)?$`)
+	hexRefRegex         = regexp.MustCompile(`^[0-9a-fA-F]+$`)
+
+	LocalEnvVars = []string{ // `git rev-parse --local-env-vars`, inherited ones point git at another repository
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY",
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS",
+		"GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR",
+	}
 
 	cloneLocks lock.Keyed[string] // key: clone target directory
 
 	ErrShortRef = errors.New("short SHA references are not supported")
 )
-
-func init() {
-	httpClient := newHTTPClient(&nethttp.HTTP2Config{SendPingTimeout: 30 * time.Second})
-	client.InstallProtocol("http", httpClient)
-	client.InstallProtocol("https", httpClient)
-}
-
-// newHTTPClient pings idle HTTP/2 connections to drop stalled ones.
-func newHTTPClient(h2 *nethttp.HTTP2Config) transport.Transport {
-	defaultTransport, _ := nethttp.DefaultTransport.(*nethttp.Transport)
-	httpTransport := defaultTransport.Clone()
-	httpTransport.HTTP2 = h2
-	return http.NewClient(&nethttp.Client{Transport: httpTransport})
-}
 
 // AcquireCloneLock returns an unlock function after locking the per-directory mutex for dir.
 // Only concurrent operations targeting the same directory are serialized; clones into different directories run in parallel.
@@ -69,146 +57,60 @@ type Error struct {
 	commit string
 }
 
-func (e *Error) Error() string {
-	return e.err.Error()
-}
-
-func (e *Error) Unwrap() error {
-	return e.err
-}
-
-func (e *Error) Commit() string {
-	return e.commit
-}
-
-// goGitMu serializes go-git repository access across the process. go-git is not safe for
-// concurrent use of the same repository (even read access decodes packfiles into shared
-// state), so parallel jobs inspecting the shared workdir repo race without this. The guarded
-// operations are fast local reads; gitea runs one job per process, so the lock is effectively
-// uncontended in production.
-var goGitMu sync.Mutex
+func (e *Error) Error() string  { return e.err.Error() }
+func (e *Error) Unwrap() error  { return e.err }
+func (e *Error) Commit() string { return e.commit }
 
 // FindGitRevision get the current git revision
-func FindGitRevision(ctx context.Context, file string) (shortSha, sha string, err error) {
-	goGitMu.Lock()
-	defer goGitMu.Unlock()
-	return findGitRevision(ctx, file)
-}
-
-func findGitRevision(ctx context.Context, file string) (shortSha, sha string, err error) {
+func FindGitRevision(ctx context.Context, file string) (shortSHA, sha string, err error) {
 	logger := common.Logger(ctx)
-
-	gitDir, err := git.PlainOpenWithOptions(
-		file,
-		&git.PlainOpenOptions{
-			DetectDotGit:          true,
-			EnableDotGitCommonDir: true,
-		},
-	)
+	sha, err = gitOutput(ctx, file, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
 		logger.WithError(err).Error("path", file, "not located inside a git repository")
 		return "", "", err
 	}
-
-	head, err := gitDir.Reference(plumbing.HEAD, true)
-	if err != nil {
-		return "", "", err
+	if len(sha) < 7 {
+		return "", "", errors.New("HEAD could not be resolved")
 	}
-
-	if head.Hash().IsZero() {
-		return "", "", errors.New("HEAD sha1 could not be resolved")
-	}
-
-	hash := head.Hash().String()
-
-	logger.Debugf("Found revision: %s", hash)
-	return hash[:7], strings.TrimSpace(hash), nil
+	logger.Debugf("Found revision: %s", sha)
+	return sha[:7], sha, nil
 }
 
 // FindGitRef get the current git ref
 func FindGitRef(ctx context.Context, file string) (string, error) {
-	goGitMu.Lock()
-	defer goGitMu.Unlock()
-
 	logger := common.Logger(ctx)
-
 	logger.Debugf("Loading revision from git directory")
-	_, ref, err := findGitRevision(ctx, file)
+	_, revision, err := FindGitRevision(ctx, file)
 	if err != nil {
 		return "", err
 	}
+	logger.Debugf("HEAD points to '%s'", revision)
 
-	logger.Debugf("HEAD points to '%s'", ref)
-
-	// Prefer the git library to iterate over the references and find a matching tag or branch.
-	refTag := ""
-	refBranch := ""
-	repo, err := git.PlainOpenWithOptions(
-		file,
-		&git.PlainOpenOptions{
-			DetectDotGit:          true,
-			EnableDotGitCommonDir: true,
-		},
-	)
+	refs, err := gitOutput(ctx, file, "for-each-ref", "--points-at=HEAD", "--format=%(refname)", "refs/tags", "refs/heads")
 	if err != nil {
 		return "", err
 	}
-
-	iter, err := repo.References()
-	if err != nil {
-		return "", err
-	}
-
-	// find the reference that matches the revision's has
-	err = iter.ForEach(func(r *plumbing.Reference) error {
-		/* tags and branches will have the same hash
-		 * when a user checks out a tag, it is not mentioned explicitly
-		 * in the go-git package, we must identify the revision
-		 * then check if any tag matches that revision,
-		 * if so then we checked out a tag
-		 * else we look for branches and if matches,
-		 * it means we checked out a branch
-		 *
-		 * If a branches matches first we must continue and check all tags (all references)
-		 * in case we match with a tag later in the interation
-		 */
-		if r.Hash().String() == ref {
-			if r.Name().IsTag() {
-				refTag = r.Name().String()
-			}
-			if r.Name().IsBranch() {
-				refBranch = r.Name().String()
-			}
+	var tag, branch string
+	for ref := range strings.FieldsSeq(refs) {
+		switch {
+		case strings.HasPrefix(ref, "refs/tags/"):
+			tag = ref
+		case strings.HasPrefix(ref, "refs/heads/"):
+			branch = ref
 		}
-
-		// we found what we where looking for
-		if refTag != "" && refBranch != "" {
-			return storer.ErrStop
-		}
-
-		return nil
-	})
-	if err != nil {
-		return "", err
 	}
-
-	// order matters here see above comment.
-	if refTag != "" {
-		return refTag, nil
+	if tag != "" {
+		return tag, nil
 	}
-	if refBranch != "" {
-		return refBranch, nil
+	if branch != "" {
+		return branch, nil
 	}
-
-	return "", fmt.Errorf("failed to identify reference (tag/branch) for the checked-out revision '%s'", ref)
+	return "", fmt.Errorf("failed to identify reference (tag/branch) for the checked-out revision '%s'", revision)
 }
 
 // FindGithubRepo get the repo
 func FindGithubRepo(ctx context.Context, file, githubInstance string) (string, error) {
-	goGitMu.Lock()
-	defer goGitMu.Unlock()
-
-	url, err := findGitRemoteURL(ctx, file, "origin")
+	url, err := findGitRemoteURL(ctx, file)
 	if err != nil {
 		return "", err
 	}
@@ -216,28 +118,16 @@ func FindGithubRepo(ctx context.Context, file, githubInstance string) (string, e
 	return slug, nil
 }
 
-func findGitRemoteURL(_ context.Context, file, remoteName string) (string, error) {
-	repo, err := git.PlainOpenWithOptions(
-		file,
-		&git.PlainOpenOptions{
-			DetectDotGit:          true,
-			EnableDotGitCommonDir: true,
-		},
-	)
+func findGitRemoteURL(ctx context.Context, file string) (string, error) {
+	urls, err := gitOutput(ctx, file, "config", "--get-all", "remote.origin.url") // `remote get-url` applies insteadOf
 	if err != nil {
 		return "", err
 	}
-
-	remote, err := repo.Remote(remoteName)
-	if err != nil {
-		return "", err
+	if urls == "" {
+		return "", errors.New("remote 'origin' exists but has no URL")
 	}
-
-	if len(remote.Config().URLs) < 1 {
-		return "", fmt.Errorf("remote '%s' exists but has no URL", remoteName)
-	}
-
-	return remote.Config().URLs[0], nil
+	url, _, _ := strings.Cut(urls, "\n")
+	return url, nil
 }
 
 func findGitSlug(url, githubInstance string) (string, string) {
@@ -281,66 +171,31 @@ type NewGitCloneExecutorInput struct {
 	InsecureSkipTLS bool
 }
 
-// CloneIfRequired returns the repository and a boolean indicating whether an existing local clone was reused.
-func CloneIfRequired(ctx context.Context, refName plumbing.ReferenceName, input NewGitCloneExecutorInput, logger log.FieldLogger) (*git.Repository, bool, error) {
-	r, err := git.PlainOpen(input.Dir)
+// CloneIfRequired reports whether an existing local clone was reused.
+func CloneIfRequired(ctx context.Context, input NewGitCloneExecutorInput, logger log.FieldLogger) (bool, error) {
+	var origin string
+	_, err := os.Stat(filepath.Join(input.Dir, ".git")) // without it git would discover a repository around Dir
 	if err == nil {
-		// Verify the cached clone still points to the resolved URL before reusing it.
-		remote, err := r.Remote("origin")
-		if err == nil && len(remote.Config().URLs) > 0 && remote.Config().URLs[0] == input.URL {
-			// Reuse existing clone
-			return r, true, nil
-		}
-
-		switch {
-		case err != nil:
-			logger.Debugf("Removing cached clone at %s because origin cannot be read: %v", input.Dir, err)
-		case len(remote.Config().URLs) == 0:
-			logger.Debugf("Removing cached clone at %s because origin has no URL", input.Dir)
-		default:
-			logger.Debugf("Removing cached clone at %s because origin URL changed from %s to %s", input.Dir, remote.Config().URLs[0], input.URL)
-		}
-		if err := os.RemoveAll(input.Dir); err != nil {
-			return nil, false, fmt.Errorf("remove cached clone %s: %w", input.Dir, err)
-		}
+		origin, err = findGitRemoteURL(ctx, input.Dir)
 	}
-
-	var progressWriter io.Writer
-	if isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd()) {
-		if entry, ok := logger.(*log.Entry); ok {
-			progressWriter = entry.WriterLevel(log.DebugLevel)
-		} else if lgr, ok := logger.(*log.Logger); ok {
-			progressWriter = lgr.WriterLevel(log.DebugLevel)
-		} else {
-			log.Errorf("Unable to get writer from logger (type=%T)", logger)
-			progressWriter = os.Stdout
-		}
+	if err == nil && origin == input.URL {
+		return true, nil
 	}
-
-	cloneOptions := git.CloneOptions{
-		URL:      input.URL,
-		Progress: progressWriter,
-
-		InsecureSkipTLS: input.InsecureSkipTLS, // For Gitea
+	if err == nil {
+		logger.Debugf("Removing cached clone at %s because origin URL changed from %s to %s", input.Dir, origin, input.URL)
+	} else if _, statErr := os.Stat(input.Dir); statErr == nil {
+		logger.Debugf("Removing cached clone at %s because origin cannot be read: %v", input.Dir, err)
 	}
-	if input.Token != "" {
-		cloneOptions.Auth = &http.BasicAuth{
-			Username: "token",
-			Password: input.Token,
-		}
+	if err := os.RemoveAll(input.Dir); err != nil {
+		return false, fmt.Errorf("remove cached clone %s: %w", input.Dir, err)
 	}
-
-	r, err = cloneAtDepth(ctx, input, cloneOptions, logger)
-	if err != nil {
-		logger.Errorf("Unable to clone %v %s: %v", input.URL, refName, err)
-		return nil, false, err
+	if err := clone(ctx, input); err != nil {
+		return false, err
 	}
-
-	if err = os.Chmod(input.Dir, 0o755); err != nil {
-		return nil, false, err
+	if err := os.Chmod(input.Dir, 0o755); err != nil {
+		return false, err
 	}
-
-	return r, false, nil
+	return false, nil
 }
 
 // NewGitCloneExecutor creates an executor to clone git repos
@@ -353,134 +208,125 @@ func NewGitCloneExecutor(input NewGitCloneExecutorInput) common.Executor {
 			logger.Infof("git clone '%s' # ref=%s", input.URL, input.Ref)
 		}
 		logger.Debugf("  cloning %s to %s", input.URL, input.Dir)
-
 		defer AcquireCloneLock(input.Dir)()
 
-		refName := plumbing.ReferenceName("refs/heads/" + input.Ref)
-		r, reused, err := CloneIfRequired(ctx, refName, input, logger)
+		reused, err := CloneIfRequired(ctx, input, logger)
 		if err != nil {
 			return err
 		}
-
-		isOfflineMode := input.OfflineMode
-
-		fetchOptions := git.FetchOptions{
-			RefSpecs:        []config.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD", "refs/heads/*:refs/remotes/origin/*"},
-			Force:           true,
-			InsecureSkipTLS: input.InsecureSkipTLS,
+		resolved, err := resolveRef(ctx, input.Dir, input.Ref)
+		if errors.Is(err, ErrShortRef) || (err != nil && input.OfflineMode) {
+			return err
 		}
-		if input.Token != "" {
-			fetchOptions.Auth = &http.BasicAuth{
-				Username: "token",
-				Password: input.Token,
-			}
-		}
-
-		// Action clones only ever need the tip commit, so keep a shallow cache cheap on update at depth 1 regardless of its original depth
-		// Turning action_shallow_clone off does not convert an existing shallow cache; evict it for a full clone.
-		if isShallow(r) {
-			fetchOptions.Depth = 1
-			if spec, ok := shallowFetchRefSpec(r, input.Ref); ok {
-				fetchOptions.RefSpecs = []config.RefSpec{spec}
-			}
-		}
-
-		// A just-cloned ref is as current as a fetch would make it, and a commit hash never moves.
-		// TODO: revalidate a mutable ref with a conditional archive request instead, once every
-		// supported Gitea sends an ETag for them: https://github.com/go-gitea/gitea/pull/39289
-		_, present := refRevision(r, input.Ref)
-		refresh := !isOfflineMode && (!present || (reused && !plumbing.IsHash(input.Ref)))
-
-		if refresh {
-			err = r.FetchContext(ctx, &fetchOptions)
-			if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+		if !input.OfflineMode && (err != nil || (reused && !isFullHash(input.Ref, resolved))) {
+			if err := fetch(ctx, input); err != nil {
 				return err
 			}
+			resolved, err = resolveRef(ctx, input.Dir, input.Ref)
 		}
-
-		var hash *plumbing.Hash
-		rev := plumbing.Revision(input.Ref)
-		if hash, err = r.ResolveRevision(rev); err != nil {
-			// ResolveRevision returns a nil hash on error, and a branch ref legitimately fails
-			// here (no local refs/heads/<ref>); the duck-typing below resolves it.
-			logger.Errorf("Unable to resolve %s: %v", input.Ref, err)
-		} else if hash.String() != input.Ref && strings.HasPrefix(hash.String(), input.Ref) {
-			return &Error{
-				err:    ErrShortRef,
-				commit: hash.String(),
-			}
-		}
-
-		rev, _ = refRevision(r, input.Ref)
-
-		if hash, err = r.ResolveRevision(rev); err != nil {
+		if err != nil {
 			logger.Errorf("Unable to resolve %s: %v", input.Ref, err)
 			return err
 		}
-
-		var w *git.Worktree
-		if w, err = r.Worktree(); err != nil {
-			return err
+		if _, err := runGit(ctx, input.Dir, nil, "checkout", "--force", "--detach", resolved); err != nil {
+			return fmt.Errorf("checkout %s: %w", resolved, err)
 		}
-
 		reusedMsg := ""
-		if isOfflineMode && reused {
+		if input.OfflineMode && reused {
 			reusedMsg = " (reused in offline mode)"
 		}
-
 		logger.Debugf("Cloned %s to %s%s", input.URL, input.Dir, reusedMsg)
-
-		if err = w.Checkout(&git.CheckoutOptions{
-			Hash:  *hash,
-			Force: true,
-		}); err != nil {
-			logger.Errorf("Unable to checkout %s: %v", *hash, err)
-			return err
-		}
-
 		logger.Debugf("Checked out %s", input.Ref)
 		return nil
 	}
 }
 
-// cloneAtDepth falls back to a full clone when the shallow attempt fails.
-func cloneAtDepth(ctx context.Context, input NewGitCloneExecutorInput, opts git.CloneOptions, logger log.FieldLogger) (*git.Repository, error) {
+func clone(ctx context.Context, input NewGitCloneExecutorInput) error {
+	if input.Depth > 0 && isFullObjectID(input.Ref) {
+		if err := shallowPinnedClone(ctx, input); err == nil {
+			return nil
+		} else if err := removePartialClone(input.Dir); err != nil {
+			return err
+		}
+	}
+	args := []string{"clone", "--no-checkout"}
 	if input.Depth > 0 {
-		if plumbing.IsHash(input.Ref) {
-			r, err := fetchPinnedSHA(ctx, input, opts)
-			if err == nil {
-				return r, nil
-			}
-			logger.Debugf("Shallow fetch of %s at %s failed: %v", input.URL, input.Ref, err)
-			if err := removePartialClone(input.Dir); err != nil {
-				return nil, err
-			}
-		} else {
-			refNames := []plumbing.ReferenceName{plumbing.NewBranchReferenceName(input.Ref), plumbing.NewTagReferenceName(input.Ref)}
-			if input.Ref == plumbing.HEAD.String() || strings.HasPrefix(input.Ref, "refs/") {
-				refNames = []plumbing.ReferenceName{plumbing.ReferenceName(input.Ref)} // HEAD is the remote's default branch
-			}
-			for _, refName := range refNames {
-				shallowOpts := opts
-				shallowOpts.Depth = input.Depth
-				shallowOpts.SingleBranch = true
-				shallowOpts.ReferenceName = refName
-				shallowOpts.Tags = git.NoTags
+		args = append(args, "--no-local", "--depth", strconv.Itoa(input.Depth), "--no-tags")
+		if input.Ref != "HEAD" && !strings.HasPrefix(input.Ref, "refs/") {
+			args = append(args, "--branch", input.Ref)
+		}
+	}
+	args = append(args, input.URL, input.Dir)
+	if _, err := runGit(ctx, "", &input, args...); err == nil {
+		return nil
+	} else if input.Depth == 0 {
+		return err
+	}
+	if err := removePartialClone(input.Dir); err != nil {
+		return err
+	}
+	_, err := runGit(ctx, "", &input, "clone", "--no-checkout", input.URL, input.Dir)
+	return err
+}
 
-				r, err := git.PlainCloneContext(ctx, input.Dir, false, &shallowOpts)
-				if err == nil {
-					return r, nil
-				}
-				logger.Debugf("Shallow clone of %s as %s failed: %v", input.URL, refName, err)
-				if err := removePartialClone(input.Dir); err != nil {
-					return nil, err
-				}
+func shallowPinnedClone(ctx context.Context, input NewGitCloneExecutorInput) error {
+	if _, err := runGit(ctx, "", &input, "init", "--object-format="+ObjectFormat(input.Ref), input.Dir); err != nil {
+		return err
+	}
+	if _, err := runGit(ctx, input.Dir, &input, "remote", "add", "origin", input.URL); err != nil {
+		return err
+	}
+	_, err := runGit(ctx, input.Dir, &input, "fetch", "--depth", strconv.Itoa(input.Depth), "--no-tags", "origin", "+"+input.Ref+":refs/pinned/"+input.Ref)
+	return err
+}
+
+func fetch(ctx context.Context, input NewGitCloneExecutorInput) error {
+	args := []string{"fetch", "--force", "--prune"}
+	if _, err := os.Stat(filepath.Join(input.Dir, ".git", "shallow")); err == nil {
+		args = append(args, "--depth", "1", "--no-tags")
+	}
+	_, err := runGit(ctx, input.Dir, &input, append(args, "origin", "+"+input.Ref+":"+cachedRef(input.Ref))...) // git picks the remote ref, a tag before a branch
+	return err
+}
+
+func cachedRef(ref string) string {
+	return fmt.Sprintf("refs/runner/%x", sha256.Sum256([]byte(ref)))
+}
+
+func resolveRef(ctx context.Context, dir, ref string) (string, error) {
+	if !isFullObjectID(ref) {
+		for _, name := range []string{cachedRef(ref), "refs/tags/" + ref, "refs/remotes/origin/" + ref} {
+			if sha, err := gitOutput(ctx, dir, "rev-parse", "--verify", name+"^{commit}"); err == nil {
+				return sha, nil
 			}
 		}
-		logger.Debugf("Falling back to a full clone of %s for ref %q", input.URL, input.Ref)
 	}
+	sha, err := gitOutput(ctx, dir, "rev-parse", "--verify", ref+"^{commit}")
+	if err == nil && hexRefRegex.MatchString(ref) && len(sha) != len(ref) {
+		return "", &Error{err: ErrShortRef, commit: sha}
+	}
+	return sha, err
+}
 
-	return git.PlainCloneContext(ctx, input.Dir, false, &opts)
+func isFullObjectID(ref string) bool {
+	return ObjectFormat(ref) != ""
+}
+
+func isFullHash(ref, resolved string) bool {
+	return isFullObjectID(ref) && len(ref) == len(resolved)
+}
+
+// ObjectFormat returns the object format of a full commit hash, empty for anything else.
+func ObjectFormat(sha string) string {
+	switch {
+	case !hexRefRegex.MatchString(sha):
+		return ""
+	case len(sha) == 40:
+		return "sha1"
+	case len(sha) == 64:
+		return "sha256"
+	}
+	return ""
 }
 
 func removePartialClone(dir string) error {
@@ -490,71 +336,59 @@ func removePartialClone(dir string) error {
 	return nil
 }
 
-func fetchPinnedSHA(ctx context.Context, input NewGitCloneExecutorInput, opts git.CloneOptions) (*git.Repository, error) {
-	r, err := git.PlainInit(input.Dir, false)
+func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	output, err := runGit(ctx, dir, nil, args...)
+	return strings.TrimSpace(string(output)), err
+}
+
+func RemoteConfig(token string, insecureSkipTLS bool) []string {
+	var config []string
+	if insecureSkipTLS {
+		config = append(config, "http.sslVerify=false")
+	}
+	if token != "" {
+		config = append(config, "http.extraHeader=", "http.extraHeader=Authorization: Basic "+base64.StdEncoding.EncodeToString([]byte("token:"+token)))
+	}
+	return config
+}
+
+// ConfigEnv applies `-c` style entries through the environment, keeping secrets out of argv.
+func ConfigEnv(config ...string) map[string]string {
+	env := map[string]string{"GIT_CONFIG_COUNT": strconv.Itoa(len(config))}
+	for i, entry := range config {
+		key, value, _ := strings.Cut(entry, "=")
+		env["GIT_CONFIG_KEY_"+strconv.Itoa(i)] = key
+		env["GIT_CONFIG_VALUE_"+strconv.Itoa(i)] = value
+	}
+	return env
+}
+
+func runGit(ctx context.Context, dir string, input *NewGitCloneExecutorInput, args ...string) ([]byte, error) {
+	config := []string{"core.autocrlf=false", "core.eol=lf"} // keep action files LF
+	if input != nil {
+		config = append(config, RemoteConfig(input.Token, input.InsecureSkipTLS)...)
+	}
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(entry string) bool {
+		name, _, _ := strings.Cut(entry, "=")
+		return slices.Contains(LocalEnvVars, name)
+	})
+	for key, value := range ConfigEnv(config...) {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0")
+	if runtime.GOOS != "windows" {
+		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) } // lets git remove its lock files
+	}
+	cmd.WaitDelay = time.Second
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		return output, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
-	if _, err := r.CreateRemote(&config.RemoteConfig{Name: "origin", URLs: []string{input.URL}}); err != nil {
-		return nil, err
-	}
-	if err := r.FetchContext(ctx, &git.FetchOptions{
-		RefSpecs:        []config.RefSpec{pinnedRefSpec(input.Ref)},
-		Depth:           input.Depth,
-		Tags:            git.NoTags,
-		Auth:            opts.Auth,
-		Progress:        opts.Progress,
-		InsecureSkipTLS: opts.InsecureSkipTLS,
-	}); err != nil {
-		return nil, err
-	}
-	return r, nil
-}
-
-// pinnedRefSpec keeps a hash-shaped name out of refs/heads and refs/tags.
-func pinnedRefSpec(sha string) config.RefSpec {
-	return config.RefSpec(fmt.Sprintf("+%s:refs/pinned/%s", sha, sha))
-}
-
-// refRevision picks the revision to check out and reports whether it resolves locally.
-func refRevision(r *git.Repository, ref string) (plumbing.Revision, bool) {
-	if plumbing.IsHash(ref) {
-		// git ignores a ref named as 40 hex digits, so a full hash always denotes the commit itself.
-		_, err := r.CommitObject(plumbing.NewHash(ref))
-		return plumbing.Revision(ref), err == nil
-	}
-	if _, err := r.Tag(ref); err == nil {
-		return plumbing.Revision(path.Join("refs", "tags", ref)), true
-	}
-	remoteRef := plumbing.ReferenceName(path.Join("refs", "remotes", "origin", ref))
-	if _, err := r.Reference(remoteRef, false); err == nil {
-		return plumbing.Revision(remoteRef), true
-	}
-	rev := plumbing.Revision(ref)
-	_, err := r.ResolveRevision(rev)
-	return rev, err == nil
-}
-
-// isShallow reports whether the local repository was cloned with a limited depth.
-func isShallow(r *git.Repository) bool {
-	shallows, err := r.Storer.Shallow()
-	return err == nil && len(shallows) > 0
-}
-
-// shallowFetchRefSpec limits a shallow update to the requested ref, falling back to the broad refspec when it is not present locally.
-func shallowFetchRefSpec(r *git.Repository, ref string) (config.RefSpec, bool) {
-	tagRef := plumbing.NewTagReferenceName(ref)
-	if _, err := r.Reference(tagRef, false); err == nil {
-		return config.RefSpec(fmt.Sprintf("+%s:%s", tagRef, tagRef)), true
-	}
-	remoteRef := plumbing.NewRemoteReferenceName("origin", ref)
-	if _, err := r.Reference(remoteRef, false); err == nil {
-		branchRef := plumbing.NewBranchReferenceName(ref)
-		return config.RefSpec(fmt.Sprintf("+%s:%s", branchRef, remoteRef)), true
-	}
-	if plumbing.IsHash(ref) {
-		// The broad refspec carries only advertised tips, never a pinned commit.
-		return pinnedRefSpec(ref), true
-	}
-	return "", false
+	return output, nil
 }

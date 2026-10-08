@@ -142,6 +142,11 @@ func dumpRunLogs(t *testing.T, api *GiteaAPI, repo string, runID int64) {
 
 func waitForRun(t *testing.T, api *GiteaAPI, repo string) *ActionRun {
 	t.Helper()
+	return waitForRunAfter(t, api, repo, 0)
+}
+
+func waitForRunAfter(t *testing.T, api *GiteaAPI, repo string, previousID int64) *ActionRun {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 
@@ -150,7 +155,7 @@ func waitForRun(t *testing.T, api *GiteaAPI, repo string) *ActionRun {
 		if err != nil {
 			t.Fatalf("get latest run: %v", err)
 		}
-		if len(runs) > 0 {
+		if len(runs) > 0 && runs[0].ID > previousID {
 			return &runs[0]
 		}
 		select {

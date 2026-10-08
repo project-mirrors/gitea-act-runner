@@ -1,0 +1,61 @@
+name: checkout
+on: push
+jobs:
+  checkout:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - id: checkout
+        uses: builtin:checkout
+      - uses: builtin:checkout
+        with:
+          ref: ${{ github.ref_name }}
+          path: short
+      - run: test "$(git -C short rev-parse HEAD)" = "$GITHUB_SHA"
+      - if: github.ref_type == 'branch'
+        run: |
+          test "$(git symbolic-ref HEAD)" = "$GITHUB_REF"
+          test "${{ steps.checkout.outputs.ref }}" = "$GITHUB_REF"
+          test "${{ steps.checkout.outputs.commit }}" = "$GITHUB_SHA"
+          git -c user.name=e2e -c user.email=e2e@example.com commit --allow-empty -m pushed
+          git push
+          git tag moved
+          git push --force origin moved
+          git switch --orphan child
+          echo child > child.txt
+          git add child.txt
+          git -c user.name=e2e -c user.email=e2e@example.com commit -m child
+          git push origin child
+          git switch -c content main
+          git submodule add -b child "../${{ github.event.repository.name }}.git" sub
+          git lfs install --local
+          git lfs track '*.bin'
+          mkdir keep drop
+          echo big > keep/big.bin
+          echo big > drop/big.bin
+          git add .gitattributes keep drop
+          git -c user.name=e2e -c user.email=e2e@example.com commit -m content
+          git push origin content
+      - if: github.ref_type == 'branch'
+        uses: builtin:checkout
+        with:
+          ref: content
+          path: full
+          submodules: true
+          lfs: true
+      - if: github.ref_type == 'branch'
+        uses: builtin:checkout
+        with:
+          ref: content
+          path: sparse
+          sparse-checkout: keep
+          lfs: true
+      - if: github.ref_type == 'branch'
+        run: |
+          test "$(cat full/sub/child.txt)" = child
+          test "$(cat full/keep/big.bin)" = big
+          test "$(cat sparse/keep/big.bin)" = big
+          test ! -e sparse/drop
+      - if: github.ref_type == 'tag'
+        run: test "$(git describe --tags)" = "$GITHUB_REF_NAME"

@@ -188,6 +188,7 @@ func StartGitea(ctx context.Context, cli mobyclient.APIClient) (*GiteaFixture, e
 				"GITEA__security__INSTALL_LOCK=true",
 				"GITEA__database__DB_TYPE=sqlite3",
 				"GITEA__actions__ENABLED=true",
+				"GITEA__server__LFS_START_SERVER=true",
 				"GITEA__server__ROOT_URL=" + baseURL + "/",
 			},
 			ExposedPorts: network.PortSet{containerPort: struct{}{}},

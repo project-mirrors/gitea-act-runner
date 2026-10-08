@@ -6,9 +6,8 @@ package git
 
 import (
 	"context"
-	"crypto/tls"
+	"encoding/base64"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,18 +16,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
 
-	gogit "github.com/go-git/go-git/v5"
-	gogitconfig "github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing/transport"
-	gogitclient "github.com/go-git/go-git/v5/plumbing/transport/client"
-	gogitfile "github.com/go-git/go-git/v5/plumbing/transport/file"
 	log "github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
@@ -90,14 +83,27 @@ func cleanGitHooks(dir string) error {
 	return nil
 }
 
-func TestFindGithubRepoUsesOrigin(t *testing.T) {
+func TestFindGitMetadataOfSHA256RepositoryUsesOrigin(t *testing.T) {
+	t.Parallel()
 	basedir := t.TempDir()
 	const remoteURL = "https://github.com/owner/repo.git"
-	require.NoError(t, gitCmd("init", basedir))
+	require.NoError(t, gitCmd("init", "--object-format=sha256", "--initial-branch=main", basedir))
 	require.NoError(t, cleanGitHooks(basedir))
+	require.NoError(t, gitCmd("-C", basedir, "commit", "--allow-empty", "-m", "init"))
 	require.NoError(t, gitCmd("-C", basedir, "remote", "add", "origin", remoteURL))
+	require.NoError(t, gitCmd("-C", basedir, "config", "--add", "remote.origin.url", "https://github.com/other/repo.git"))
 
-	url, err := findGitRemoteURL(context.Background(), basedir, "origin")
+	shortSHA, sha, err := FindGitRevision(context.Background(), basedir)
+	require.NoError(t, err)
+	require.Equal(t, gitRevParse(t, basedir, "HEAD"), sha)
+	require.Len(t, sha, 64)
+	require.Equal(t, sha[:7], shortSHA)
+
+	ref, err := FindGitRef(context.Background(), basedir)
+	require.NoError(t, err)
+	require.Equal(t, "refs/heads/main", ref)
+
+	url, err := findGitRemoteURL(context.Background(), basedir)
 	require.NoError(t, err)
 	require.Equal(t, remoteURL, url)
 
@@ -107,6 +113,7 @@ func TestFindGithubRepoUsesOrigin(t *testing.T) {
 }
 
 func TestGitFindRef(t *testing.T) {
+	t.Parallel()
 	basedir := t.TempDir()
 
 	for name, tt := range map[string]struct {
@@ -193,7 +200,9 @@ func TestGitCloneExecutor(t *testing.T) {
 	workDir := t.TempDir()
 	require.NoError(t, gitCmd("clone", remoteDir, workDir))
 	require.NoError(t, gitCmd("-C", workDir, "checkout", "-b", "main"))
-	require.NoError(t, gitCmd("-C", workDir, "commit", "--allow-empty", "-m", "initial"))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "action.sh"), []byte("#!/bin/sh\necho hi\n"), 0o755))
+	require.NoError(t, gitCmd("-C", workDir, "add", "action.sh"))
+	require.NoError(t, gitCmd("-C", workDir, "commit", "-m", "initial"))
 	require.NoError(t, gitCmd("-C", workDir, "tag", "v2"))
 	require.NoError(t, gitCmd("-C", workDir, "push", "-u", "origin", "main"))
 	require.NoError(t, gitCmd("-C", workDir, "push", "origin", "v2"))
@@ -206,6 +215,13 @@ func TestGitCloneExecutor(t *testing.T) {
 	out, err := exec.Command("git", "-C", workDir, "rev-parse", "main").Output()
 	require.NoError(t, err)
 	fullSha := strings.TrimSpace(string(out))
+
+	require.NoError(t, gitCmd("-C", workDir, "push", "origin", "main:refs/heads/"+fullSha[:4]))
+
+	hostConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(t, os.WriteFile(hostConfig, []byte("[core]\n\tautocrlf = true\n[url \""+remoteDir+"\"]\n\tinsteadOf = https://example.invalid/action\n"), 0o644))
+	t.Setenv("GIT_CONFIG_GLOBAL", hostConfig)
+	t.Setenv("GIT_DIR", t.TempDir())
 
 	for name, tt := range map[string]struct {
 		Err error
@@ -227,26 +243,42 @@ func TestGitCloneExecutor(t *testing.T) {
 			Err: &Error{ErrShortRef, fullSha},
 			Ref: fullSha[:7],
 		},
+		"HEAD": {
+			Ref: "HEAD",
+		},
+		"hex branch named like its own commit": {
+			Ref: fullSha[:4],
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
 			clone := NewGitCloneExecutor(NewGitCloneExecutorInput{
-				URL: remoteDir,
+				URL: "https://example.invalid/action",
 				Ref: tt.Ref,
-				Dir: t.TempDir(),
+				Dir: dir,
 			})
 
 			err := clone(context.Background())
 			if tt.Err != nil {
 				assert.Error(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 				assert.Equal(t, tt.Err, err)
-			} else {
-				assert.Empty(t, err) //nolint:testifylint // pre-existing issue from nektos/act
+				assert.Equal(t, tt.Err, clone(context.Background()), "a retry on the cache keeps the error")
+				return
 			}
+			assert.Empty(t, err) //nolint:testifylint // pre-existing issue from nektos/act
+			marker := filepath.Join(dir, "marker")
+			require.NoError(t, os.WriteFile(marker, nil, 0o644))
+			require.NoError(t, clone(context.Background()))
+			assert.FileExists(t, marker, "an insteadOf rewrite must not evict the cache")
+			script, err := os.ReadFile(filepath.Join(dir, "action.sh"))
+			require.NoError(t, err)
+			assert.Equal(t, "#!/bin/sh\necho hi\n", string(script), "host core.autocrlf must not convert action files")
 		})
 	}
 }
 
 func TestGitCloneExecutorReclonesWhenOriginURLChanges(t *testing.T) {
+	t.Parallel()
 	createRemote := func(message string) string {
 		remoteDir := t.TempDir()
 		require.NoError(t, gitCmd("init", "--bare", "--initial-branch=main", remoteDir))
@@ -270,6 +302,11 @@ func TestGitCloneExecutorReclonesWhenOriginURLChanges(t *testing.T) {
 		Dir: cacheDir,
 	})(t.Context()))
 
+	nested := filepath.Join(cacheDir, "nested")
+	require.NoError(t, os.Mkdir(nested, 0o755))
+	require.NoError(t, NewGitCloneExecutor(NewGitCloneExecutorInput{URL: oldRemoteDir, Ref: "main", Dir: nested})(t.Context()))
+	assert.DirExists(t, filepath.Join(nested, ".git"), "an empty cache dir inside a clone of the same URL gets its own repository")
+
 	markerPath := filepath.Join(cacheDir, "stale-marker")
 	require.NoError(t, os.WriteFile(markerPath, []byte("stale"), 0o644))
 
@@ -279,7 +316,7 @@ func TestGitCloneExecutorReclonesWhenOriginURLChanges(t *testing.T) {
 		Dir: cacheDir,
 	})(t.Context()))
 
-	originURL, err := findGitRemoteURL(t.Context(), cacheDir, "origin")
+	originURL, err := findGitRemoteURL(t.Context(), cacheDir)
 	require.NoError(t, err)
 	assert.Equal(t, newRemoteDir, originURL)
 
@@ -291,61 +328,36 @@ func TestGitCloneExecutorReclonesWhenOriginURLChanges(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "stale cached directory should be removed before recloning")
 }
 
-func TestGitCloneExecutorNonFastForwardRef(t *testing.T) {
-	// Simulate the scenario where a remote ref (e.g. a GitHub PR head ref) changes
-	// non-fast-forward between two fetches. Before the fix, the fetch used Force=false,
-	// causing go-git to return ErrForceNeeded and short-circuit the checkout.
-
-	// Create a bare "remote" repo with an initial commit on main and a feature branch.
+func TestGitCloneExecutorFollowsRemoteRefChanges(t *testing.T) {
+	t.Parallel()
 	remoteDir := t.TempDir()
 	require.NoError(t, gitCmd("init", "--bare", "--initial-branch=main", remoteDir))
-
-	// We need a working clone to push commits from.
 	workDir := t.TempDir()
 	require.NoError(t, gitCmd("clone", remoteDir, workDir))
 	require.NoError(t, gitCmd("-C", workDir, "checkout", "-b", "main"))
 	require.NoError(t, gitCmd("-C", workDir, "commit", "--allow-empty", "-m", "initial"))
+	require.NoError(t, gitCmd("-C", workDir, "commit", "--allow-empty", "-m", "feature-1"))
 	require.NoError(t, gitCmd("-C", workDir, "push", "-u", "origin", "main"))
 
-	// Create a feature branch (simulates refs/pull/N/head).
-	require.NoError(t, gitCmd("-C", workDir, "checkout", "-b", "feature"))
-	require.NoError(t, gitCmd("-C", workDir, "commit", "--allow-empty", "-m", "feature-1"))
-	require.NoError(t, gitCmd("-C", workDir, "push", "origin", "feature"))
-
-	// First clone via the executor — should succeed and cache the repo.
-	cloneDir := t.TempDir()
-	clone := NewGitCloneExecutor(NewGitCloneExecutorInput{
-		URL: remoteDir,
-		Ref: "main",
-		Dir: cloneDir,
-	})
+	dir := t.TempDir()
+	clone := NewGitCloneExecutor(NewGitCloneExecutorInput{URL: remoteDir, Ref: "main", Dir: dir})
 	require.NoError(t, clone(context.Background()))
 
-	// Now force-push the feature branch to a non-fast-forward commit (simulates
-	// a PR rebase). This makes refs/heads/feature non-fast-forward.
-	require.NoError(t, gitCmd("-C", workDir, "checkout", "main"))
-	require.NoError(t, gitCmd("-C", workDir, "branch", "-D", "feature"))
-	require.NoError(t, gitCmd("-C", workDir, "checkout", "-b", "feature"))
+	require.NoError(t, gitCmd("-C", workDir, "reset", "--hard", "HEAD~1"))
 	require.NoError(t, gitCmd("-C", workDir, "commit", "--allow-empty", "-m", "feature-rewritten"))
-	require.NoError(t, gitCmd("-C", workDir, "push", "--force", "origin", "feature"))
+	require.NoError(t, gitCmd("-C", workDir, "push", "--force", "origin", "main"))
+	require.NoError(t, clone(context.Background()), "a non-fast-forward ref must update")
+	assert.Equal(t, "feature-rewritten", gitHeadSubject(t, dir))
 
-	// Also advance main so we can verify the clone picks up the new commit.
-	require.NoError(t, gitCmd("-C", workDir, "checkout", "main"))
-	require.NoError(t, gitCmd("-C", workDir, "commit", "--allow-empty", "-m", "second"))
-	require.NoError(t, gitCmd("-C", workDir, "push", "origin", "main"))
-
-	// Second clone to the same directory — before the fix this returned ErrForceNeeded
-	// and left the working tree at the old commit.
-	err := clone(context.Background())
-	require.NoError(t, err, "fetch with non-fast-forward refs must not fail when Force=true")
-
-	// Verify the working tree was actually updated to the latest main commit.
-	out, err := exec.Command("git", "-C", cloneDir, "log", "--oneline", "-1", "--format=%s").Output()
-	require.NoError(t, err)
-	assert.Equal(t, "second", strings.TrimSpace(string(out)), "working tree should be at the latest commit")
+	tagClone := NewGitCloneExecutor(NewGitCloneExecutorInput{URL: remoteDir, Ref: "v9", Dir: t.TempDir()})
+	require.Error(t, tagClone(context.Background()))
+	require.NoError(t, gitCmd("-C", workDir, "tag", "v9"))
+	require.NoError(t, gitCmd("-C", workDir, "push", "origin", "v9"))
+	require.NoError(t, tagClone(context.Background()), "a tag published after a failed lookup must be fetched")
 }
 
 func TestGitCloneExecutorOfflineMode(t *testing.T) {
+	t.Parallel()
 	// Build a local "remote" with a single commit on main.
 	remoteDir := t.TempDir()
 	require.NoError(t, gitCmd("init", "--bare", "--initial-branch=main", remoteDir))
@@ -392,6 +404,7 @@ func TestGitCloneExecutorOfflineMode(t *testing.T) {
 }
 
 func TestGitCloneExecutorQuietDemotesCloneLine(t *testing.T) {
+	t.Parallel()
 	remoteDir := t.TempDir()
 	require.NoError(t, gitCmd("init", "--bare", "--initial-branch=main", remoteDir))
 	workDir := t.TempDir()
@@ -430,6 +443,7 @@ func TestGitCloneExecutorQuietDemotesCloneLine(t *testing.T) {
 }
 
 func TestGitCloneExecutorShallow(t *testing.T) {
+	t.Parallel()
 	// Build a local "remote" with several commits on main plus a tag, so a full clone would pull noticeably more history than a shallow one.
 	remoteDir := t.TempDir()
 	require.NoError(t, gitCmd("init", "--bare", "--initial-branch=main", remoteDir))
@@ -473,12 +487,11 @@ func TestGitCloneExecutorShallow(t *testing.T) {
 		return remote
 	}
 
-	t.Run("commit hash falls back to a full clone when the remote refuses unadvertised objects", func(t *testing.T) {
+	t.Run("commit hash resolves when the remote accepts a direct shallow fetch", func(t *testing.T) {
 		dir := t.TempDir()
 		require.NoError(t, NewGitCloneExecutor(NewGitCloneExecutorInput{
 			URL: unadvertisedRemote(t, false), Ref: unadvertisedSHA, Dir: dir, Depth: 1,
 		})(t.Context()))
-		assert.NoFileExists(t, shallowMarker(dir))
 		assert.Equal(t, unadvertisedSHA, gitRevParse(t, dir, "HEAD"))
 	})
 
@@ -505,76 +518,46 @@ func TestGitCloneExecutorShallow(t *testing.T) {
 		assert.Equal(t, olderSHA, gitRevParse(t, dir, "HEAD"))
 	})
 
-	t.Run("moving branch updates while staying shallow", func(t *testing.T) {
+	t.Run("moving hexadecimal-named branch updates while staying shallow", func(t *testing.T) {
+		require.NoError(t, gitCmd("-C", workDir, "push", "origin", "main:deadbeef"))
 		dir := t.TempDir()
-		require.NoError(t, NewGitCloneExecutor(NewGitCloneExecutorInput{
-			URL: remoteDir, Ref: "main", Dir: dir, Depth: 1,
-		})(t.Context()))
+		clone := NewGitCloneExecutor(NewGitCloneExecutorInput{
+			URL: remoteDir, Ref: "deadbeef", Dir: dir, Depth: 1,
+		})
+		require.NoError(t, clone(t.Context()))
 		require.Equal(t, "c3", gitHeadSubject(t, dir))
 
-		// Advance main on the remote, then reuse the existing shallow clone.
 		require.NoError(t, gitCmd("-C", workDir, "commit", "--allow-empty", "-m", "c4"))
-		require.NoError(t, gitCmd("-C", workDir, "push", "origin", "main"))
+		require.NoError(t, gitCmd("-C", workDir, "push", "origin", "main:deadbeef"))
 
-		require.NoError(t, NewGitCloneExecutor(NewGitCloneExecutorInput{
-			URL: remoteDir, Ref: "main", Dir: dir, Depth: 1,
-		})(t.Context()))
+		require.NoError(t, clone(t.Context()))
 		assert.Equal(t, "c4", gitHeadSubject(t, dir), "reused shallow clone should update to the new tip")
 		assert.FileExists(t, shallowMarker(dir), "repo should remain shallow after update")
 		assert.Equal(t, 1, gitRevCount(t, dir))
 	})
-}
 
-func TestGitCloneExecutorTransportSessions(t *testing.T) {
-	workDir := t.TempDir()
-	require.NoError(t, gitCmd("init", "--initial-branch=main", workDir))
-	require.NoError(t, gitCmd("-C", workDir, "commit", "--allow-empty", "-m", "c1"))
-	require.NoError(t, gitCmd("-C", workDir, "tag", "v1"))
-	require.NoError(t, gitCmd("-C", workDir, "tag", "-a", "v2", "-m", "v2"))
-
-	for name, tt := range map[string]struct {
-		Ref   string
-		Depth int
-	}{
-		"shallow branch":       {"main", 1},
-		"full clone branch":    {"main", 0},
-		"full lightweight tag": {"v1", 0},
-		"full annotated tag":   {"v2", 0},
-	} {
-		t.Run(name, func(t *testing.T) {
-			counter := installCountingTransport(t)
-			dir := t.TempDir()
-			clone := NewGitCloneExecutor(NewGitCloneExecutorInput{
-				URL: workDir, Ref: tt.Ref, Dir: dir, Depth: tt.Depth,
-			})
-			require.NoError(t, clone(t.Context()))
-			assert.Equal(t, int64(1), counter.sessions.Swap(0), "cold clone")
-			assert.Equal(t, gitRevParse(t, workDir, tt.Ref+"^{commit}"), gitRevParse(t, dir, "HEAD"))
-
-			require.NoError(t, clone(t.Context()))
-			assert.Equal(t, int64(1), counter.sessions.Swap(0), "unchanged warm cache")
-
-			require.NoError(t, os.WriteFile(filepath.Join(workDir, "action.yml"), []byte(name), 0o644))
-			require.NoError(t, gitCmd("-C", workDir, "add", "action.yml"))
-			require.NoError(t, gitCmd("-C", workDir, "commit", "-m", name))
-			require.NoError(t, gitCmd("-C", workDir, "tag", "--force", "v1"))
-			require.NoError(t, gitCmd("-C", workDir, "tag", "--force", "-a", "v2", "-m", "v2"))
-
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "action.yml"), []byte("staged"), 0o644))
-			require.NoError(t, gitCmd("-C", dir, "add", "action.yml"))
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "action.yml"), []byte("unstaged"), 0o644))
-
-			require.NoError(t, clone(t.Context()))
-			assert.Equal(t, int64(1), counter.sessions.Load(), "updated warm cache")
-			assert.Equal(t, gitRevParse(t, workDir, "HEAD"), gitRevParse(t, dir, "HEAD"))
-			status, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
-			require.NoError(t, err)
-			assert.Empty(t, string(status))
-		})
-	}
+	t.Run("sha256 full hash is cloned shallowly, reused without the remote, and its 40-character prefix is short", func(t *testing.T) {
+		remote := filepath.Join(t.TempDir(), "remote.git")
+		require.NoError(t, gitCmd("init", "--bare", "--object-format=sha256", "--initial-branch=main", remote))
+		work := t.TempDir()
+		require.NoError(t, gitCmd("init", "--object-format=sha256", "--initial-branch=main", work))
+		require.NoError(t, gitCmd("-C", work, "remote", "add", "origin", remote))
+		require.NoError(t, gitCmd("-C", work, "commit", "--allow-empty", "-m", "pinned"))
+		require.NoError(t, gitCmd("-C", work, "push", "origin", "main"))
+		sha := gitRevParse(t, work, "HEAD")
+		dir := t.TempDir()
+		clone := NewGitCloneExecutor(NewGitCloneExecutorInput{URL: remote, Ref: sha, Dir: dir, Depth: 1})
+		require.NoError(t, clone(t.Context()))
+		assert.FileExists(t, shallowMarker(dir))
+		require.ErrorIs(t, NewGitCloneExecutor(NewGitCloneExecutorInput{URL: remote, Ref: sha[:40], Dir: dir, Depth: 1, OfflineMode: true})(t.Context()), ErrShortRef)
+		require.NoError(t, os.RemoveAll(remote))
+		require.NoError(t, clone(t.Context()))
+		assert.Equal(t, sha, gitRevParse(t, dir, "HEAD"))
+	})
 }
 
 func TestGitCloneExecutorPinnedHashIgnoresShadowingRef(t *testing.T) {
+	t.Parallel()
 	remoteDir := t.TempDir()
 	require.NoError(t, gitCmd("init", "--bare", "--initial-branch=main", remoteDir))
 	workDir := t.TempDir()
@@ -596,25 +579,6 @@ func TestGitCloneExecutorPinnedHashIgnoresShadowingRef(t *testing.T) {
 			assert.Equal(t, pinned, gitRevParse(t, dir, "HEAD"))
 		})
 	}
-}
-
-type countingTransport struct {
-	transport.Transport
-	sessions atomic.Int64
-}
-
-func (c *countingTransport) NewUploadPackSession(ep *transport.Endpoint, auth transport.AuthMethod) (transport.UploadPackSession, error) {
-	c.sessions.Add(1)
-	return c.Transport.NewUploadPackSession(ep, auth)
-}
-
-func installCountingTransport(t *testing.T) *countingTransport {
-	t.Helper()
-	counter := &countingTransport{Transport: gogitfile.DefaultClient}
-	gogitclient.InstallProtocol("file", counter)
-	t.Cleanup(func() { gogitclient.InstallProtocol("file", gogitfile.DefaultClient) })
-
-	return counter
 }
 
 func gitRevParse(t *testing.T, dir, rev string) string {
@@ -717,12 +681,17 @@ func TestAcquireCloneLock(t *testing.T) {
 }
 
 // An unresponsive remote must not pin a job: the refresh has to be interruptible.
-func TestNewGitCloneExecutorFetchHonoursContext(t *testing.T) {
+func TestNewGitCloneExecutorFetchSendsTokenAndHonoursContext(t *testing.T) {
+	t.Parallel()
 	block := make(chan struct{})
 	reached := make(chan struct{})
 	var once sync.Once
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		once.Do(func() { close(reached) })
+	var authorization string
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		once.Do(func() {
+			authorization = request.Header.Get("Authorization")
+			close(reached)
+		})
 		<-block
 	}))
 	t.Cleanup(func() {
@@ -731,17 +700,15 @@ func TestNewGitCloneExecutorFetchHonoursContext(t *testing.T) {
 	})
 
 	dir := filepath.Join(t.TempDir(), "cached-action")
-	repo, err := gogit.PlainInit(dir, false)
-	require.NoError(t, err)
-	_, err = repo.CreateRemote(&gogitconfig.RemoteConfig{Name: "origin", URLs: []string{server.URL}})
-	require.NoError(t, err)
+	require.NoError(t, gitCmd("init", dir))
+	require.NoError(t, gitCmd("-C", dir, "remote", "add", "origin", server.URL))
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	done := make(chan error, 1)
 	go func() {
-		done <- NewGitCloneExecutor(NewGitCloneExecutorInput{URL: server.URL, Ref: "main", Dir: dir})(ctx)
+		done <- NewGitCloneExecutor(NewGitCloneExecutorInput{URL: server.URL, Ref: "main", Dir: dir, Token: "secret"})(ctx)
 	}()
 
 	select {
@@ -749,6 +716,7 @@ func TestNewGitCloneExecutorFetchHonoursContext(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the executor never reached the remote")
 	}
+	assert.Equal(t, "Basic "+base64.StdEncoding.EncodeToString([]byte("token:secret")), authorization)
 	cancel()
 
 	select {
@@ -757,26 +725,4 @@ func TestNewGitCloneExecutorFetchHonoursContext(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("fetch ignored context cancellation")
 	}
-}
-
-func TestNewGitCloneExecutorFailsOnSilentHTTP2Connection(t *testing.T) {
-	server := httptest.NewUnstartedServer(nil)
-	server.EnableHTTP2 = true
-	server.Config.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){
-		"h2": func(_ *http.Server, conn *tls.Conn, _ http.Handler) { _, _ = io.Copy(io.Discard, conn) },
-	}
-	server.StartTLS()
-	t.Cleanup(server.Close)
-
-	previous := gogitclient.Protocols["https"]
-	gogitclient.InstallProtocol("https", newHTTPClient(&http.HTTP2Config{SendPingTimeout: 50 * time.Millisecond, PingTimeout: 50 * time.Millisecond}))
-	t.Cleanup(func() { gogitclient.InstallProtocol("https", previous) })
-
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	err := NewGitCloneExecutor(NewGitCloneExecutorInput{
-		URL: server.URL + "/action", Ref: "main", Dir: filepath.Join(t.TempDir(), "action"), InsecureSkipTLS: true,
-	})(ctx)
-	require.Error(t, err)
-	require.NoError(t, ctx.Err())
 }

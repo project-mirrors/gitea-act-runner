@@ -18,7 +18,6 @@ import (
 	"gitea.com/gitea/runner/act/common/git"
 
 	"gitea.dev/actionslib/pkg/model"
-	gogit "github.com/go-git/go-git/v5"
 )
 
 type stepActionRemote struct {
@@ -89,15 +88,12 @@ func (sar *stepActionRemote) prepareActionExecutor() common.Executor {
 
 			InsecureSkipTLS: sar.cloneSkipTLS(), // For Gitea
 		})
-		var ntErr common.Executor
 		if err := gitClone(ctx); err != nil {
 			var refErr *git.Error
 			switch {
 			case errors.As(err, &refErr) && errors.Is(err, git.ErrShortRef):
 				return fmt.Errorf("unable to resolve action `%s`, the provided ref `%s` is the shortened version of a commit SHA, which is not supported. Please use the full commit SHA `%s` instead",
 					sar.Step.Uses, sar.remoteAction.Ref, refErr.Commit())
-			case errors.Is(err, gogit.ErrForceNeeded): // TODO: figure out if it will be easy to shadow/alias go-git err's
-				ntErr = common.NewInfoExecutor("Non-terminating error while running 'git clone': %v", err)
 			default:
 				return err
 			}
@@ -115,15 +111,10 @@ func (sar *stepActionRemote) prepareActionExecutor() common.Executor {
 			return f, f, err
 		}
 
-		return common.NewPipelineExecutor(
-			ntErr,
-			func(ctx context.Context) error {
-				defer git.AcquireCloneLock(actionDir)()
-				actionModel, err := sar.readAction(ctx, sar.Step, actionDir, sar.remoteAction.Path, remoteReader, os.WriteFile)
-				sar.action = actionModel
-				return err
-			},
-		)(ctx)
+		defer git.AcquireCloneLock(actionDir)()
+		actionModel, err := sar.readAction(ctx, sar.Step, actionDir, sar.remoteAction.Path, remoteReader, os.WriteFile)
+		sar.action = actionModel
+		return err
 	}
 }
 
