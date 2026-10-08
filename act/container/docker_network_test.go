@@ -57,6 +57,27 @@ func TestIsAddressPoolExhausted(t *testing.T) {
 	assert.False(t, isAddressPoolExhausted(cerrdefs.ErrInvalidArgument.WithMessage("invalid subnet 10.0.0.0/8: it overlaps with an existing network")))
 }
 
+func TestCreateDockerNetworkInheritsDaemonMTU(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		bridgeOptions, want map[string]string
+	}{
+		{
+			map[string]string{"com.docker.network.bridge.host_binding_ipv4": "127.0.0.1", "com.docker.network.driver.mtu": "1450"},
+			map[string]string{"com.docker.network.driver.mtu": "1450"},
+		},
+		{map[string]string{"com.docker.network.driver.mtu": "1500"}, nil},
+	} {
+		client := &mockDockerClient{}
+		client.On("NetworkList", ctx, mobyclient.NetworkListOptions{}).
+			Return(mobyclient.NetworkListResult{Items: []network.Summary{{Name: network.NetworkBridge, Options: tc.bridgeOptions}}}, nil)
+		client.On("NetworkCreate", ctx, "job-network", mobyclient.NetworkCreateOptions{Driver: "bridge", Scope: "local", Options: tc.want}).
+			Return(mobyclient.NetworkCreateResult{}, nil)
+		require.NoError(t, createDockerNetwork(ctx, client, "job-network", NewDockerNetworkCreateExecutorInput{}))
+		client.AssertExpectations(t)
+	}
+}
+
 func (m *mockDockerClient) NetworkConnect(ctx context.Context, id string, opts mobyclient.NetworkConnectOptions) (mobyclient.NetworkConnectResult, error) {
 	return mobyclient.NetworkConnectResult{}, m.Called(ctx, id, opts).Error(0)
 }

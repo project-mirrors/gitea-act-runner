@@ -223,6 +223,7 @@ container:
   # created by the runner. Omit the entire block to use Docker's defaults. An auto-created
   # network is labelled com.gitea.runner.uuid=<this runner's uuid>, which is how the idle
   # cleanup tells its own leftovers apart from those of other runners on the same daemon.
+  # It also takes the `mtu` set in the Docker daemon config.
   #network_create_options:
   #  enable_ipv4: true # Omit to use Docker's default (IPv4 enabled). Set false to disable IPv4.
   #  enable_ipv6: false # Omit to use Docker's default (IPv6 disabled). Enabling it requires dockerd started with --ipv6.

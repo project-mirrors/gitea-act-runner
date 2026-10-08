@@ -137,6 +137,11 @@ func (m *mockDockerClient) NetworkList(ctx context.Context, opts mobyclient.Netw
 	return args.Get(0).(mobyclient.NetworkListResult), args.Error(1)
 }
 
+func (m *mockDockerClient) NetworkCreate(ctx context.Context, name string, opts mobyclient.NetworkCreateOptions) (mobyclient.NetworkCreateResult, error) {
+	args := m.Called(ctx, name, opts)
+	return args.Get(0).(mobyclient.NetworkCreateResult), args.Error(1)
+}
+
 func (m *mockDockerClient) NetworkInspect(ctx context.Context, id string, opts mobyclient.NetworkInspectOptions) (mobyclient.NetworkInspectResult, error) {
 	args := m.Called(ctx, id, opts)
 	return args.Get(0).(mobyclient.NetworkInspectResult), args.Error(1)
