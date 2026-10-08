@@ -8,6 +8,7 @@ package container
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -1178,7 +1179,10 @@ func (cr *containerReference) sanitizeConfig(ctx context.Context, config *contai
 				sanitizedBinds = append(sanitizedBinds, bind)
 				continue
 			}
-			if matcher.isValid(parsed.Source, mount.Type(parsed.Type)) {
+			if matcher.isValid(parsed.Source, mount.Type(parsed.Type), parsed.ReadOnly) {
+				if matcher.needsNoCopy(parsed.Source, mount.Type(parsed.Type)) && (parsed.Volume == nil || !parsed.Volume.NoCopy) {
+					bind += ",nocopy"
+				}
 				sanitizedBinds = append(sanitizedBinds, bind)
 			} else {
 				logger.Warnf("[%s] is not a valid volume, will be ignored", parsed.Source)
@@ -1194,7 +1198,12 @@ func (cr *containerReference) sanitizeConfig(ctx context.Context, config *contai
 	// sanitize mounts
 	sanitizedMounts := make([]mount.Mount, 0, len(hostConfig.Mounts))
 	for _, mt := range hostConfig.Mounts {
-		if matcher.isValid(mt.Source, mt.Type) {
+		readOnly := mt.ReadOnly && (mt.BindOptions == nil || !mt.BindOptions.ReadOnlyNonRecursive) // bind-recursive=writable leaves submounts writable
+		if matcher.isValid(mt.Source, mt.Type, readOnly) {
+			if matcher.needsNoCopy(mt.Source, mt.Type) {
+				mt.VolumeOptions = cmp.Or(mt.VolumeOptions, &mount.VolumeOptions{})
+				mt.VolumeOptions.NoCopy = true
+			}
 			sanitizedMounts = append(sanitizedMounts, mt)
 		} else {
 			logger.Warnf("[%s] is not a valid volume, will be ignored", mt.Source)
@@ -1240,26 +1249,37 @@ func overlayVolumes(dst, src *container.HostConfig) {
 }
 
 type validVolumeMatcher struct {
-	allowAll bool
-	named    []string
-	host     []string
+	allowAll         bool
+	allowAllReadOnly bool
+	named            []validVolumeRule
+	host             []validVolumeRule
+}
+
+type validVolumeRule struct {
+	pattern  string
+	readOnly bool
 }
 
 func newValidVolumeMatcher(ctx context.Context, validVolumes []string) validVolumeMatcher {
 	logger := common.Logger(ctx)
 	ret := validVolumeMatcher{
-		named: make([]string, 0, len(validVolumes)),
-		host:  make([]string, 0, len(validVolumes)),
+		named: make([]validVolumeRule, 0, len(validVolumes)),
+		host:  make([]validVolumeRule, 0, len(validVolumes)),
 	}
 
 	for _, v := range validVolumes {
+		v, readOnly := strings.CutSuffix(v, ":ro")
 		if v == "**" {
-			ret.allowAll = true
+			if readOnly {
+				ret.allowAllReadOnly = true
+			} else {
+				ret.allowAll = true
+			}
 			continue
 		}
 		if !isHostVolumePattern(v) {
 			if doublestar.ValidatePattern(v) {
-				ret.named = append(ret.named, v)
+				ret.named = append(ret.named, validVolumeRule{pattern: v, readOnly: readOnly})
 			} else {
 				logger.Errorf("invalid volume pattern %s", v)
 			}
@@ -1271,7 +1291,7 @@ func newValidVolumeMatcher(ctx context.Context, validVolumes []string) validVolu
 			continue
 		}
 		if doublestar.ValidatePathPattern(normalized) {
-			ret.host = append(ret.host, normalized)
+			ret.host = append(ret.host, validVolumeRule{pattern: normalized, readOnly: readOnly})
 		} else {
 			logger.Errorf("invalid volume pattern %s", normalized)
 		}
@@ -1280,31 +1300,32 @@ func newValidVolumeMatcher(ctx context.Context, validVolumes []string) validVolu
 	return ret
 }
 
-func (m validVolumeMatcher) isValid(source string, sourceType mount.Type) bool {
-	if m.allowAll {
+func (m validVolumeMatcher) isValid(source string, sourceType mount.Type, readOnly bool) bool {
+	if m.allowAll || (m.allowAllReadOnly && readOnly) {
 		return true
 	}
 	if sourceType == mount.TypeTmpfs && source == "" { // backed by memory, exposes nothing from the host, same as --tmpfs
 		return true
 	}
+	rules, match := m.named, doublestar.MatchUnvalidated
 	if isHostVolumeSource(source, sourceType) {
 		normalized, err := normalizeHostVolumePath(source)
 		if err != nil {
 			return false
 		}
-		for _, pattern := range m.host {
-			if doublestar.PathMatchUnvalidated(pattern, normalized) {
-				return true
-			}
-		}
-		return false
+		rules, match, source = m.host, doublestar.PathMatchUnvalidated, normalized
 	}
-	for _, pattern := range m.named {
-		if doublestar.MatchUnvalidated(pattern, source) {
+	for _, rule := range rules {
+		if (readOnly || !rule.readOnly) && match(rule.pattern, source) {
 			return true
 		}
 	}
 	return false
+}
+
+// needsNoCopy reports a volume only `:ro` rules allow, as dockerd fills an empty volume from the image even when mounted read-only.
+func (m validVolumeMatcher) needsNoCopy(source string, sourceType mount.Type) bool {
+	return sourceType == mount.TypeVolume && !m.isValid(source, sourceType, false)
 }
 
 func isHostVolumePattern(pattern string) bool {

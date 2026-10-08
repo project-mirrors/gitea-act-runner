@@ -519,10 +519,12 @@ var _ ExecutionsEnvironment = &containerReference{}
 
 func TestCheckVolumes(t *testing.T) {
 	testCases := []struct {
-		desc          string
-		validVolumes  []string
-		binds         []string
-		expectedBinds []string
+		desc           string
+		validVolumes   []string
+		binds          []string
+		expectedBinds  []string
+		mounts         []mount.Mount
+		expectedMounts []mount.Mount
 	}{
 		{
 			desc:         "match all volumes",
@@ -578,6 +580,27 @@ func TestCheckVolumes(t *testing.T) {
 				"/opt/app/cache:/cache",
 			},
 		},
+		{
+			desc:          "read-only rules allow only read-only mounts and copy nothing into volumes",
+			validVolumes:  []string{"/etc/ssl:ro", "data:ro", "shared"},
+			binds:         []string{"/etc/ssl:/ssl:ro", "/etc/ssl:/ssl", "data:/data:ro", "data:/data", "shared:/shared:ro"},
+			expectedBinds: []string{"/etc/ssl:/ssl:ro", "data:/data:ro,nocopy", "shared:/shared:ro"},
+			mounts: []mount.Mount{
+				{Type: mount.TypeBind, Source: "/etc/ssl", Target: "/ssl", ReadOnly: true},
+				{Type: mount.TypeBind, Source: "/etc/ssl", Target: "/ssl", ReadOnly: true, BindOptions: &mount.BindOptions{ReadOnlyNonRecursive: true}},
+				{Type: mount.TypeVolume, Source: "data", Target: "/data", ReadOnly: true},
+			},
+			expectedMounts: []mount.Mount{
+				{Type: mount.TypeBind, Source: "/etc/ssl", Target: "/ssl", ReadOnly: true},
+				{Type: mount.TypeVolume, Source: "data", Target: "/data", ReadOnly: true, VolumeOptions: &mount.VolumeOptions{NoCopy: true}},
+			},
+		},
+		{
+			desc:          "read-only wildcard keeps writable rules writable",
+			validVolumes:  []string{"**:ro", "shared"},
+			binds:         []string{"/etc/ssl:/ssl:ro", "data:/data", "shared:/shared"},
+			expectedBinds: []string{"/etc/ssl:/ssl:ro", "shared:/shared"},
+		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
@@ -588,9 +611,10 @@ func TestCheckVolumes(t *testing.T) {
 					ValidVolumes: tc.validVolumes,
 				},
 			}
-			_, hostConf := cr.sanitizeConfig(ctx, &container.Config{}, &container.HostConfig{Binds: tc.binds})
+			_, hostConf := cr.sanitizeConfig(ctx, &container.Config{}, &container.HostConfig{Binds: tc.binds, Mounts: tc.mounts})
 			assert.Equal(t, tc.expectedBinds, hostConf.Binds)
-			assert.Len(t, hook.AllEntries(), len(tc.binds)-len(tc.expectedBinds)) // every drop is warned about
+			assert.ElementsMatch(t, tc.expectedMounts, hostConf.Mounts)
+			assert.Len(t, hook.AllEntries(), len(tc.binds)+len(tc.mounts)-len(tc.expectedBinds)-len(tc.expectedMounts)) // every drop is warned about
 		})
 	}
 }
@@ -771,7 +795,7 @@ func TestSanitizeConfigKeepsTmpfsMounts(t *testing.T) {
 	hostConfig, _ := mergeOptions(t, "", "--mount type=tmpfs,dst=/var/lib/mysql", false)
 	require.Len(t, hostConfig.Mounts, 1)
 
-	for _, validVolumes := range [][]string{nil, {"data"}} {
+	for _, validVolumes := range [][]string{nil, {"data"}, {"**:ro"}} {
 		logger, hook := test.NewNullLogger()
 		_, sanitized := (&containerReference{input: &NewContainerInput{ValidVolumes: validVolumes}}).sanitizeConfig(common.WithLogger(context.Background(), logger), &container.Config{}, &container.HostConfig{Mounts: []mount.Mount{
 			hostConfig.Mounts[0],
