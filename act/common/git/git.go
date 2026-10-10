@@ -10,8 +10,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -29,8 +31,6 @@ import (
 var (
 	codeCommitHTTPRegex = regexp.MustCompile(`^https?://git-codecommit\.(.+)\.amazonaws.com/v1/repos/(.+)$`)
 	codeCommitSSHRegex  = regexp.MustCompile(`ssh://git-codecommit\.(.+)\.amazonaws.com/v1/repos/(.+)$`)
-	githubHTTPRegex     = regexp.MustCompile(`^https?://.*github.com.*/(.+)/(.+?)(?:.git)?$`)
-	githubSSHRegex      = regexp.MustCompile(`github.com[:/](.+)/(.+?)(?:.git)?$`)
 	hexRefRegex         = regexp.MustCompile(`^[0-9a-fA-F]+$`)
 
 	LocalEnvVars = []string{ // `git rev-parse --local-env-vars`, inherited ones point git at another repository
@@ -44,12 +44,29 @@ var (
 	ErrShortRef = errors.New("short SHA references are not supported")
 )
 
-// AcquireCloneLock returns an unlock function after locking the per-directory mutex for dir.
-// Only concurrent operations targeting the same directory are serialized; clones into different directories run in parallel.
-// Callers reading files inside dir (e.g. tarring a checked-out action into a job container) must hold this lock too,
-// otherwise a concurrent NewGitCloneExecutor on the same dir can mutate the worktree mid-read.
-func AcquireCloneLock(dir string) func() {
-	return cloneLocks.Lock(dir)
+// AcquireCloneLock serializes access to dir across runner processes, or within this one where no lock file can be created. Readers of dir must hold it too.
+func AcquireCloneLock(ctx context.Context, dir string) (func(), error) {
+	dir = filepath.Clean(dir)
+	if runtime.GOOS == "plan9" {
+		return cloneLocks.Lock(dir), nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return nil, err
+	}
+	for {
+		release, err := lock.TryLock(dir)
+		if err == nil {
+			return func() { _ = release() }, nil
+		}
+		if !errors.Is(err, lock.ErrLocked) {
+			return cloneLocks.Lock(dir), nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 type Error struct {
@@ -109,13 +126,12 @@ func FindGitRef(ctx context.Context, file string) (string, error) {
 }
 
 // FindGithubRepo get the repo
-func FindGithubRepo(ctx context.Context, file, githubInstance string) (string, error) {
+func FindGithubRepo(ctx context.Context, file string) (string, error) {
 	url, err := findGitRemoteURL(ctx, file)
 	if err != nil {
 		return "", err
 	}
-	_, slug := findGitSlug(url, githubInstance)
-	return slug, nil
+	return findGitSlug(url)
 }
 
 func findGitRemoteURL(ctx context.Context, file string) (string, error) {
@@ -130,25 +146,25 @@ func findGitRemoteURL(ctx context.Context, file string) (string, error) {
 	return url, nil
 }
 
-func findGitSlug(url, githubInstance string) (string, string) {
-	if matches := codeCommitHTTPRegex.FindStringSubmatch(url); matches != nil {
-		return "CodeCommit", matches[2]
-	} else if matches := codeCommitSSHRegex.FindStringSubmatch(url); matches != nil {
-		return "CodeCommit", matches[2]
-	} else if matches := githubHTTPRegex.FindStringSubmatch(url); matches != nil {
-		return "GitHub", fmt.Sprintf("%s/%s", matches[1], matches[2])
-	} else if matches := githubSSHRegex.FindStringSubmatch(url); matches != nil {
-		return "GitHub", fmt.Sprintf("%s/%s", matches[1], matches[2])
-	} else if githubInstance != "github.com" {
-		gheHTTPRegex := regexp.MustCompile(fmt.Sprintf(`^https?://%s/(.+)/(.+?)(?:.git)?$`, githubInstance))
-		gheSSHRegex := regexp.MustCompile(githubInstance + "[:/](.+)/(.+?)(?:.git)?$")
-		if matches := gheHTTPRegex.FindStringSubmatch(url); matches != nil {
-			return "GitHubEnterprise", fmt.Sprintf("%s/%s", matches[1], matches[2])
-		} else if matches := gheSSHRegex.FindStringSubmatch(url); matches != nil {
-			return "GitHubEnterprise", fmt.Sprintf("%s/%s", matches[1], matches[2])
-		}
+func findGitSlug(remoteURL string) (string, error) {
+	if matches := codeCommitHTTPRegex.FindStringSubmatch(remoteURL); matches != nil {
+		return matches[2], nil
+	} else if matches := codeCommitSSHRegex.FindStringSubmatch(remoteURL); matches != nil {
+		return matches[2], nil
 	}
-	return "", url
+	if host, repoPath, ok := strings.Cut(remoteURL, ":"); ok && filepath.VolumeName(remoteURL) == "" && !strings.Contains(host, "/") && !strings.HasPrefix(repoPath, "//") {
+		remoteURL = "ssh://" + host + "/" + repoPath // scp-like [user@]host:path
+	}
+	parsed, err := url.Parse(remoteURL)
+	if err != nil {
+		return "", errors.New("cannot parse the origin remote URL")
+	}
+	owner, repo := path.Split(strings.TrimSuffix(strings.Trim(parsed.Path, "/"), ".git"))
+	owner = path.Base(owner)
+	if parsed.Host == "" || repo == "" || owner == "." || owner == "/" {
+		return "", errors.New("cannot determine owner and repository from the origin remote URL")
+	}
+	return owner + "/" + repo, nil
 }
 
 // NewGitCloneExecutorInput the input for the NewGitCloneExecutor
@@ -182,6 +198,9 @@ func CloneIfRequired(ctx context.Context, input NewGitCloneExecutorInput, logger
 	if err == nil && origin == input.URL {
 		return true, nil
 	}
+	if ctxErr := ctx.Err(); ctxErr != nil { // a cancelled origin lookup must not discard a valid clone
+		return false, ctxErr
+	}
 	if err == nil {
 		logger.Debugf("Removing cached clone at %s because origin URL changed from %s to %s", input.Dir, origin, input.URL)
 	} else if _, statErr := os.Stat(input.Dir); statErr == nil {
@@ -209,7 +228,11 @@ func NewGitCloneExecutor(input NewGitCloneExecutorInput) common.Executor {
 			logger.Infof("git clone '%s' # ref=%s", input.URL, input.Ref)
 		}
 		logger.Debugf("  cloning %s to %s", input.URL, input.Dir)
-		defer AcquireCloneLock(input.Dir)()
+		unlock, err := AcquireCloneLock(ctx, input.Dir)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 
 		reused, err := CloneIfRequired(ctx, input, logger)
 		if err != nil {

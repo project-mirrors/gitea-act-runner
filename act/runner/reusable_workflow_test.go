@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -84,14 +83,16 @@ func TestNewReusableWorkflowExecutorHoldsCloneLock(t *testing.T) {
 	workflowDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(workflowDir, "reusable.yml"), []byte(":"), 0o644))
 
-	unlockOnce := sync.OnceFunc(git.AcquireCloneLock(workflowDir))
+	unlock, err := git.AcquireCloneLock(t.Context(), workflowDir)
+	require.NoError(t, err)
+	unlockOnce := sync.OnceFunc(unlock)
 	defer unlockOnce()
 
 	rc := &RunContext{
 		Config: &Config{},
 		Run:    &model.Run{Workflow: &model.Workflow{Jobs: map[string]*model.Job{}}},
 	}
-	exec := newReusableWorkflowExecutor(rc, workflowDir, "reusable.yml")
+	exec := newReusableWorkflowExecutor(rc, workflowDir, "reusable.yml", true)
 
 	done := make(chan error, 1)
 	go func() { done <- exec(context.Background()) }()
@@ -113,8 +114,9 @@ func TestNewReusableWorkflowExecutorHoldsCloneLock(t *testing.T) {
 }
 
 func TestNewLocalReusableWorkflowExecutorFindsSameRepositoryPaths(t *testing.T) {
-	workdir := t.TempDir()
+	workdir := filepath.Join(t.TempDir(), "workspace")
 	require.NoError(t, os.MkdirAll(filepath.Join(workdir, ".gitea", "workflows"), 0o755))
+	require.NoError(t, os.Mkdir(workdir+".lock", 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(workdir, ".gitea", "workflows", "reusable.yml"), []byte(":"), 0o644))
 
 	for _, uses := range []string{"./.gitea/workflows/reusable.yml", "$/.gitea/workflows/reusable.yml"} {
@@ -123,8 +125,7 @@ func TestNewLocalReusableWorkflowExecutorFindsSameRepositoryPaths(t *testing.T) 
 			Run:    &model.Run{JobID: "job", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job": {Uses: uses}}}},
 		}
 		err := newLocalReusableWorkflowExecutor(rc)(t.Context())
-		require.Error(t, err)
-		require.NotErrorIs(t, err, fs.ErrNotExist)
+		require.ErrorContains(t, err, "workflow is not valid")
 	}
 }
 

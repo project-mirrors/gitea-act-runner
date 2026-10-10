@@ -1541,14 +1541,8 @@ func (rc *RunContext) getGithubContext(ctx context.Context) *model.GithubContext
 			merged.RunnerPerflog, merged.RunnerTrackingID = ghc.RunnerPerflog, ghc.RunnerTrackingID
 			*ghc = merged
 
-			instance := rc.Config.GitHubInstance
-			if !strings.HasPrefix(instance, "http://") &&
-				!strings.HasPrefix(instance, "https://") {
-				instance = "https://" + instance
-			}
-			ghc.ServerURL = instance
-			ghc.APIURL = instance + "/api/v1" // the version of Gitea is v1
-			ghc.GraphQLURL = ""               // Gitea doesn't support graphql
+			rc.setInstanceURLs(ghc)
+			ghc.GraphQLURL = "" // Gitea doesn't support graphql
 			return ghc
 		}
 	}
@@ -1562,7 +1556,7 @@ func (rc *RunContext) getGithubContext(ctx context.Context) *model.GithubContext
 
 	ghc.SetBaseAndHeadRef()
 	repoPath := rc.Config.Workdir
-	ghcontext.SetRepositoryAndOwner(ctx, ghc, rc.Config.GitHubInstance, repoPath)
+	ghcontext.SetRepositoryAndOwner(ctx, ghc, repoPath)
 	if ghc.Ref == "" {
 		ghcontext.SetRef(ctx, ghc, repoPath)
 	}
@@ -1572,27 +1566,7 @@ func (rc *RunContext) getGithubContext(ctx context.Context) *model.GithubContext
 
 	ghc.SetRefTypeAndName()
 
-	// defaults
-	ghc.ServerURL = "https://github.com"
-	ghc.APIURL = "https://api.github.com"
-	ghc.GraphQLURL = "https://api.github.com/graphql"
-	// per GHES
-	if rc.Config.GitHubInstance != "github.com" {
-		ghc.ServerURL = "https://" + rc.Config.GitHubInstance
-		ghc.APIURL = fmt.Sprintf("https://%s/api/v3", rc.Config.GitHubInstance)
-		ghc.GraphQLURL = fmt.Sprintf("https://%s/api/graphql", rc.Config.GitHubInstance)
-	}
-
-	{ // Adapt to Gitea
-		instance := rc.Config.GitHubInstance
-		if !strings.HasPrefix(instance, "http://") &&
-			!strings.HasPrefix(instance, "https://") {
-			instance = "https://" + instance
-		}
-		ghc.ServerURL = instance
-		ghc.APIURL = instance + "/api/v1" // the version of Gitea is v1
-		ghc.GraphQLURL = ""               // Gitea doesn't support graphql
-	}
+	rc.setInstanceURLs(ghc)
 
 	// allow to be overridden by user
 	if rc.Config.Env["GITHUB_SERVER_URL"] != "" {
@@ -1606,6 +1580,20 @@ func (rc *RunContext) getGithubContext(ctx context.Context) *model.GithubContext
 	}
 
 	return ghc
+}
+
+func (rc *RunContext) setInstanceURLs(ghc *model.GithubContext) {
+	if instance := strings.TrimRight(rc.Config.GitHubInstance, "/"); instance != "" {
+		ghc.ServerURL = withHTTPS(instance)
+		ghc.APIURL = ghc.ServerURL + "/api/v1"
+	}
+}
+
+func withHTTPS(u string) string {
+	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+		return u
+	}
+	return "https://" + u
 }
 
 func isLocalCheckout(ghc *model.GithubContext, step *model.Step) bool {
@@ -1657,19 +1645,15 @@ func (rc *RunContext) withGithubEnv(ctx context.Context, github *model.GithubCon
 	env["GITHUB_HEAD_REF"] = github.HeadRef
 	env["GITHUB_SERVER_URL"] = github.ServerURL
 	env["GITHUB_API_URL"] = github.APIURL
-	env["GITHUB_GRAPHQL_URL"] = github.GraphQLURL
 
-	{ // Adapt to Gitea
-		instance := rc.Config.GitHubInstance
-		if !strings.HasPrefix(instance, "http://") &&
-			!strings.HasPrefix(instance, "https://") {
-			instance = "https://" + instance
+	for _, name := range []string{"GITHUB_SERVER_URL", "GITHUB_API_URL"} {
+		if env[name] == "" {
+			delete(env, name)
 		}
-		env["GITHUB_SERVER_URL"] = instance
-		env["GITHUB_API_URL"] = instance + "/api/v1" // the version of Gitea is v1
-		env["GITHUB_GRAPHQL_URL"] = ""               // Gitea doesn't support graphql
-		env["GITHUB_RUN_ATTEMPT"] = github.RunAttempt
 	}
+
+	env["GITHUB_GRAPHQL_URL"] = ""
+	env["GITHUB_RUN_ATTEMPT"] = github.RunAttempt
 
 	env["RUNNER_NAME"] = rc.Config.RunnerName
 	env["RUNNER_ENVIRONMENT"] = "self-hosted"

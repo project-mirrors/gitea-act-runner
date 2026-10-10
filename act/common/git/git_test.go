@@ -18,9 +18,11 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/internal/pkg/lock"
 
 	log "github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
@@ -29,29 +31,33 @@ import (
 )
 
 func TestFindGitSlug(t *testing.T) {
-	assert := assert.New(t)
-
-	slugTests := []struct {
-		url      string // input
-		provider string // expected result
-		slug     string // expected result
+	for _, testcase := range []struct {
+		remoteURL string
+		slug      string
 	}{
-		{"https://git-codecommit.us-east-1.amazonaws.com/v1/repos/my-repo-name", "CodeCommit", "my-repo-name"},
-		{"ssh://git-codecommit.us-west-2.amazonaws.com/v1/repos/my-repo", "CodeCommit", "my-repo"},
-		{"git@github.com:nektos/act.git", "GitHub", "nektos/act"},
-		{"git@github.com:nektos/act", "GitHub", "nektos/act"},
-		{"https://github.com/nektos/act.git", "GitHub", "nektos/act"},
-		{"http://github.com/nektos/act.git", "GitHub", "nektos/act"},
-		{"https://github.com/nektos/act", "GitHub", "nektos/act"},
-		{"http://github.com/nektos/act", "GitHub", "nektos/act"},
-		{"git+ssh://git@github.com/owner/repo.git", "GitHub", "owner/repo"},
-		{"http://myotherrepo.com/act.git", "", "http://myotherrepo.com/act.git"},
-	}
-
-	for _, tt := range slugTests {
-		provider, slug := findGitSlug(tt.url, "github.com")
-		assert.Equal(tt.provider, provider)
-		assert.Equal(tt.slug, slug)
+		{"https://git-codecommit.us-east-1.amazonaws.com/v1/repos/my-repo-name", "my-repo-name"},
+		{"ssh://git-codecommit.us-west-2.amazonaws.com/v1/repos/my-repo", "my-repo"},
+		{"git@github.com:nektos/act.git", "nektos/act"},
+		{"git@github.com:nektos/act", "nektos/act"},
+		{"https://github.com/nektos/act.git", "nektos/act"},
+		{"http://github.com/nektos/act.git", "nektos/act"},
+		{"https://github.com/nektos/act", "nektos/act"},
+		{"http://github.com/nektos/act", "nektos/act"},
+		{"git+ssh://git@github.com/owner/repo.git", "owner/repo"},
+		{"https://example.com:3000/gitea/owner/repo.git/", "owner/repo"},
+		{"ssh://git@example.com:2222/gitea/owner/repo.git", "owner/repo"},
+		{"example.com:owner/repo.git", "owner/repo"},
+		{"http://myotherrepo.com/act.git", ""},
+		{"https://user:secret@example.com/act.git", ""},
+		{"/tmp/owner/repo.git", ""},
+		{"./owner/repo:branch", ""},
+	} {
+		t.Run(testcase.remoteURL, func(t *testing.T) {
+			slug, err := findGitSlug(testcase.remoteURL)
+			assert.Equal(t, testcase.slug == "", err != nil)
+			assert.NotContains(t, fmt.Sprint(err), "secret")
+			assert.Equal(t, testcase.slug, slug)
+		})
 	}
 }
 
@@ -107,7 +113,7 @@ func TestFindGitMetadataOfSHA256RepositoryUsesOrigin(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, remoteURL, url)
 
-	slug, err := FindGithubRepo(context.Background(), basedir, "github.com")
+	slug, err := FindGithubRepo(context.Background(), basedir)
 	require.NoError(t, err)
 	require.Equal(t, "owner/repo", slug)
 }
@@ -309,6 +315,12 @@ func TestGitCloneExecutorReclonesWhenOriginURLChanges(t *testing.T) {
 
 	markerPath := filepath.Join(cacheDir, "stale-marker")
 	require.NoError(t, os.WriteFile(markerPath, []byte("stale"), 0o644))
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := CloneIfRequired(cancelled, NewGitCloneExecutorInput{URL: oldRemoteDir, Ref: "main", Dir: cacheDir}, log.New())
+	require.ErrorIs(t, err, context.Canceled)
+	require.FileExists(t, markerPath)
 
 	require.NoError(t, NewGitCloneExecutor(NewGitCloneExecutorInput{
 		URL: newRemoteDir,
@@ -631,14 +643,42 @@ func gitCmd(args ...string) error {
 }
 
 func TestAcquireCloneLock(t *testing.T) {
+	t.Run("blocks on a lock held by another process despite a trailing separator", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "cache")
+		release, err := lock.TryLock(dir)
+		require.NoError(t, err)
+		defer func() { require.NoError(t, release()) }()
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			_, err := AcquireCloneLock(ctx, dir+string(filepath.Separator))
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+		})
+	})
+
+	t.Run("read-only parent falls back to an in-process lock", func(t *testing.T) {
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "cache")
+		require.NoError(t, os.Mkdir(dir, 0o755))
+		require.NoError(t, os.Chmod(parent, 0o555))
+		defer func() { require.NoError(t, os.Chmod(parent, 0o755)) }()
+		unlock, err := AcquireCloneLock(t.Context(), dir)
+		require.NoError(t, err)
+		unlock()
+	})
+
 	t.Run("same directory serializes", func(t *testing.T) {
 		dir := t.TempDir()
 
-		unlock1 := AcquireCloneLock(dir)
+		unlock1, err := AcquireCloneLock(t.Context(), dir)
+		require.NoError(t, err)
 
 		secondAcquired := make(chan struct{})
 		go func() {
-			unlock := AcquireCloneLock(dir)
+			unlock, err := AcquireCloneLock(t.Context(), dir)
+			if !assert.NoError(t, err) {
+				return
+			}
 			close(secondAcquired)
 			unlock()
 		}()
@@ -662,12 +702,16 @@ func TestAcquireCloneLock(t *testing.T) {
 		dirA := t.TempDir()
 		dirB := t.TempDir()
 
-		unlockA := AcquireCloneLock(dirA)
+		unlockA, err := AcquireCloneLock(t.Context(), dirA)
+		require.NoError(t, err)
 		defer unlockA()
 
 		done := make(chan struct{})
 		go func() {
-			unlock := AcquireCloneLock(dirB)
+			unlock, err := AcquireCloneLock(t.Context(), dirB)
+			if !assert.NoError(t, err) {
+				return
+			}
 			unlock()
 			close(done)
 		}()

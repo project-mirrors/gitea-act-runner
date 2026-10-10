@@ -915,6 +915,7 @@ func TestGetGitHubContext(t *testing.T) {
 		Run: &model.Run{
 			Workflow: &model.Workflow{
 				Name: "GitHubContextTest",
+				Jobs: map[string]*model.Job{"job1": {}},
 			},
 		},
 		Name:        "GitHubContextTest",
@@ -960,6 +961,36 @@ func TestGetGitHubContext(t *testing.T) {
 	assert.Equal(t, "preset-actor", ghc.Actor)
 	assert.Equal(t, "triggerer", ghc.TriggeringActor)
 	assert.Equal(t, "job1", ghc.Job)
+
+	preset := &model.GithubContext{ServerURL: "https://preset.test", APIURL: "https://preset.test/api/v1"}
+	for _, testcase := range []struct {
+		name, instance, serverURL, apiURL string
+		preset                            *model.GithubContext
+		env                               map[string]string
+	}{
+		{name: "unknown instance"},
+		{name: "bare host with trailing slash", instance: "gitea.test/", serverURL: "https://gitea.test", apiURL: "https://gitea.test/api/v1"},
+		{name: "scheme port and base path", instance: "http://gitea.test:3000/gitea/", serverURL: "http://gitea.test:3000/gitea", apiURL: "http://gitea.test:3000/gitea/api/v1"},
+		{name: "daemon instance replaces preset endpoints", instance: "gitea.test", preset: preset, serverURL: "https://gitea.test", apiURL: "https://gitea.test/api/v1"},
+		{name: "daemon keeps preset endpoints without instance", preset: preset, serverURL: "https://preset.test", apiURL: "https://preset.test/api/v1"},
+		{name: "environment overrides", env: map[string]string{"GITHUB_SERVER_URL": "https://override.test", "GITHUB_API_URL": "https://override.test/api"}, serverURL: "https://override.test", apiURL: "https://override.test/api"},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			rc.Config.GitHubInstance = testcase.instance
+			rc.Config.PresetGitHubContext = testcase.preset
+			rc.Config.Env = map[string]string{"GITHUB_REPOSITORY": "owner/repo", "GITHUB_REF": "refs/heads/main", "SHA_REF": "1234567890"}
+			maps.Copy(rc.Config.Env, testcase.env)
+			github := rc.getGithubContext(t.Context())
+			assert.Equal(t, testcase.serverURL, github.ServerURL)
+			assert.Equal(t, testcase.apiURL, github.APIURL)
+			env := map[string]string{}
+			rc.withGithubEnv(t.Context(), github, env)
+			_, exported := env["GITHUB_SERVER_URL"]
+			assert.Equal(t, testcase.serverURL != "", exported)
+			assert.Equal(t, testcase.serverURL, env["GITHUB_SERVER_URL"])
+			assert.Equal(t, testcase.apiURL, env["GITHUB_API_URL"])
+		})
+	}
 }
 
 func TestGetGithubContextRef(t *testing.T) {

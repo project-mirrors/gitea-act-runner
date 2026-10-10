@@ -29,7 +29,10 @@ import (
 	"gitea.dev/actionslib/pkg/model"
 )
 
-const maxJobSummaryBytes = 1024 * 1024
+const (
+	jobCleanupTimeout  = time.Minute
+	maxJobSummaryBytes = 1024 * 1024
+)
 
 // jobSummaryTruncationMarker is appended to a summary that exceeded the size limit
 // so the rendered output makes the truncation visible instead of silently cutting off.
@@ -249,7 +252,7 @@ func newJobExecutor(info jobInfo, sf stepFactory, rc *RunContext) common.Executo
 		jobError := common.JobError(ctx)
 		var err error
 		// always allow 1 min for stopping and removing the runner, even if we were cancelled
-		ctx, cancel := context.WithTimeout(common.WithLogger(context.Background(), common.Logger(ctx)), time.Minute)
+		ctx, cancel := context.WithTimeout(common.WithLogger(context.Background(), common.Logger(ctx)), jobCleanupTimeout)
 		defer cancel()
 
 		logger := common.Logger(ctx)

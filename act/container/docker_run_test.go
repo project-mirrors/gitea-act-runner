@@ -5,6 +5,7 @@
 package container
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
@@ -31,44 +32,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDocker(t *testing.T) {
-	requireDocker(t)
-	ctx := context.Background()
-	client, err := GetDockerClient(ctx)
-	require.NoError(t, err)
-	defer client.Close()
-
-	dockerBuild := NewDockerBuildExecutor(NewDockerBuildExecutorInput{
-		ContextDir: "testdata",
-		ImageTag:   "envmergetest",
-	})
-
-	err = dockerBuild(ctx)
-	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
-
-	cr := &containerReference{
-		cli: client,
-		input: &NewContainerInput{
-			Image: "envmergetest",
-		},
-	}
+func TestDockerEnvironmentUsesContainerPath(t *testing.T) {
+	client := &mockDockerClient{}
+	client.On("ContainerInspect", mock.Anything, "amd64-job", mobyclient.ContainerInspectOptions{}).
+		Return(mobyclient.ContainerInspectResult{Container: container.InspectResponse{Config: &container.Config{Env: []string{
+			"PATH=/opt/node/x64/bin:/usr/bin:/bin", "CONFLICT_VAR=container-value", "SOME_RANDOM_VAR=",
+			"ANOTHER_ONE=old-value", "ANOTHER_ONE=BUT_I_HAVE_VALUE", "LITERAL='quoted'=$HOME\nsecond line",
+		}}}}, nil)
 	env := map[string]string{
-		"PATH":         "/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin",
+		"PATH":         "/custom/bin",
 		"RANDOM_VAR":   "WITH_VALUE",
 		"ANOTHER_VAR":  "",
-		"CONFLICT_VAR": "I_EXIST_IN_MULTIPLE_PLACES",
+		"CONFLICT_VAR": "step-value",
 	}
-
-	envExecutor := cr.extractFromImageEnv(&env)
-	err = envExecutor(ctx)
-	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
+	require.NoError(t, (&containerReference{cli: client, id: "amd64-job"}).UpdateFromImageEnv(&env)(t.Context()))
 	assert.Equal(t, map[string]string{
-		"PATH":            "/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/this/path/does/not/exists/anywhere:/this/either",
+		"PATH":            "/custom/bin:/opt/node/x64/bin:/usr/bin:/bin",
 		"RANDOM_VAR":      "WITH_VALUE",
 		"ANOTHER_VAR":     "",
 		"SOME_RANDOM_VAR": "",
 		"ANOTHER_ONE":     "BUT_I_HAVE_VALUE",
-		"CONFLICT_VAR":    "I_EXIST_IN_MULTIPLE_PLACES",
+		"CONFLICT_VAR":    "step-value",
+		"LITERAL":         "'quoted'=$HOME\nsecond line",
 	}, env)
 }
 
@@ -498,25 +483,45 @@ func TestRejectsMissingContainer(t *testing.T) {
 	check("Inspect after removal", err)
 }
 
-// End-to-end: a stale cr.id is cleared, repopulated from name lookup,
-// and the Copy completes against the fresh id.
 func TestPublicCopyPipelineHandlesStaleID(t *testing.T) {
-	ctx := context.Background()
-	client := &mockDockerClient{}
-	client.On("ContainerInspect", ctx, "stale", mobyclient.ContainerInspectOptions{}).
-		Return(mobyclient.ContainerInspectResult{}, cerrdefs.ErrNotFound.WithMessage("gone"))
-	client.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true}).
-		Return(mobyclient.ContainerListResult{Items: []container.Summary{
-			{ID: "fresh", Names: []string{"/job-1"}},
-		}}, nil)
-	client.On("CopyToContainer", ctx, "fresh", mock.MatchedBy(func(opts mobyclient.CopyToContainerOptions) bool {
-		return opts.DestinationPath == "/var/run/act"
-	})).Return(mobyclient.CopyToContainerResult{}, nil)
+	for _, testcase := range []struct {
+		name, destination, extractionRoot, entry string
+		directory                                bool
+	}{
+		{name: "files", destination: "/var/run/act", extractionRoot: "/var/run/act", entry: "x"},
+		{name: "action below act volume", directory: true, destination: "/var/run/act/actions/checkout/", extractionRoot: "/var/run/act", entry: "actions/checkout/x"},
+		{name: "sibling prefix", directory: true, destination: "/var/run/actor/action", extractionRoot: "/", entry: "var/run/actor/action/x"},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			ctx := t.Context()
+			client := &mockDockerClient{}
+			client.On("ContainerInspect", ctx, "stale", mobyclient.ContainerInspectOptions{}).
+				Return(mobyclient.ContainerInspectResult{}, cerrdefs.ErrNotFound.WithMessage("gone"))
+			client.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true}).
+				Return(mobyclient.ContainerListResult{Items: []container.Summary{
+					{ID: "fresh", Names: []string{"/job-1"}},
+				}}, nil)
+			client.On("CopyToContainer", ctx, "fresh", mock.Anything).
+				Run(func(args mock.Arguments) {
+					opts := args.Get(2).(mobyclient.CopyToContainerOptions)
+					assert.Equal(t, testcase.extractionRoot, opts.DestinationPath)
+					header, err := tar.NewReader(opts.Content).Next()
+					require.NoError(t, err)
+					assert.Equal(t, testcase.entry, header.Name)
+				}).Return(mobyclient.CopyToContainerResult{}, nil).Once()
 
-	cr := &containerReference{id: "stale", cli: client, input: &NewContainerInput{Name: "job-1"}}
-	require.NoError(t, cr.Copy("/var/run/act", &FileEntry{Name: "x", Mode: 0o644})(ctx))
-	assert.Equal(t, "fresh", cr.id)
-	client.AssertExpectations(t)
+			cr := &containerReference{id: "stale", cli: client, input: &NewContainerInput{Name: "job-1"}}
+			if testcase.directory {
+				source := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(source, "x"), nil, 0o644))
+				require.NoError(t, cr.CopyDir(testcase.destination, source+string(filepath.Separator), false, true)(ctx))
+			} else {
+				require.NoError(t, cr.Copy(testcase.destination, &FileEntry{Name: "x", Mode: 0o644})(ctx))
+			}
+			assert.Equal(t, "fresh", cr.id)
+			client.AssertExpectations(t)
+		})
+	}
 }
 
 // Type assert containerReference implements ExecutionsEnvironment
@@ -921,6 +926,35 @@ func TestMergeContainerConfigsWarnsOnlyAboutOptionsThatWereGiven(t *testing.T) {
 	assert.Zero(t, warnings("", "--shm-size 1g"))
 	assert.Equal(t, 1, warnings("--network host", ""))
 	assert.Equal(t, 1, warnings("", "--privileged"))
+}
+
+func TestDockerCreateKeepsInputEntrypoint(t *testing.T) {
+	for _, entrypoint := range [][]string{nil, {"sleep", "3600"}} {
+		for _, optionEntrypoint := range []string{"/sbin/dumb-init", ""} {
+			logger, hook := test.NewNullLogger()
+			cr := &containerReference{
+				input: &NewContainerInput{
+					NetworkMode:     "bridge",
+					Entrypoint:      entrypoint,
+					RunnerOptions:   "--entrypoint=runner-entrypoint",
+					WorkflowOptions: "--entrypoint=" + optionEntrypoint + " --init",
+				},
+				cli: &probeClient{create: func(opts mobyclient.ContainerCreateOptions) (mobyclient.ContainerCreateResult, error) {
+					if len(entrypoint) > 0 {
+						assert.Equal(t, entrypoint, opts.Config.Entrypoint)
+					} else {
+						assert.Equal(t, []string{optionEntrypoint}, opts.Config.Entrypoint)
+					}
+					require.NotNil(t, opts.HostConfig.Init)
+					assert.True(t, *opts.HostConfig.Init)
+					return mobyclient.ContainerCreateResult{ID: "created"}, nil
+				}},
+			}
+			require.NoError(t, cr.create(nil, nil)(common.WithLogger(t.Context(), logger)))
+			assert.Equal(t, "created", cr.id)
+			assert.Equal(t, len(entrypoint) > 0, len(hook.AllEntries()) == 1)
+		}
+	}
 }
 
 func TestMergeContainerConfigsKeepsNetworkAliasesFromOptions(t *testing.T) {

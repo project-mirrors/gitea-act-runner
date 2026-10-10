@@ -5,6 +5,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -49,7 +50,7 @@ type Config struct {
 	ContainerDaemonSocket         string                                        // Path to Docker daemon socket
 	ContainerOptions              string                                        // Options for the job container
 	UseGitIgnore                  bool                                          // controls if paths in .gitignore should not be copied into container, default true
-	GitHubInstance                string                                        // GitHub instance to use, default "github.com"
+	GitHubInstance                string                                        // instance hostname or URL, empty when unknown
 	ContainerCapAdd               []string                                      // list of kernel capabilities to add to the containers
 	ContainerCapDrop              []string                                      // list of kernel capabilities to remove from the containers
 	ArtifactServerPath            string                                        // the path where the artifact server stores uploads
@@ -111,13 +112,7 @@ func (c Config) GetToken() string {
 
 // DefaultActionURL returns the host used for implicit remote actions.
 func (c Config) DefaultActionURL() string {
-	if c.DefaultActionInstance != "" {
-		return c.DefaultActionInstance
-	}
-	if c.GitHubInstance != "" {
-		return c.GitHubInstance
-	}
-	return "github.com"
+	return cmp.Or(c.DefaultActionInstance, c.GitHubInstance, "github.com")
 }
 
 type caller struct {

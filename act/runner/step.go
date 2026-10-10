@@ -186,19 +186,25 @@ func runStepExecutor(step step, stage stepStage, executor common.Executor) commo
 		if err == nil {
 			err = insecureErr
 		}
-		if fileErr := processRunnerEnvFileCommand(ctx, envFileCommand, rc, rc.setEnvFile); fileErr != nil && err == nil {
+		fileCommandCtx := ctx
+		if ctx.Err() != nil { // an interrupted step still records its file commands, a live deadline stays in force
+			var cancelFileCommands context.CancelFunc
+			fileCommandCtx, cancelFileCommands = context.WithTimeout(context.WithoutCancel(ctx), jobCleanupTimeout)
+			defer cancelFileCommands()
+		}
+		if fileErr := processRunnerEnvFileCommand(fileCommandCtx, envFileCommand, rc, rc.setEnvFile); fileErr != nil && err == nil {
 			err = fileErr
 		}
-		if fileErr := processRunnerEnvFileCommand(ctx, stateFileCommand, rc, rc.saveState); fileErr != nil && err == nil {
+		if fileErr := processRunnerEnvFileCommand(fileCommandCtx, stateFileCommand, rc, rc.saveState); fileErr != nil && err == nil {
 			err = fileErr
 		}
-		if fileErr := processRunnerEnvFileCommand(ctx, outputFileCommand, rc, rc.setOutput); fileErr != nil && err == nil {
+		if fileErr := processRunnerEnvFileCommand(fileCommandCtx, outputFileCommand, rc, rc.setOutput); fileErr != nil && err == nil {
 			err = fileErr
 		}
-		if fileErr := rc.UpdateExtraPath(ctx, path.Join(actPath, pathFileCommand)); fileErr != nil && err == nil {
+		if fileErr := rc.UpdateExtraPath(fileCommandCtx, path.Join(actPath, pathFileCommand)); fileErr != nil && err == nil {
 			err = fileErr
 		}
-		_ = rc.JobContainer.Copy(actPath, files...)(ctx)
+		_ = rc.JobContainer.Copy(actPath, files...)(fileCommandCtx)
 
 		if err == nil {
 			logger.WithField("stepResult", stepResult.Conclusion).Infof("Success - %s %s", stage, stepString)

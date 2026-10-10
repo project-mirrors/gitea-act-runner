@@ -130,11 +130,11 @@ func SetSha(ctx context.Context, ghc *model.GithubContext, repoPath string) {
 
 // SetRepositoryAndOwner resolves the repository of the context from the git
 // remote in repoPath when it is not set yet, and derives its owner.
-func SetRepositoryAndOwner(ctx context.Context, ghc *model.GithubContext, githubInstance, repoPath string) {
+func SetRepositoryAndOwner(ctx context.Context, ghc *model.GithubContext, repoPath string) {
 	if ghc.Repository == "" {
-		repo, err := findGithubRepo(ctx, repoPath, githubInstance)
+		repo, err := findGithubRepo(ctx, repoPath)
 		if err != nil {
-			common.Logger(ctx).Warningf("unable to get git repo (githubInstance: %v, repoPath: %v): %v", githubInstance, repoPath, err)
+			common.Logger(ctx).Warningf("unable to get git repo (repoPath: %v): %v", repoPath, err)
 			return
 		}
 		ghc.Repository = repo

@@ -9,7 +9,7 @@
 #
 # Usage: scripts/test-dind.sh [target] [-- go-test-args...]
 #   target:        dind (default), dind-rootless, or podman to run PODMAN_TEST_IMAGE's API service instead
-#   go-test-args:  passed verbatim to `go test`. Defaults cover image env extraction,
+#   go-test-args:  passed verbatim to `go test`. Defaults cover image platform detection,
 #                  symlink copying, a mounted Docker job using cached images and the
 #                  image's s6 supervision, or the Docker proxy probe for podman.
 #
@@ -55,7 +55,7 @@ else
   daemon_args=(-e DOCKER_TLS_CERTDIR= --entrypoint dockerd-entrypoint.sh "$image" --host=tcp://0.0.0.0:2375)
   if [ $# -eq 0 ]; then
     default_tests=true
-    set -- -count=1 -race -run '^TestDocker$' ./act/container/
+    set -- -count=1 -race -run '^TestImageExistsLocally$' ./act/container/
   fi
 fi
 

@@ -31,7 +31,7 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/cli/cli/compose/loader"
 	"github.com/docker/cli/cli/connhelper"
-	"github.com/joho/godotenv"
+	"github.com/docker/cli/opts"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -95,8 +95,8 @@ func (cr *containerReference) Start(attach bool) common.Executor {
 				cr.attach().IfBool(attach),
 				cr.start(),
 				cr.wait().IfBool(attach),
-				cr.tryReadUID(),
-				cr.tryReadGID(),
+				cr.tryReadID("-u", func(id int) { cr.UID = id }),
+				cr.tryReadID("-g", func(id int) { cr.GID = id }),
 				func(ctx context.Context) error {
 					// If this fails, then folders have wrong permissions on non root container
 					if cr.UID != 0 || cr.GID != 0 {
@@ -305,7 +305,25 @@ func (cr *containerReference) UpdateFromEnv(srcPath string, env *map[string]stri
 }
 
 func (cr *containerReference) UpdateFromImageEnv(env *map[string]string) common.Executor {
-	return cr.extractFromImageEnv(env).IfNot(common.Dryrun)
+	envMap := *env
+	return common.Executor(func(ctx context.Context) error {
+		inspect, err := cr.cli.ContainerInspect(ctx, cr.id, client.ContainerInspectOptions{})
+		if err != nil {
+			common.Logger(ctx).Error(err)
+			return fmt.Errorf("inspect container: %w", err)
+		}
+		if inspect.Container.Config == nil {
+			return nil
+		}
+		for key, value := range opts.ConvertKVStringsToMap(inspect.Container.Config.Env) {
+			if envMap[key] == "" {
+				envMap[key] = value
+			} else if key == "PATH" {
+				envMap[key] += ":" + value
+			}
+		}
+		return nil
+	}).IfNot(common.Dryrun)
 }
 
 func (cr *containerReference) Exec(command []string, env map[string]string, user, workdir string) common.Executor {
@@ -567,20 +585,6 @@ func (cr *containerReference) mergeContainerConfigs(ctx context.Context, config 
 		return nil, nil, fmt.Errorf("cannot process container options: '%s': '%w'", options, err)
 	}
 
-	// FIXME: If everything is fine after gitea/act v0.260.0, remove the following comment.
-	// In the old fork version, the code is
-	// if len(copts.netMode.Value()) == 0 {
-	// 	if err = copts.netMode.Set("host"); err != nil {
-	// 		return nil, nil, fmt.Errorf("cannot parse networkmode=host. This is an internal error and should not happen: '%w'", err)
-	// 	}
-	// }
-	// And it has been commented with:
-	//   If a service container's network is set to `host`, the container will not be able to
-	//   connect to the specified network created for the job container and the service containers.
-	//   So comment out the following code.
-	// Not the if it's necessary to comment it in the new version,
-	// since it's cr.input.NetworkMode now.
-
 	if len(copts.netMode.Value()) == 0 {
 		if err = copts.netMode.Set(cr.input.NetworkMode); err != nil {
 			return nil, nil, fmt.Errorf("cannot parse networkmode=%s. This is an internal error and should not happen: '%w'", cr.input.NetworkMode, err)
@@ -644,6 +648,9 @@ func (cr *containerReference) mergeContainerConfigs(ctx context.Context, config 
 	if flags.Changed("network") || flags.Changed("net") {
 		logger.Warn("--network and --net in the options will be ignored.")
 	}
+	if len(cr.input.Entrypoint) != 0 && flags.Changed("entrypoint") {
+		logger.Warn("--entrypoint in the options will be ignored.")
+	}
 	hostConfig.NetworkMode = networkMode
 	logger.Debugf("Merged container.HostConfig ==> %+v", hostConfig)
 
@@ -673,15 +680,9 @@ func (cr *containerReference) create(capAdd, capDrop []string) common.Executor {
 			ExposedPorts: exposedPorts,
 			Tty:          input.AllocatePTY,
 		}
-		// For Gitea, reduce log noise
-		// logger.Debugf("Common container.Config ==> %+v", config)
 
 		if len(input.Cmd) != 0 {
 			config.Cmd = input.Cmd
-		}
-
-		if len(input.Entrypoint) != 0 {
-			config.Entrypoint = input.Entrypoint
 		}
 
 		mounts := make([]mount.Mount, 0)
@@ -718,20 +719,20 @@ func (cr *containerReference) create(capAdd, capDrop []string) common.Executor {
 			PortBindings: portBindings,
 			AutoRemove:   input.AutoRemove,
 		}
-		// For Gitea, reduce log noise
-		// logger.Debugf("Common container.HostConfig ==> %+v", hostConfig)
 
 		config, hostConfig, err = cr.mergeContainerConfigs(ctx, config, hostConfig)
 		if err != nil {
 			return err
 		}
 
+		if len(input.Entrypoint) != 0 {
+			config.Entrypoint = input.Entrypoint
+		}
+
 		// For Gitea
 		config, hostConfig = cr.sanitizeConfig(ctx, config, hostConfig)
 
 		var networkingConfig *network.NetworkingConfig
-		// For Gitea, reduce log noise
-		// logger.Debugf("input.NetworkAliases ==> %v", input.NetworkAliases)
 		n := hostConfig.NetworkMode
 		// IsUserDefined and IsHost are broken on windows
 		if n.IsUserDefined() && n != "host" && len(input.NetworkAliases) > 0 {
@@ -764,44 +765,6 @@ func (cr *containerReference) create(capAdd, capDrop []string) common.Executor {
 	}
 }
 
-func (cr *containerReference) extractFromImageEnv(env *map[string]string) common.Executor {
-	envMap := *env
-	return func(ctx context.Context) error {
-		logger := common.Logger(ctx)
-
-		inspect, err := cr.cli.ImageInspect(ctx, cr.input.Image)
-		if err != nil {
-			logger.Error(err)
-			return fmt.Errorf("inspect image: %w", err)
-		}
-
-		if inspect.Config == nil {
-			return nil
-		}
-
-		imageEnv, err := godotenv.Unmarshal(strings.Join(inspect.Config.Env, "\n"))
-		if err != nil {
-			logger.Error(err)
-			return fmt.Errorf("unmarshal image env: %w", err)
-		}
-
-		for k, v := range imageEnv {
-			if k == "PATH" {
-				if envMap[k] == "" {
-					envMap[k] = v
-				} else {
-					envMap[k] += `:` + v
-				}
-			} else if envMap[k] == "" {
-				envMap[k] = v
-			}
-		}
-
-		env = &envMap
-		return nil
-	}
-}
-
 func (cr *containerReference) exec(cmd []string, env map[string]string, user, workdir string) common.Executor {
 	return func(ctx context.Context) error {
 		if cr.id == "" {
@@ -819,11 +782,6 @@ func (cr *containerReference) exec(cmd []string, env map[string]string, user, wo
 
 		logger.Debugf("Exec command '%s'", cmd)
 		isTerminal := cr.input.AllocatePTY
-		envList := make([]string, 0)
-		for k, v := range env {
-			envList = append(envList, fmt.Sprintf("%s=%s", k, v))
-		}
-
 		var wd string
 		if workdir != "" {
 			if strings.HasPrefix(workdir, "/") {
@@ -840,7 +798,7 @@ func (cr *containerReference) exec(cmd []string, env map[string]string, user, wo
 			User:         user,
 			Cmd:          cmd,
 			WorkingDir:   wd,
-			Env:          envList,
+			Env:          getEnvListFromMap(env),
 			TTY:          isTerminal,
 			AttachStderr: true,
 			AttachStdout: true,
@@ -857,7 +815,7 @@ func (cr *containerReference) exec(cmd []string, env map[string]string, user, wo
 		}
 		defer resp.Close()
 
-		err = cr.waitForCommand(ctx, resp.HijackedResponse, idResp, user, workdir)
+		err = cr.waitForCommand(ctx, resp.HijackedResponse)
 		if err != nil {
 			return err
 		}
@@ -907,15 +865,7 @@ func (cr *containerReference) tryReadID(opt string, cbk func(id int)) common.Exe
 	}
 }
 
-func (cr *containerReference) tryReadUID() common.Executor {
-	return cr.tryReadID("-u", func(id int) { cr.UID = id })
-}
-
-func (cr *containerReference) tryReadGID() common.Executor {
-	return cr.tryReadID("-g", func(id int) { cr.GID = id })
-}
-
-func (cr *containerReference) waitForCommand(ctx context.Context, resp client.HijackedResponse, _ client.ExecCreateResult, _, _ string) error {
+func (cr *containerReference) waitForCommand(ctx context.Context, resp client.HijackedResponse) error {
 	logger := common.Logger(ctx)
 
 	// Buffered so the copy goroutine never blocks on send if the grace-period
@@ -957,6 +907,7 @@ func (cr *containerReference) waitForCommand(ctx context.Context, resp client.Hi
 }
 
 func (cr *containerReference) copyDir(dstPath, srcPath string, useGitIgnore, skipGitDir bool) common.Executor {
+	dstPath = path.Clean(dstPath)
 	return func(ctx context.Context) error {
 		if cr.id == "" {
 			return cr.missingContainerError("copy directory to %s", dstPath)
@@ -978,7 +929,11 @@ func (cr *containerReference) copyDir(dstPath, srcPath string, useGitIgnore, ski
 				logger.Error(err)
 			}
 		}(tarFile)
-		if err := writeDirTar(ctx, tarFile, dstPath, srcPath, useGitIgnore, skipGitDir, cr.UID, cr.GID); err != nil {
+		extractionRoot := "/"
+		if actPath := cr.GetActPath(); strings.HasPrefix(dstPath+"/", actPath+"/") {
+			extractionRoot = actPath // keeps tar entries from crossing the image's /var/run symlink
+		}
+		if err := writeDirTar(ctx, tarFile, path.Join("/", strings.TrimPrefix(dstPath, extractionRoot)), srcPath, useGitIgnore, skipGitDir, cr.UID, cr.GID); err != nil {
 			return err
 		}
 
@@ -987,14 +942,7 @@ func (cr *containerReference) copyDir(dstPath, srcPath string, useGitIgnore, ski
 		if err != nil {
 			return fmt.Errorf("failed to seek tar archive: %w", err)
 		}
-		_, err = cr.cli.CopyToContainer(ctx, cr.id, client.CopyToContainerOptions{
-			DestinationPath: "/",
-			Content:         tarFile,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to copy content to container: %w", err)
-		}
-		return nil
+		return cr.upload(ctx, extractionRoot, tarFile)
 	}
 }
 
@@ -1009,15 +957,15 @@ func (cr *containerReference) copyContent(dstPath string, files ...*FileEntry) c
 		}
 
 		common.Logger(ctx).Debugf("Extracting content to '%s'", dstPath)
-		_, err := cr.cli.CopyToContainer(ctx, cr.id, client.CopyToContainerOptions{
-			DestinationPath: dstPath,
-			Content:         &buf,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to copy content to container: %w", err)
-		}
-		return nil
+		return cr.upload(ctx, dstPath, &buf)
 	}
+}
+
+func (cr *containerReference) upload(ctx context.Context, dstPath string, content io.Reader) error {
+	if _, err := cr.cli.CopyToContainer(ctx, cr.id, client.CopyToContainerOptions{DestinationPath: dstPath, Content: content}); err != nil {
+		return fmt.Errorf("failed to copy content to container: %w", err)
+	}
+	return nil
 }
 
 func (cr *containerReference) attach() common.Executor {

@@ -7,9 +7,11 @@ package runner
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/container"
@@ -189,7 +191,6 @@ func TestSetupEnv(t *testing.T) {
 		"GITHUB_ACTION_PATH":       "",
 		"GITHUB_ACTION_REF":        "",
 		"GITHUB_ACTION_REPOSITORY": "",
-		"GITHUB_API_URL":           "https:///api/v1", // Gitea uses api/v1 (upstream GitHub: api/v3)
 		"GITHUB_BASE_REF":          "",
 		"GITHUB_EVENT_NAME":        "",
 		"GITHUB_EVENT_PATH":        "/var/run/act/workflow/event.json",
@@ -200,7 +201,6 @@ func TestSetupEnv(t *testing.T) {
 		"GITHUB_RUN_ATTEMPT":       "",
 		"GITHUB_RUN_ID":            "runId",
 		"GITHUB_RUN_NUMBER":        "1",
-		"GITHUB_SERVER_URL":        "https://",
 		"GITHUB_WORKFLOW":          "",
 		"INPUT_ID":                 "1234567",
 		"INPUT_STEP_WITH":          "with-value",
@@ -475,6 +475,26 @@ func TestRunStepExecutorDoesNotLeakRefusalToNextStep(t *testing.T) {
 	require.NoError(t, errB)
 }
 
+type fileCommandTestContainer struct {
+	*container.HostEnvironment
+}
+
+func (c *fileCommandTestContainer) UpdateFromEnv(srcPath string, env *map[string]string) common.Executor {
+	return func(ctx context.Context) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return c.HostEnvironment.UpdateFromEnv(srcPath, env)(ctx)
+	}
+}
+
+func (c *fileCommandTestContainer) GetContainerArchive(ctx context.Context, srcPath string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return c.HostEnvironment.GetContainerArchive(ctx, srcPath)
+}
+
 func TestRunStepExecutorParity(t *testing.T) {
 	newStep := func(t *testing.T, stepModel *model.Step) *stepRun {
 		rc := createRunContext(t)
@@ -525,6 +545,30 @@ func TestRunStepExecutorParity(t *testing.T) {
 			require.NoError(t, readErr)
 			assert.Empty(t, contents)
 		}
+	})
+
+	t.Run("file commands survive a job timeout", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			step := newStep(t, &model.Step{ID: "interrupted"})
+			ctx, cancel := applyJobTimeout(t.Context(), step.RunContext, &model.Job{TimeoutMinutes: "1"})
+			defer cancel()
+			step.RunContext.JobContainer = &fileCommandTestContainer{step.RunContext.JobContainer.(*container.HostEnvironment)}
+			err := runStepExecutor(step, stepStageMain, func(execCtx context.Context) error {
+				for name, content := range map[string]string{
+					"GITHUB_ENV": "KEPT_ENV=value\n", "GITHUB_STATE": "saved=value\n",
+					"GITHUB_OUTPUT": "kept=value\n", "GITHUB_PATH": "/kept/bin\n",
+				} {
+					require.NoError(t, os.WriteFile(step.env[name], []byte(content), 0o600))
+				}
+				<-execCtx.Done()
+				return execCtx.Err()
+			})(ctx)
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+			assert.Equal(t, "value", step.RunContext.Env["KEPT_ENV"])
+			assert.Equal(t, "value", step.RunContext.IntraActionState[step.Step.ID]["saved"])
+			assert.Equal(t, "value", step.RunContext.StepResults[step.Step.ID].Outputs["kept"])
+			assert.Contains(t, step.RunContext.ExtraPath, "/kept/bin")
+		})
 	})
 
 	t.Run("composite child files do not leak", func(t *testing.T) {

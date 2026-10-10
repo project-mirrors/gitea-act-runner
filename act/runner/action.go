@@ -145,7 +145,11 @@ func maybeCopyToActionDir(ctx context.Context, step actionStep, actionDir, actio
 		containerActionDirCopy += `/`
 	}
 
-	defer git.AcquireCloneLock(actionDir)()
+	unlock, err := git.AcquireCloneLock(ctx, actionDir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	if !rc.Config.NoActionPatch {
 		// A concurrent job's prepare resets this directory, so patch under the copy's lock.
@@ -366,7 +370,11 @@ func execAsDocker(ctx context.Context, step actionStep, actionName, actionDir, b
 				// Held across the whole build: the daemon drains contextDir lazily.
 				inner := prepImage
 				prepImage = func(ctx context.Context) error {
-					defer git.AcquireCloneLock(actionDir)()
+					unlock, err := git.AcquireCloneLock(ctx, actionDir)
+					if err != nil {
+						return err
+					}
+					defer unlock()
 					return inner(ctx)
 				}
 			}

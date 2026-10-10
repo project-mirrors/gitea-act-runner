@@ -88,6 +88,12 @@ func (sar *stepActionRemote) prepareActionExecutor() common.Executor {
 			}
 		}
 
+		unlock, err := git.AcquireCloneLock(ctx, actionDir)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+
 		// Best effort: the download report falls back to the ref alone when the commit is unknown.
 		if _, sha, err := git.FindGitRevision(ctx, actionDir); err != nil {
 			common.Logger(ctx).Debugf("unable to resolve the commit of %s: %v", sar.remoteAction.Reference(), err)
@@ -100,7 +106,6 @@ func (sar *stepActionRemote) prepareActionExecutor() common.Executor {
 			return f, f, err
 		}
 
-		defer git.AcquireCloneLock(actionDir)()
 		actionModel, err := sar.readAction(ctx, sar.Step, actionDir, sar.remoteAction.Path, remoteReader, os.WriteFile)
 		sar.action = actionModel
 		return err
@@ -251,8 +256,8 @@ func (ra *remoteAction) CloneURL(u string) string {
 	if ra.URL == "" {
 		// keep an absolute local path as-is (used by tests to resolve actions from a local
 		// repo); only bare host names get the https:// scheme prepended
-		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") && !filepath.IsAbs(u) {
-			u = "https://" + u
+		if !filepath.IsAbs(u) {
+			u = withHTTPS(u)
 		}
 	} else {
 		u = ra.URL
@@ -301,6 +306,9 @@ func newRemoteAction(action string, github *model.GithubContext, instanceURL str
 		}
 		ra.Org, ra.Repo, _ = strings.Cut(repo, "/")
 		ra.URL, ra.Ref = github.ServerURL, ref
+		if ra.URL == "" {
+			return nil, fmt.Errorf("unable to resolve %q without a Gitea instance", action)
+		}
 		if ra.Org == "" || ra.Repo == "" || ra.Ref == "" {
 			return nil, fmt.Errorf("unable to resolve %q without a repository and commit", action)
 		}

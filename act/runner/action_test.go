@@ -143,6 +143,7 @@ runs:
 }
 
 func TestActionRunner(t *testing.T) {
+	t.Chdir(t.TempDir())
 	table := []struct {
 		name        string
 		step        actionStep
@@ -366,7 +367,10 @@ func TestMaybeCopyToActionDirHoldsCloneLock(t *testing.T) {
 
 	peerAcquired := make(chan struct{})
 	go func() {
-		unlock := git.AcquireCloneLock(actionDir)
+		unlock, err := git.AcquireCloneLock(t.Context(), actionDir)
+		if !assert.NoError(t, err) {
+			return
+		}
 		close(peerAcquired)
 		unlock()
 	}()
@@ -400,7 +404,9 @@ func TestMaybeCopyToActionDirHoldsCloneLock(t *testing.T) {
 func TestExecAsDockerHoldsCloneLockForRemoteUncached(t *testing.T) {
 	actionDir := t.TempDir()
 
-	unlockOnce := sync.OnceFunc(git.AcquireCloneLock(actionDir))
+	unlock, err := git.AcquireCloneLock(t.Context(), actionDir)
+	require.NoError(t, err)
+	unlockOnce := sync.OnceFunc(unlock)
 	defer unlockOnce()
 
 	innerEntered := make(chan struct{})

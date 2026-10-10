@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"path"
 	"regexp"
-	"strings"
 
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/git"
@@ -27,7 +26,7 @@ func newLocalReusableWorkflowExecutor(rc *RunContext) common.Executor {
 	if !rc.Config.NoSkipCheckout {
 		// resolve the local workflow against the workspace root, not the process
 		// working directory, so it is found regardless of where the runner is invoked
-		return newReusableWorkflowExecutor(rc, rc.Config.Workdir, localWorkflow.Path)
+		return newReusableWorkflowExecutor(rc, rc.Config.Workdir, localWorkflow.Path, false)
 	}
 
 	uses := fmt.Sprintf("%s/%s@%s", rc.Config.PresetGitHubContext.Repository, localWorkflow.Path, rc.Config.PresetGitHubContext.Sha)
@@ -41,7 +40,7 @@ func newLocalReusableWorkflowExecutor(rc *RunContext) common.Executor {
 
 	return common.NewPipelineExecutor(
 		cloneRemoteReusableWorkflow(rc, remoteReusableWorkflow.CloneURL(), remoteReusableWorkflow.Ref, workflowDir),
-		newReusableWorkflowExecutor(rc, workflowDir, remoteReusableWorkflow.Path),
+		newReusableWorkflowExecutor(rc, workflowDir, remoteReusableWorkflow.Path, true),
 	)
 }
 
@@ -59,7 +58,7 @@ func newRemoteReusableWorkflowExecutor(rc *RunContext) common.Executor {
 
 	return common.NewPipelineExecutor(
 		cloneRemoteReusableWorkflow(rc, remoteReusableWorkflow.CloneURL(), remoteReusableWorkflow.Ref, workflowDir),
-		newReusableWorkflowExecutor(rc, workflowDir, remoteReusableWorkflow.Path),
+		newReusableWorkflowExecutor(rc, workflowDir, remoteReusableWorkflow.Path, true),
 	)
 }
 
@@ -87,11 +86,16 @@ func cloneRemoteReusableWorkflow(rc *RunContext, cloneURL, ref, targetDirectory 
 	}
 }
 
-func newReusableWorkflowExecutor(rc *RunContext, directory, workflow string) common.Executor {
+func newReusableWorkflowExecutor(rc *RunContext, directory, workflow string, cached bool) common.Executor {
 	return func(ctx context.Context) error {
-		// Serialize workflow reads with cache updates.
 		planner, err := func() (model.WorkflowPlanner, error) {
-			defer git.AcquireCloneLock(directory)()
+			if cached {
+				unlock, err := git.AcquireCloneLock(ctx, directory)
+				if err != nil {
+					return nil, err
+				}
+				defer unlock()
+			}
 			return model.NewWorkflowPlanner(path.Join(directory, workflow), true)
 		}()
 		if err != nil {
@@ -135,11 +139,7 @@ type remoteReusableWorkflow struct {
 }
 
 func (r *remoteReusableWorkflow) CloneURL() string {
-	// In Gitea, r.URL always has the protocol prefix, we don't need to add extra prefix in this case.
-	if strings.HasPrefix(r.URL, "http://") || strings.HasPrefix(r.URL, "https://") {
-		return fmt.Sprintf("%s/%s/%s", r.URL, r.Owner, r.Repo)
-	}
-	return fmt.Sprintf("https://%s/%s/%s", r.URL, r.Owner, r.Repo)
+	return fmt.Sprintf("%s/%s/%s", withHTTPS(r.URL), r.Owner, r.Repo)
 }
 
 var absoluteReusableWorkflowURLRegex = regexp.MustCompile(`^(https?://.*)/([^/]+/[^/]+/\.[^/]+/workflows/[^@]+@.*)$`)
@@ -233,10 +233,7 @@ func onInstanceHost(host string, instanceURLs ...string) bool {
 		if candidate == "" {
 			continue
 		}
-		if !strings.HasPrefix(candidate, "http://") && !strings.HasPrefix(candidate, "https://") {
-			candidate = "https://" + candidate
-		}
-		if u, err := url.Parse(candidate); err == nil && u.Host == host {
+		if u, err := url.Parse(withHTTPS(candidate)); err == nil && u.Host == host {
 			return true
 		}
 	}

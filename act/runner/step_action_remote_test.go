@@ -193,7 +193,7 @@ func TestStepActionRemote(t *testing.T) {
 				RunContext: &RunContext{
 					Config: &Config{
 						GitHubInstance: "github.com",
-						ActionCacheDir: "/tmp/test-cache",
+						ActionCacheDir: t.TempDir(),
 					},
 					Run: &model.Run{
 						JobID: "1",
@@ -447,7 +447,7 @@ func TestStepActionRemotePost(t *testing.T) {
 				RunContext: &RunContext{
 					Config: &Config{
 						GitHubInstance: "https://github.com",
-						ActionCacheDir: "/tmp/test-cache",
+						ActionCacheDir: t.TempDir(),
 					},
 					JobContainer: cm,
 					Run: &model.Run{
@@ -688,6 +688,7 @@ func Test_newRemoteActionSelfRepo(t *testing.T) {
 				Ref:  "v1",
 			},
 		},
+		{name: "unknown instance", action: "$/.gitea/actions/build", github: &model.GithubContext{Repository: "owner/workflow-repo", Sha: "abc123"}},
 		{name: "empty path", action: "$/", github: workflow},
 		{name: "ref suffix is not allowed", action: "$/.gitea/actions/build@v1", github: workflow},
 		{name: "path traversal", action: "$/../escape", github: workflow},
@@ -867,7 +868,7 @@ func TestStepActionRemoteCloneTokenSurvivesNilSecrets(t *testing.T) {
 					Config: &Config{
 						GitHubInstance:        tt.gitHubInstance,
 						DefaultActionInstance: tt.defaultActionInstance,
-						ActionCacheDir:        "/tmp/test-cache",
+						ActionCacheDir:        t.TempDir(),
 						// Mirrors the state of a composite RunContext: job secrets are
 						// stripped, but the job token is still reachable via Config.Token.
 						Secrets: nil,

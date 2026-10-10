@@ -61,3 +61,26 @@ func TestParsePlatform(t *testing.T) {
 		})
 	}
 }
+
+func TestPlatformMatches(t *testing.T) {
+	for _, testcase := range []struct {
+		requested, image string
+		want             bool
+	}{
+		{"linux/amd64", "linux/amd64", true},
+		{"linux/amd64/v1", "linux/amd64", true},
+		{"linux/arm64", "linux/amd64", false},
+		{"linux/arm64/v8", "linux/arm64", true},
+		{"linux/arm/v7", "linux/arm/v7", true},
+		{"linux/arm", "linux/arm/v7", true},
+		{"linux/arm/v6", "linux/arm/v7", false},
+		{"linux/arm", "linux/arm/v6", true},
+		{"windows/arm/v7", "linux/arm/v7", false},
+	} {
+		requested, err := parsePlatform(testcase.requested)
+		require.NoError(t, err)
+		image, err := parsePlatform(testcase.image)
+		require.NoError(t, err)
+		assert.Equal(t, testcase.want, platformMatches(requested, image), "%s on %s", testcase.requested, testcase.image)
+	}
+}

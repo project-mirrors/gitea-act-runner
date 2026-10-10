@@ -5,8 +5,10 @@ package cmd
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -29,6 +31,8 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/ver"
 
 	"connectrpc.com/connect"
+	runnerv1 "gitea.dev/actionslib/runner/v1"
+	"github.com/avast/retry-go/v5"
 	"github.com/mattn/go-isatty"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -185,8 +189,25 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 		}()
 
 		// declare the labels of the runner before fetching tasks
-		resp, err := runner.Declare(ctx, ls.Names())
+		resp, err := retry.NewWithData[*connect.Response[runnerv1.DeclareResponse]](
+			retry.Context(ctx),
+			retry.UntilSucceeded(),
+			retry.Delay(declareRetryDelay),
+			retry.DelayType(retry.FixedDelay),
+			retry.RetryIf(shouldRetryDeclare),
+			retry.OnRetry(func(attempt uint, err error) {
+				if attempt == 0 {
+					log.WithError(err).Warn("fail to invoke Declare, retrying until Gitea is reachable")
+				} else {
+					log.WithError(err).Debug("fail to invoke Declare, retrying")
+				}
+			}),
+		).Do(func() (*connect.Response[runnerv1.DeclareResponse], error) {
+			return runner.Declare(ctx, ls.Names())
+		})
 		switch {
+		case err != nil && ctx.Err() != nil && !client.IsRegistrationRejected(err):
+			return nil
 		case err != nil && connect.CodeOf(err) == connect.CodeUnimplemented:
 			log.Errorf("Your Gitea version is too old to support runner declare, please upgrade to v1.21 or later")
 			return err
@@ -349,6 +370,20 @@ func initLogging(cfg *config.Config) {
 	if log.GetLevel() != level {
 		log.Infof("log level set to %v", level)
 		log.SetLevel(level)
+	}
+}
+
+var declareRetryDelay = 30 * time.Second
+
+func shouldRetryDeclare(err error) bool {
+	if errors.As(err, new(*tls.CertificateVerificationError)) || errors.As(err, new(tls.AlertError)) || errors.Is(err, http.ErrSchemeMismatch) { // misconfigurations never heal
+		return false
+	}
+	switch connect.CodeOf(err) {
+	case connect.CodeUnauthenticated, connect.CodeUnimplemented, connect.CodePermissionDenied, connect.CodeInvalidArgument:
+		return false
+	default:
+		return !client.IsRegistrationRejected(err)
 	}
 }
 
