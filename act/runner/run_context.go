@@ -511,7 +511,7 @@ func (rc *RunContext) startKubernetesPod() common.Executor {
 // printStartJobContainerGroup mirrors actions/runner's "Starting job container"
 // section: emit the group header and summary, return a closer for ::endgroup::.
 func printStartJobContainerGroup(ctx context.Context, image, name, network string) func() {
-	rawLogger := common.Logger(ctx).WithField(rawOutputField, true)
+	rawLogger := common.Logger(ctx).With(rawOutputField, true)
 	rawLogger.Infof("::group::Starting job container")
 	rawLogger.Infof("image: %s", image)
 	rawLogger.Infof("name: %s", name)
@@ -706,7 +706,7 @@ func (rc *RunContext) commandLogWriter(ctx context.Context) io.Writer {
 }
 
 func rawLogLine(ctx context.Context) common.LineHandler {
-	rawLogger := common.Logger(ctx).WithField(rawOutputField, true)
+	rawLogger := common.Logger(ctx).With(rawOutputField, true)
 	return func(line string) bool {
 		rawLogger.Infof("%s", line)
 		return true
@@ -957,7 +957,7 @@ func (rc *RunContext) waitForServiceContainers() common.Executor {
 // waitUntilHealthy waits on the healthcheck alone, so a container that declares none is
 // ready at once and one that exited is left to the steps that need it.
 func (svc *serviceContainer) waitUntilHealthy(ctx context.Context, timeout time.Duration) error {
-	rawLogger := common.Logger(ctx).WithField(rawOutputField, true)
+	rawLogger := common.Logger(ctx).With(rawOutputField, true)
 	loggedStarting := false
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -1015,7 +1015,7 @@ const serviceLogsTimeout = 15 * time.Second // cleanup gets one minute in total
 func (rc *RunContext) printServiceLogs(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, serviceLogsTimeout)
 	defer cancel()
-	rawLogger := common.Logger(ctx).WithField(rawOutputField, true)
+	rawLogger := common.Logger(ctx).With(rawOutputField, true)
 	for _, svc := range rc.serviceContainers {
 		if !svc.created || svc.logsDumped {
 			continue
@@ -1338,7 +1338,7 @@ func (rc *RunContext) isEnabled(ctx context.Context) (bool, error) {
 			rc.caller.setReusedWorkflowJobResult(rc.Run.JobID, "skipped")
 			return false, nil
 		}
-		l.WithField("jobResult", "skipped").Debugf("Skipping job '%s' due to '%s'", job.Name, job.If.Value)
+		l.With("jobResult", "skipped").Debugf("Skipping job '%s' due to '%s'", job.Name, job.If.Value)
 		return false, nil
 	}
 

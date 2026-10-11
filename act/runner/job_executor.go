@@ -92,7 +92,7 @@ func printPrepareActions(rc *RunContext, preparers []actionPreparer) common.Exec
 			return nil
 		}
 
-		rawLogger := common.Logger(ctx).WithField(rawOutputField, true)
+		rawLogger := common.Logger(ctx).With(rawOutputField, true)
 		rawLogger.Infof("Prepare all required actions")
 
 		for _, preparer := range preparers {
@@ -126,7 +126,7 @@ func printCompleteJobName(rc *RunContext) common.Executor {
 		if name == "" && rc.Run != nil {
 			name = rc.Run.JobID
 		}
-		common.Logger(ctx).WithField(rawOutputField, true).Infof("Complete job name: %s", name)
+		common.Logger(ctx).With(rawOutputField, true).Infof("Complete job name: %s", name)
 		return nil
 	}
 }
@@ -412,7 +412,7 @@ func setJobResult(ctx context.Context, info jobInfo, rc *RunContext, success boo
 		jobResultMessage = "cancelled"
 	}
 
-	logger.WithField("jobResult", jobResult).Infof("Job %s", jobResultMessage)
+	logger.With("jobResult", jobResult).Infof("Job %s", jobResultMessage)
 }
 
 // evaluateJobEnv returns the workflow and job env evaluated, as far as it got on error, leaving rc.Env raw.

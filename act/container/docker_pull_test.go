@@ -10,15 +10,16 @@ import (
 	"strings"
 	"testing"
 
+	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
+
 	"github.com/docker/cli/cli/config"
-	log "github.com/sirupsen/logrus"
-	"github.com/sirupsen/logrus/hooks/test"
 	assert "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func init() {
-	log.SetLevel(log.DebugLevel)
+	logging.SetLevel(logging.LevelDebug)
 }
 
 func TestCleanImage(t *testing.T) {
@@ -79,7 +80,7 @@ func TestIsPinnedImage(t *testing.T) {
 // The pull path reports a failure the daemon sent mid-stream, so it must carry the reason
 // whichever of the two shapes the daemon used.
 func TestLogDockerResponseError(t *testing.T) {
-	logger, _ := test.NewNullLogger()
+	logger := logging.New(logtest.New())
 	streamErr := func(line string) error {
 		return logDockerResponse(logger, io.NopCloser(strings.NewReader(line)), false)
 	}

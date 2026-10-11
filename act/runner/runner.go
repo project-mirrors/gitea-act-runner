@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/container"
 	"gitea.com/gitea/runner/act/ghcontext"
 
@@ -80,18 +81,18 @@ type Config struct {
 	PlatformPicker                    func(labels []string) string
 	KubernetesPicker                  func(labels []string) container.KubernetesOptions
 	InstanceTransport                 http.RoundTripper
-	JobLoggerLevel                    *log.Level    // the level of job logger
-	ValidVolumes                      []string      // only volumes (and bind mounts) in this slice can be mounted on the job container or service containers
-	SharedToolCache                   bool          // one tool cache for all jobs instead of one per job
-	InsecureSkipTLS                   bool          // whether to skip verifying TLS certificate of the Gitea instance
-	ClientCertFile, ClientKeyFile     string        // PEM client certificate for the Gitea instance
-	MaxParallel                       int           // max parallel jobs to run across all workflows (0 = no limit, uses CPU count)
-	AllocatePTY                       bool          // allocate a pseudo-TTY for each step's process
-	ServiceReadyTimeout               time.Duration // how long a job waits for its service containers to report healthy (0 uses the default)
-	NoSweep                           bool          // keep the containers, networks and volumes a job creates through its docker proxy
-	RunnerName                        string        // name this runner registered with, reported as `runner.name`, defaults to the hostname
-	JobStartedHook                    string        // script run inside the job environment before the job's first step; ACTIONS_RUNNER_HOOK_JOB_STARTED is read from Env when empty
-	JobCompletedHook                  string        // script run inside the job environment after the job's last step; ACTIONS_RUNNER_HOOK_JOB_COMPLETED is read from Env when empty
+	JobLoggerLevel                    *logging.Level // the level of job logger
+	ValidVolumes                      []string       // only volumes (and bind mounts) in this slice can be mounted on the job container or service containers
+	SharedToolCache                   bool           // one tool cache for all jobs instead of one per job
+	InsecureSkipTLS                   bool           // whether to skip verifying TLS certificate of the Gitea instance
+	ClientCertFile, ClientKeyFile     string         // PEM client certificate for the Gitea instance
+	MaxParallel                       int            // max parallel jobs to run across all workflows (0 = no limit, uses CPU count)
+	AllocatePTY                       bool           // allocate a pseudo-TTY for each step's process
+	ServiceReadyTimeout               time.Duration  // how long a job waits for its service containers to report healthy (0 uses the default)
+	NoSweep                           bool           // keep the containers, networks and volumes a job creates through its docker proxy
+	RunnerName                        string         // name this runner registered with, reported as `runner.name`, defaults to the hostname
+	JobStartedHook                    string         // script run inside the job environment before the job's first step; ACTIONS_RUNNER_HOOK_JOB_STARTED is read from Env when empty
+	JobCompletedHook                  string         // script run inside the job environment after the job's last step; ACTIONS_RUNNER_HOOK_JOB_COMPLETED is read from Env when empty
 }
 
 // RunnerDebug reports whether debug logging is on, exposed as `runner.debug` and

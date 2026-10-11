@@ -25,14 +25,14 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
 	"gitea.com/gitea/runner/act/container"
 
 	"gitea.dev/actionslib/pkg/exprparser"
 	"gitea.dev/actionslib/pkg/model"
 	"github.com/docker/cli/cli/compose/loader"
 	"github.com/moby/moby/api/types/volume"
-	log "github.com/sirupsen/logrus"
-	logrustest "github.com/sirupsen/logrus/hooks/test"
 	assert "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	require "github.com/stretchr/testify/require"
@@ -899,7 +899,7 @@ func TestInterpolateOutputsFromExpression(t *testing.T) {
 }
 
 func TestGetGitHubContext(t *testing.T) {
-	log.SetLevel(log.DebugLevel)
+	logging.SetLevel(logging.LevelDebug)
 
 	cwd, err := os.Getwd()
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
@@ -929,7 +929,7 @@ func TestGetGitHubContext(t *testing.T) {
 
 	ghc := rc.getGithubContext(context.Background())
 
-	log.Debugf("%v", ghc)
+	logging.Debugf("%v", ghc)
 
 	actor := "nektos/act"
 	if a := os.Getenv("ACT_ACTOR"); a != "" {
@@ -1060,7 +1060,7 @@ func createJob(t *testing.T, input, result string) *model.Job {
 }
 
 func TestRunContextRunsOnPlatformNames(t *testing.T) {
-	log.SetLevel(log.DebugLevel)
+	logging.SetLevel(logging.LevelDebug)
 	assertObject := assert.New(t)
 
 	rc := createIfTestRunContext(map[string]*model.Job{
@@ -1107,7 +1107,7 @@ func TestRunContextRunsOnPlatformNames(t *testing.T) {
 }
 
 func TestRunContextIsEnabled(t *testing.T) {
-	log.SetLevel(log.DebugLevel)
+	logging.SetLevel(logging.LevelDebug)
 	assertObject := assert.New(t)
 
 	// success()
@@ -1306,11 +1306,8 @@ func TestCreateContainerNameBoundedForLongMatrixInput(t *testing.T) {
 
 func TestPrintStartJobContainerGroupGolden(t *testing.T) {
 	buf := &bytes.Buffer{}
-	logger := log.New()
-	logger.SetOutput(buf)
-	logger.SetLevel(log.InfoLevel)
-	logger.SetFormatter(&jobLogFormatter{color: cyan})
-	entry := logger.WithFields(log.Fields{"job": "j1"})
+	logger := logging.New(logging.NewLevelHandler(newJobLogHandler(buf, cyan), logging.LevelInfo))
+	entry := logger.With("job", "j1")
 	ctx := common.WithLogger(context.Background(), entry)
 
 	printStartJobContainerGroup(ctx, "node:20", "GITEA-WORKFLOW-build-JOB-test", "gitea-runner-network")()
@@ -1402,7 +1399,8 @@ func TestRunContext_cleanupFailedStart(t *testing.T) {
 				Run:           &model.Run{JobID: "job", Workflow: workflow},
 				platformImage: "node:20",
 			}
-			logger, hook := logrustest.NewNullLogger()
+			hook := logtest.New()
+			logger := logging.New(hook)
 			ctx := common.WithLogger(common.WithDryrun(t.Context(), true), logger)
 			rc.ExprEval = rc.NewExpressionEvaluator(ctx)
 			err = rc.startContainer().Then(rc.stopContainer()).Finally(rc.closeContainer())(ctx)
@@ -1423,7 +1421,7 @@ func TestRunContext_cleanupFailedStart(t *testing.T) {
 			}
 			assert.Equal(t, strings.Fields(want+" job.Remove service.Remove service.Close job.Close"), operations)
 			assert.Empty(t, rc.Masks)
-			assert.Equal(t, testcase.pullError == nil && testcase.health != container.HealthUnhealthy, slices.ContainsFunc(hook.AllEntries(), func(entry *log.Entry) bool {
+			assert.Equal(t, testcase.pullError == nil && testcase.health != container.HealthUnhealthy, slices.ContainsFunc(hook.AllRecords(), func(entry logging.Record) bool {
 				return strings.HasPrefix(entry.Message, "::group::Print service container logs")
 			}))
 		})
@@ -1463,9 +1461,8 @@ func TestWaitForServiceContainers(t *testing.T) {
 				Return(&container.Info{ID: "id", State: "running", Health: container.HealthHealthy}, nil).Once()
 
 			var output bytes.Buffer
-			logger := log.New()
-			logger.SetOutput(&output)
-			require.NoError(t, newRunContext(0, &serviceContainer{name: "postgres", container: service}).waitForServiceContainers()(common.WithLogger(t.Context(), logger.WithFields(nil))))
+			logger := logging.New(logging.NewLevelHandler(newJobLogHandler(&output, cyan), logging.LevelInfo))
+			require.NoError(t, newRunContext(0, &serviceContainer{name: "postgres", container: service}).waitForServiceContainers()(common.WithLogger(t.Context(), logger)))
 			assert.Equal(t, []time.Duration{0, time.Second, 2 * time.Second}, pollTimes)
 			assert.Equal(t, 1, strings.Count(output.String(), "postgres service is starting."))
 			assert.Contains(t, output.String(), "postgres service is healthy.")
@@ -1797,8 +1794,7 @@ func TestRunContextUpdateExtraPath(t *testing.T) {
 		{name: "over 16 MiB", content: []byte(strings.Repeat("x", 16*1024*1024+1)), wantErr: true},
 	} {
 		t.Run(testcase.name, func(t *testing.T) {
-			logger := log.New()
-			logger.SetOutput(io.Discard)
+			logger := logging.New(logging.DiscardHandler)
 			ctx := common.WithLogger(t.Context(), logger)
 			jobContainer := &containerMock{}
 			jobContainer.On("GetContainerArchive", mock.Anything, "/github/path").

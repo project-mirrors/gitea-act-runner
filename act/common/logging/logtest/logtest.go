@@ -17,17 +17,23 @@ type store struct {
 	records []logging.Record
 }
 
-// Handler records everything it receives. Loggers derived with WithAttrs share one store.
+// Handler records what it receives at or above its level. Loggers derived with WithAttrs share one store.
 type Handler struct {
-	store *store
-	attrs []logging.Attr
+	store    *store
+	attrs    []logging.Attr
+	minLevel logging.Level
 }
 
+// New records from LevelInfo up, like the logger of logrus's hooks/test.
 func New() *Handler {
-	return &Handler{store: &store{}}
+	return NewWithLevel(logging.LevelInfo)
 }
 
-func (h *Handler) Enabled(context.Context, logging.Level) bool { return true }
+func NewWithLevel(minLevel logging.Level) *Handler {
+	return &Handler{store: &store{}, minLevel: minLevel}
+}
+
+func (h *Handler) Enabled(_ context.Context, level logging.Level) bool { return level >= h.minLevel }
 
 // Handle stores the record with the attributes accumulated by WithAttrs placed first.
 func (h *Handler) Handle(_ context.Context, r logging.Record) error {
@@ -39,7 +45,7 @@ func (h *Handler) Handle(_ context.Context, r logging.Record) error {
 }
 
 func (h *Handler) WithAttrs(attrs []logging.Attr) logging.Handler {
-	return &Handler{store: h.store, attrs: append(slices.Clone(h.attrs), attrs...)}
+	return &Handler{store: h.store, attrs: append(slices.Clone(h.attrs), attrs...), minLevel: h.minLevel}
 }
 
 func (h *Handler) AllRecords() []logging.Record {

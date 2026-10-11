@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 
 	"dario.cat/mergo"
 	"github.com/bmatcuk/doublestar/v4"
@@ -40,7 +41,6 @@ import (
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/client/pkg/versions"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/sirupsen/logrus"
 )
 
 // drainGracePeriod bounds how long we wait for an output-copy goroutine to
@@ -1046,7 +1046,7 @@ func (cr *containerReference) wait() common.Executor {
 // sanitizeOptionsHostConfig takes back everything a workflow could escape the container with,
 // setting each field to trusted, which is what the runner's own options parse to on their own.
 // Only for unprivileged mode, since privileged mode grants host access anyway.
-func sanitizeOptionsHostConfig(logger logrus.FieldLogger, hostConfig, trusted *container.HostConfig) {
+func sanitizeOptionsHostConfig(logger *logging.Logger, hostConfig, trusted *container.HostConfig) {
 	resetOption(logger, "--pid", &hostConfig.PidMode, trusted.PidMode)
 	resetOption(logger, "--ipc", &hostConfig.IpcMode, trusted.IpcMode)
 	resetOption(logger, "--uts", &hostConfig.UTSMode, trusted.UTSMode)
@@ -1085,7 +1085,7 @@ func sanitizeOptionsHostConfig(logger logrus.FieldLogger, hostConfig, trusted *c
 
 // resetOption puts a field back to the runner's own value. It compares the values rather than
 // the flags, so a field that more than one option feeds cannot slip through.
-func resetOption[T any](logger logrus.FieldLogger, option string, field *T, trusted T) {
+func resetOption[T any](logger *logging.Logger, option string, field *T, trusted T) {
 	if reflect.DeepEqual(*field, trusted) {
 		return
 	}

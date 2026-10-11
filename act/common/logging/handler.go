@@ -78,3 +78,37 @@ func (m multiHandler) WithAttrs(attrs []Attr) Handler {
 	}
 	return out
 }
+
+type discardHandler struct{}
+
+// DiscardHandler drops every record.
+var DiscardHandler Handler = discardHandler{}
+
+func (discardHandler) Enabled(context.Context, Level) bool  { return false }
+func (discardHandler) Handle(context.Context, Record) error { return nil }
+func (d discardHandler) WithAttrs([]Attr) Handler           { return d }
+
+type levelHandler struct {
+	h        Handler
+	minLevel Level
+}
+
+// NewLevelHandler passes only records at or above minLevel on to h.
+func NewLevelHandler(h Handler, minLevel Level) Handler {
+	return levelHandler{h: h, minLevel: minLevel}
+}
+
+func (l levelHandler) Enabled(ctx context.Context, level Level) bool {
+	return level >= l.minLevel && l.h.Enabled(ctx, level)
+}
+
+func (l levelHandler) Handle(ctx context.Context, r Record) error {
+	if r.Level < l.minLevel {
+		return nil
+	}
+	return l.h.Handle(ctx, r)
+}
+
+func (l levelHandler) WithAttrs(attrs []Attr) Handler {
+	return levelHandler{h: l.h.WithAttrs(attrs), minLevel: l.minLevel}
+}

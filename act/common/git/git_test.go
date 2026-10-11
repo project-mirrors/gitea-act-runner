@@ -22,10 +22,10 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
 	"gitea.com/gitea/runner/internal/pkg/lock"
 
-	log "github.com/sirupsen/logrus"
-	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -318,7 +318,7 @@ func TestGitCloneExecutorReclonesWhenOriginURLChanges(t *testing.T) {
 
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err := CloneIfRequired(cancelled, NewGitCloneExecutorInput{URL: oldRemoteDir, Ref: "main", Dir: cacheDir}, log.New())
+	_, err := CloneIfRequired(cancelled, NewGitCloneExecutorInput{URL: oldRemoteDir, Ref: "main", Dir: cacheDir}, logging.New(logtest.New()))
 	require.ErrorIs(t, err, context.Canceled)
 	require.FileExists(t, markerPath)
 
@@ -428,9 +428,9 @@ func TestGitCloneExecutorQuietDemotesCloneLine(t *testing.T) {
 	// Quiet callers report the download themselves, so the clone line must not reach the job log.
 	for name, quiet := range map[string]bool{"quiet": true, "not quiet": false} {
 		t.Run(name, func(t *testing.T) {
-			logger, hook := logrustest.NewNullLogger()
-			logger.SetLevel(log.InfoLevel)
-			ctx := common.WithLogger(context.Background(), logger.WithField("job", "j1"))
+			hook := logtest.New()
+			logger := logging.New(logging.NewLevelHandler(hook, logging.LevelInfo))
+			ctx := common.WithLogger(context.Background(), logger.With("job", "j1"))
 
 			require.NoError(t, NewGitCloneExecutor(NewGitCloneExecutorInput{
 				URL:   remoteDir,
@@ -440,7 +440,7 @@ func TestGitCloneExecutorQuietDemotesCloneLine(t *testing.T) {
 			})(ctx))
 
 			var cloneLines int
-			for _, entry := range hook.AllEntries() {
+			for _, entry := range hook.AllRecords() {
 				if strings.HasPrefix(entry.Message, "git clone ") {
 					cloneLines++
 				}

@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/runner"
 	"gitea.com/gitea/runner/internal/pkg/client"
 	"gitea.com/gitea/runner/internal/pkg/config"
@@ -166,8 +168,32 @@ func (r *Reporter) ResetSteps(l int) {
 	}
 }
 
-func (r *Reporter) Levels() []log.Level {
-	return log.AllLevels
+// Enabled makes the Reporter see every record, the job logger's level filter runs before it.
+func (r *Reporter) Enabled(context.Context, logging.Level) bool { return true }
+
+func (r *Reporter) Handle(_ context.Context, rec logging.Record) error {
+	return r.handle(rec)
+}
+
+// WithAttrs returns a Handler feeding the same Reporter, with attrs added to every record.
+func (r *Reporter) WithAttrs(attrs []logging.Attr) logging.Handler {
+	return &reporterHandler{r: r, attrs: attrs}
+}
+
+type reporterHandler struct {
+	r     *Reporter
+	attrs []logging.Attr
+}
+
+func (h *reporterHandler) Enabled(context.Context, logging.Level) bool { return true }
+
+func (h *reporterHandler) Handle(_ context.Context, rec logging.Record) error {
+	rec.Attrs = slices.Concat(h.attrs, rec.Attrs)
+	return h.r.handle(rec)
+}
+
+func (h *reporterHandler) WithAttrs(attrs []logging.Attr) logging.Handler {
+	return &reporterHandler{r: h.r, attrs: slices.Concat(h.attrs, attrs)}
 }
 
 // appendLogRow masks a row before buffering it for Gitea and the local job.log, the one point
@@ -181,11 +207,19 @@ func (r *Reporter) appendLogRow(row *runnerv1.LogRow) {
 	r.jobLog.write(row.Time.AsTime(), row.Content)
 }
 
+func attrArgs(attrs []logging.Attr) []any {
+	args := make([]any, len(attrs))
+	for i, a := range attrs {
+		args[i] = a
+	}
+	return args
+}
+
 // isJobStepEntry is used to not report composite step results incorrectly as step result
 // returns true if the logentry is on job level
 // returns false for composite action step messages
-func isJobStepEntry(entry *log.Entry) bool {
-	if v, ok := entry.Data["stepID"]; ok {
+func isJobStepEntry(rec logging.Record) bool {
+	if v, ok := rec.Attr("stepID"); ok {
 		if v, ok := v.([]string); ok && len(v) > 1 {
 			return false
 		}
@@ -219,15 +253,15 @@ func (r *Reporter) unlockAndNotify(urgentState bool) {
 	}
 }
 
-func (r *Reporter) Fire(entry *log.Entry) error {
+func (r *Reporter) handle(entry logging.Record) error {
 	urgentState := false
 
 	r.stateMu.Lock()
 
 	r.stateChanged = true
 
-	if log.IsLevelEnabled(log.TraceLevel) {
-		log.WithFields(entry.Data).Trace(r.mask(entry.Message)) // the process masker has no ::add-mask:: value
+	if logging.Enabled(logging.LevelTrace) {
+		logging.With(attrArgs(entry.Attrs)...).Trace(r.mask(entry.Message)) // the process masker has no ::add-mask:: value
 	}
 
 	timestamp := entry.Time
@@ -235,10 +269,10 @@ func (r *Reporter) Fire(entry *log.Entry) error {
 		r.state.StartedAt = timestamppb.New(timestamp)
 	}
 
-	stage := entry.Data["stage"]
+	stage, _ := entry.Attr("stage")
 
 	if stage != "Main" {
-		if v, ok := entry.Data["jobResult"]; ok {
+		if v, ok := entry.Attr("jobResult"); ok {
 			if jobResult, ok := r.parseResult(v); ok {
 				// We need to ensure log upload before this upload
 				r.state.Result = jobResult
@@ -262,7 +296,7 @@ func (r *Reporter) Fire(entry *log.Entry) error {
 	}
 
 	var step *runnerv1.StepState
-	if v, ok := entry.Data["stepNumber"]; ok {
+	if v, ok := entry.Attr("stepNumber"); ok {
 		if v, ok := v.(int); ok && len(r.state.Steps) > v {
 			step = r.state.Steps[v]
 		}
@@ -284,11 +318,12 @@ func (r *Reporter) Fire(entry *log.Entry) error {
 	}
 
 	// Force reporting log errors as raw output to prevent silent failures
-	if entry.Level == log.ErrorLevel {
-		entry.Data["raw_output"] = true
+	v, ok := entry.Attr("raw_output")
+	if entry.Level >= logging.LevelError {
+		v, ok = true, true
 	}
 
-	if v, ok := entry.Data["raw_output"]; ok {
+	if ok {
 		if rawOutput, ok := v.(bool); ok && rawOutput {
 			if row := r.parseLogRow(entry); row != nil {
 				if step.LogLength == 0 {
@@ -301,7 +336,7 @@ func (r *Reporter) Fire(entry *log.Entry) error {
 	} else if r.shouldAppendLogRow(entry) {
 		r.appendLogRow(r.parseLogRow(entry))
 	}
-	if v, ok := entry.Data["stepResult"]; ok && isJobStepEntry(entry) {
+	if v, ok := entry.Attr("stepResult"); ok && isJobStepEntry(entry) {
 		if stepResult, ok := r.parseResult(v); ok {
 			if step.LogLength == 0 {
 				step.LogIndex = int64(r.logOffset + len(r.logRows))
@@ -753,8 +788,8 @@ func (r *Reporter) duringSteps() bool {
 // shouldAppendLogRow reports whether a non-raw_output entry should be written
 // to the job log: only when we are between steps and the entry's level is
 // within the globally configured log level.
-func (r *Reporter) shouldAppendLogRow(entry *log.Entry) bool {
-	return !r.duringSteps() && entry.Level <= log.GetLevel()
+func (r *Reporter) shouldAppendLogRow(entry logging.Record) bool {
+	return !r.duringSteps() && entry.Level >= logging.GetLevel()
 }
 
 var stringToResult = map[string]runnerv1.Result{
@@ -879,7 +914,7 @@ func cutPrefixFold(s, prefix string) (string, bool) {
 	return s[len(prefix):], true
 }
 
-func (r *Reporter) parseLogRow(entry *log.Entry) *runnerv1.LogRow {
+func (r *Reporter) parseLogRow(entry logging.Record) *runnerv1.LogRow {
 	content := strings.TrimRight(entry.Message, "\r\n")
 
 	// cmdRegex only covers the ::cmd:: form, so the ##[add-mask] one would otherwise reach

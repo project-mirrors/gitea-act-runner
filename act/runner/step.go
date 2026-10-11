@@ -97,14 +97,14 @@ func runStepExecutor(step step, stage stepStage, executor common.Executor) commo
 		if err != nil {
 			stepResult.Conclusion = model.StepStatusFailure
 			stepResult.Outcome = model.StepStatusFailure
-			logger.WithField("stepResult", stepResult.Conclusion).Infof("Failure - %s %s", stage, stepModel)
+			logger.With("stepResult", stepResult.Conclusion).Infof("Failure - %s %s", stage, stepModel)
 			return err
 		}
 
 		if !runStep {
 			stepResult.Conclusion = model.StepStatusSkipped
 			stepResult.Outcome = model.StepStatusSkipped
-			logger.WithField("stepResult", stepResult.Conclusion).Debugf("Skipping step '%s' due to '%s'", stepModel, ifExpression)
+			logger.With("stepResult", stepResult.Conclusion).Debugf("Skipping step '%s' due to '%s'", stepModel, ifExpression)
 			return nil
 		}
 
@@ -207,14 +207,14 @@ func runStepExecutor(step step, stage stepStage, executor common.Executor) commo
 		_ = rc.JobContainer.Copy(actPath, files...)(fileCommandCtx)
 
 		if err == nil {
-			logger.WithField("stepResult", stepResult.Conclusion).Infof("Success - %s %s", stage, stepString)
+			logger.With("stepResult", stepResult.Conclusion).Infof("Success - %s %s", stage, stepString)
 		} else {
 			stepResult.Outcome = model.StepStatusFailure
 
 			continueOnError, parseErr := isContinueOnError(ctx, stepModel.RawContinueOnError, step, stage)
 			if parseErr != nil {
 				stepResult.Conclusion = model.StepStatusFailure
-				logger.WithField("stepResult", stepResult.Conclusion).Infof("Failure - %s %s", stage, stepString)
+				logger.With("stepResult", stepResult.Conclusion).Infof("Failure - %s %s", stage, stepString)
 				return parseErr
 			}
 
@@ -229,7 +229,7 @@ func runStepExecutor(step step, stage stepStage, executor common.Executor) commo
 
 			// Infof: Errorf entries are promoted to the user log by the reporter,
 			// which would duplicate the ##[error] annotation emitted elsewhere.
-			logger.WithField("stepResult", stepResult.Conclusion).Infof("Failure - %s %s", stage, stepString)
+			logger.With("stepResult", stepResult.Conclusion).Infof("Failure - %s %s", stage, stepString)
 		}
 		return err
 	}

@@ -117,7 +117,7 @@ func (rc *RunContext) refuseUnsecureCommand(ctx context.Context, command string)
 	}
 
 	// The step executor logs the failure itself, so keep this line's wording distinct.
-	common.Logger(ctx).WithField(rawOutputField, true).Errorf("##[error]%s", EscapeCommandData(fmt.Sprintf(
+	common.Logger(ctx).With(rawOutputField, true).Errorf("##[error]%s", EscapeCommandData(fmt.Sprintf(
 		"The `%s` command is disabled: it can set the environment of every later step from untrusted output. "+
 			"Write to $GITHUB_ENV or $GITHUB_PATH instead, or set ACTIONS_ALLOW_UNSECURE_COMMANDS to allow it",
 		command)))
@@ -159,7 +159,7 @@ func (rc *RunContext) setEnv(ctx context.Context, kvPairs map[string]string, arg
 		if fromCommand {
 			message = "Can't update NODE_OPTIONS environment variable using ::set-env:: command."
 		}
-		common.Logger(ctx).WithField(rawOutputField, true).Errorf("##[error]%s", EscapeCommandData(message))
+		common.Logger(ctx).With(rawOutputField, true).Errorf("##[error]%s", EscapeCommandData(message))
 		return
 	}
 	common.Logger(ctx).Infof("::set-env:: %s=%s", name, arg)

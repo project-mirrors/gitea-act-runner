@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/client/mocks"
 	"gitea.com/gitea/runner/internal/pkg/config"
 
 	connect_go "connectrpc.com/connect"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
-	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -52,10 +52,10 @@ func TestJobLog_MirrorsUploadedRows(t *testing.T) {
 	reporter.ResetSteps(1)
 
 	fire := func(message string) {
-		require.NoError(t, reporter.Fire(&log.Entry{
+		require.NoError(t, fire(reporter, logEntry{
 			Message: message,
-			Level:   log.InfoLevel,
-			Data:    log.Fields{"stage": "Main", "stepNumber": 0, "raw_output": true},
+			Level:   logging.LevelInfo,
+			Data:    map[string]any{"stage": "Main", "stepNumber": 0, "raw_output": true},
 		}))
 	}
 	fire("the token is s3cret-value")

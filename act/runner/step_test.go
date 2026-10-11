@@ -14,13 +14,13 @@ import (
 	"testing/synctest"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
 	"gitea.com/gitea/runner/act/container"
 	"gitea.com/gitea/runner/internal/pkg/telemetry"
 
 	"gitea.dev/actionslib/pkg/model"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
-	log "github.com/sirupsen/logrus"
-	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -299,7 +299,7 @@ func TestIsStepEnabled(t *testing.T) {
 		}
 	}
 
-	log.SetLevel(log.DebugLevel)
+	logging.SetLevel(logging.LevelDebug)
 	assertObject := assert.New(t)
 
 	// success()
@@ -383,7 +383,7 @@ func TestIsContinueOnError(t *testing.T) {
 		}
 	}
 
-	log.SetLevel(log.DebugLevel)
+	logging.SetLevel(logging.LevelDebug)
 	assertObject := assert.New(t)
 
 	// absent
@@ -513,18 +513,20 @@ func TestRunStepExecutorParity(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			step := newStep(t, test.step)
-			logger, hook := logrustest.NewNullLogger()
+			hook := logtest.New()
+			logger := logging.New(hook)
 			err := runStepExecutor(step, stepStageMain, test.executor)(common.WithLogger(context.Background(), logger))
 
 			require.ErrorContains(t, err, test.wantError)
 			assert.Equal(t, model.StepStatusFailure, step.RunContext.StepResults[test.step.ID].Conclusion)
-			assert.Equal(t, model.StepStatusFailure, hook.LastEntry().Data["stepResult"])
+			assert.Equal(t, model.StepStatusFailure, lastRecordAttr(hook, "stepResult"))
 		})
 	}
 
 	t.Run("file command error honors continue-on-error", func(t *testing.T) {
 		step := newStep(t, &model.Step{ID: "commands", RawContinueOnError: "true"})
-		logger, hook := logrustest.NewNullLogger()
+		hook := logtest.New()
+		logger := logging.New(hook)
 		err := runStepExecutor(step, stepStageMain, func(context.Context) error {
 			require.NoError(t, os.WriteFile(step.env["GITHUB_ENV"], []byte("GOOD=1\nmalformed\n"), 0o600))
 			require.NoError(t, os.WriteFile(step.env["GITHUB_OUTPUT"], []byte("kept=value\n"), 0o600))
@@ -536,7 +538,7 @@ func TestRunStepExecutorParity(t *testing.T) {
 		result := step.RunContext.StepResults[step.Step.ID]
 		assert.Equal(t, model.StepStatusFailure, result.Outcome)
 		assert.Equal(t, model.StepStatusSuccess, result.Conclusion)
-		assert.Equal(t, model.StepStatusSuccess, hook.LastEntry().Data["stepResult"])
+		assert.Equal(t, model.StepStatusSuccess, lastRecordAttr(hook, "stepResult"))
 		assert.Equal(t, "1", step.RunContext.Env["GOOD"])
 		assert.Equal(t, "value", result.Outputs["kept"])
 		assert.Equal(t, "value", step.RunContext.IntraActionState[step.Step.ID]["saved"])
@@ -629,4 +631,9 @@ func TestRunStepExecutorParity(t *testing.T) {
 			assert.Equal(t, wantDeadline, hasDeadline, timeout)
 		}
 	})
+}
+
+func lastRecordAttr(h *logtest.Handler, key string) any {
+	v, _ := h.LastRecord().Attr(key)
+	return v
 }

@@ -8,7 +8,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/sirupsen/logrus"
+	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
 )
 
 func TestDryrunContext(t *testing.T) {
@@ -40,34 +41,38 @@ func TestJobErrorContainer(t *testing.T) {
 	}
 }
 
-func TestLoggerAndHookContext(t *testing.T) {
+func TestLoggerAndHandlerContext(t *testing.T) {
 	ctx := context.Background()
-	if Logger(ctx) != logrus.StandardLogger() {
-		t.Fatal("plain context should use standard logger")
+	if Logger(ctx) != logging.Default() {
+		t.Fatal("plain context should use the default logger")
 	}
-	if LoggerHook(ctx) != nil {
-		t.Fatal("plain context should not have a logger hook")
+	if LoggerHandler(ctx) != nil {
+		t.Fatal("plain context should not have a logger handler")
 	}
 
-	logger := logrus.New()
+	logger := logging.New(logtest.New())
 	ctx = WithLogger(ctx, logger)
 	if Logger(ctx) != logger {
 		t.Fatal("WithLogger should set logger")
 	}
 
-	hook := testHook{}
-	ctx = WithLoggerHook(ctx, hook)
-	if LoggerHook(ctx) != hook {
-		t.Fatal("WithLoggerHook should set hook")
+	handler := logtest.New()
+	ctx = WithLoggerHandler(ctx, handler)
+	if LoggerHandler(ctx) != handler {
+		t.Fatal("WithLoggerHandler should set handler")
 	}
 }
 
-type testHook struct{}
+func TestStepIDsContext(t *testing.T) {
+	ctx := context.Background()
+	if got := StepIDs(ctx); len(got) != 0 {
+		t.Fatalf("plain context step IDs = %v, want none", got)
+	}
 
-func (testHook) Levels() []logrus.Level {
-	return logrus.AllLevels
-}
-
-func (testHook) Fire(*logrus.Entry) error {
-	return nil
+	ids := []string{"a"}
+	ctx = WithStepIDs(ctx, ids)
+	ids[0] = "changed"
+	if got := StepIDs(ctx); len(got) != 1 || got[0] != "a" {
+		t.Fatalf("StepIDs = %v, want [a]", got)
+	}
 }

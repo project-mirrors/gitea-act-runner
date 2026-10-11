@@ -43,7 +43,7 @@ func (sal *stepActionLocal) main() common.Executor {
 		}
 
 		printRunActionHeader(ctx, sal.Step, sal.env, sal.getRunContext())
-		rawLogger := common.Logger(ctx).WithField(rawOutputField, true)
+		rawLogger := common.Logger(ctx).With(rawOutputField, true)
 		defer rawLogger.Infof("::endgroup::")
 
 		actionDir := filepath.Join(sal.getRunContext().Config.Workdir, sal.Step.Uses)

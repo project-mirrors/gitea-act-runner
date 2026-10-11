@@ -14,12 +14,12 @@ import (
 	"strings"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/container"
 	"gitea.com/gitea/runner/act/lookpath"
 
 	"gitea.dev/actionslib/pkg/model"
 	"github.com/kballard/go-shellquote"
-	"github.com/sirupsen/logrus"
 	yaml "go.yaml.in/yaml/v4"
 )
 
@@ -58,8 +58,8 @@ func (sr *stepRun) main() common.Executor {
 // printRunScriptActionDetails mirrors actions/runner ScriptHandler.PrintActionDetails
 // for script steps.
 func (sr *stepRun) printRunScriptActionDetails(ctx context.Context) {
-	rawLogger := common.Logger(ctx).WithField(rawOutputField, true)
-	scriptLineLogger := rawLogger.WithField(scriptLineCyanField, true)
+	rawLogger := common.Logger(ctx).With(rawOutputField, true)
+	scriptLineLogger := rawLogger.With(scriptLineCyanField, true)
 
 	normalized := strings.TrimRight(strings.ReplaceAll(sr.interpolatedScript, "\r\n", "\n"), "\n")
 
@@ -84,7 +84,7 @@ func printRunActionHeader(ctx context.Context, step *model.Step, env map[string]
 	if step == nil {
 		return
 	}
-	rawLogger := common.Logger(ctx).WithField(rawOutputField, true)
+	rawLogger := common.Logger(ctx).With(rawOutputField, true)
 
 	title := step.Uses
 	if step.Name != "" {
@@ -105,7 +105,7 @@ func printRunActionHeader(ctx context.Context, step *model.Step, env map[string]
 // printStepEnvBlock emits the declared-env block (YAML order, internal vars filtered)
 // shared by the run: and uses: "Run" headers.
 func printStepEnvBlock(ctx context.Context, step *model.Step, env map[string]string, rc *RunContext) {
-	rawLogger := common.Logger(ctx).WithField(rawOutputField, true)
+	rawLogger := common.Logger(ctx).With(rawOutputField, true)
 	caseInsensitive := rc != nil && rc.JobContainer != nil && rc.JobContainer.IsEnvironmentCaseInsensitive()
 	var visible []string
 	for _, k := range stepDeclaredEnvKeysInOrder(step) {
@@ -135,7 +135,7 @@ func printStepEnvBlock(ctx context.Context, step *model.Step, env map[string]str
 
 // logKeyedValue prints one row per line of value: Gitea stores one log row per line, so an
 // embedded newline would reach the user as a literal "\n".
-func logKeyedValue(rawLogger *logrus.Entry, key, value string) {
+func logKeyedValue(rawLogger *logging.Logger, key, value string) {
 	lines := strings.Split(strings.ReplaceAll(value, "\r\n", "\n"), "\n")
 	rawLogger.Infof("  %s: %s", key, lines[0])
 	for _, line := range lines[1:] {

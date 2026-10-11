@@ -51,7 +51,7 @@ func (g levelGate) WithAttrs(a []logging.Attr) logging.Handler {
 }
 
 func TestLogger(t *testing.T) {
-	h := logtest.New()
+	h := logtest.NewWithLevel(logging.LevelTrace)
 	l := logging.New(h)
 
 	l.With("job", "j1").WithError(errors.New("boom")).Warnf("step %d", 2)
@@ -157,4 +157,17 @@ func TestDefaultLevel(t *testing.T) {
 	assert.Equal(t, logging.LevelWarn, logging.GetLevel())
 	assert.True(t, logging.Enabled(logging.LevelError))
 	assert.False(t, logging.Enabled(logging.LevelInfo))
+}
+
+func TestDiscardAndLevelHandler(t *testing.T) {
+	assert.False(t, logging.DiscardHandler.Enabled(t.Context(), logging.LevelError))
+	assert.Equal(t, logging.DiscardHandler, logging.DiscardHandler.WithAttrs([]logging.Attr{{Key: "a"}}))
+
+	inner := logtest.NewWithLevel(logging.LevelTrace)
+	l := logging.New(logging.NewLevelHandler(inner, logging.LevelWarn)).With("a", 1)
+	l.Info("dropped")
+	l.Warn("kept")
+	require.Len(t, inner.AllRecords(), 1)
+	v, _ := inner.LastRecord().Attr("a")
+	assert.Equal(t, 1, v)
 }

@@ -23,9 +23,8 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/lock"
-
-	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -189,7 +188,7 @@ type NewGitCloneExecutorInput struct {
 }
 
 // CloneIfRequired reports whether an existing local clone was reused.
-func CloneIfRequired(ctx context.Context, input NewGitCloneExecutorInput, logger log.FieldLogger) (bool, error) {
+func CloneIfRequired(ctx context.Context, input NewGitCloneExecutorInput, logger *logging.Logger) (bool, error) {
 	var origin string
 	_, err := os.Stat(filepath.Join(input.Dir, ".git")) // without it git would discover a repository around Dir
 	if err == nil {
