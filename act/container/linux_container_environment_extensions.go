@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"strings"
 
-	log "github.com/sirupsen/logrus"
+	"gitea.com/gitea/runner/act/common/logging"
 )
 
 type LinuxContainerEnvironmentExtensions struct{}
@@ -21,13 +21,13 @@ type LinuxContainerEnvironmentExtensions struct{}
 // For use in docker volumes and binds
 func (*LinuxContainerEnvironmentExtensions) ToContainerPath(path string) string {
 	if runtime.GOOS == "windows" && strings.Contains(path, "/") {
-		log.Error("You cannot specify linux style local paths (/mnt/etc) on Windows as it does not understand them.")
+		logging.Error("You cannot specify linux style local paths (/mnt/etc) on Windows as it does not understand them.")
 		return ""
 	}
 
 	abspath, err := filepath.Abs(path)
 	if err != nil {
-		log.Error(err)
+		logging.Error(err)
 		return ""
 	}
 

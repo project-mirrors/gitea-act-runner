@@ -22,7 +22,6 @@ import (
 
 	"gitea.dev/actionslib/pkg/model"
 	docker_container "github.com/moby/moby/api/types/container"
-	log "github.com/sirupsen/logrus"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -150,7 +149,7 @@ func (runner *runnerImpl) configure() (*runnerImpl, error) {
 	if runner.config.EventJSON != "" {
 		runner.eventJSON = runner.config.EventJSON
 	} else if runner.config.EventPath != "" {
-		log.Debugf("Reading event.json from %s", runner.config.EventPath)
+		logging.Debugf("Reading event.json from %s", runner.config.EventPath)
 		eventJSONBytes, err := os.ReadFile(runner.config.EventPath)
 		if err != nil {
 			return nil, err
@@ -164,7 +163,7 @@ func maxParallelFor(strategy *model.Strategy, combinations int) int {
 	maxParallel := 4 // actionslib has no default for an undeclared max-parallel
 	if strategy != nil {
 		if limit, err := strategy.MaxParallel(); err != nil {
-			log.Errorf("Ignoring invalid max-parallel: %v", err)
+			logging.Errorf("Ignoring invalid max-parallel: %v", err)
 		} else if limit > 0 {
 			maxParallel = limit
 		}
@@ -186,36 +185,36 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 	maxJobNameLen := 0
 
 	stagePipeline := make([]common.Executor, 0)
-	log.Debugf("Plan Stages: %v", plan.Stages)
+	logging.Debugf("Plan Stages: %v", plan.Stages)
 
 	for i := range plan.Stages {
 		stage := plan.Stages[i]
 		stagePipeline = append(stagePipeline, func(ctx context.Context) error {
 			pipeline := make([]common.Executor, 0)
 			for _, run := range stage.Runs {
-				log.Debugf("Stages Runs: %v", stage.Runs)
+				logging.Debugf("Stages Runs: %v", stage.Runs)
 				stageExecutor := make([]common.Executor, 0)
 				job := run.Job()
-				log.Debugf("Job.Name: %v", job.Name)
-				log.Debugf("Job.RawNeeds: %v", job.RawNeeds)
-				log.Debugf("Job.RawRunsOn: %v", job.RawRunsOn)
-				log.Debugf("Job.Env: %v", job.Env)
-				log.Debugf("Job.If: %v", job.If)
+				logging.Debugf("Job.Name: %v", job.Name)
+				logging.Debugf("Job.RawNeeds: %v", job.RawNeeds)
+				logging.Debugf("Job.RawRunsOn: %v", job.RawRunsOn)
+				logging.Debugf("Job.Env: %v", job.Env)
+				logging.Debugf("Job.If: %v", job.If)
 				for step := range job.Steps {
 					if nil != job.Steps[step] {
-						log.Debugf("Job.Steps: %v", job.Steps[step].String())
+						logging.Debugf("Job.Steps: %v", job.Steps[step].String())
 					}
 				}
-				log.Debugf("Job.TimeoutMinutes: %v", job.TimeoutMinutes)
-				log.Debugf("Job.Services: %v", job.Services)
-				log.Debugf("Job.Strategy: %v", job.Strategy)
-				log.Debugf("Job.RawContainer: %v", job.RawContainer)
-				log.Debugf("Job.Defaults.Run.Shell: %v", job.Defaults.Run.Shell)
-				log.Debugf("Job.Defaults.Run.WorkingDirectory: %v", job.Defaults.Run.WorkingDirectory)
-				log.Debugf("Job.Outputs: %v", job.Outputs)
-				log.Debugf("Job.Uses: %v", job.Uses)
-				log.Debugf("Job.With: %v", job.With)
-				log.Debugf("Job.Result: %v", job.Result)
+				logging.Debugf("Job.TimeoutMinutes: %v", job.TimeoutMinutes)
+				logging.Debugf("Job.Services: %v", job.Services)
+				logging.Debugf("Job.Strategy: %v", job.Strategy)
+				logging.Debugf("Job.RawContainer: %v", job.RawContainer)
+				logging.Debugf("Job.Defaults.Run.Shell: %v", job.Defaults.Run.Shell)
+				logging.Debugf("Job.Defaults.Run.WorkingDirectory: %v", job.Defaults.Run.WorkingDirectory)
+				logging.Debugf("Job.Outputs: %v", job.Outputs)
+				logging.Debugf("Job.Uses: %v", job.Uses)
+				logging.Debugf("Job.With: %v", job.With)
+				logging.Debugf("Job.Result: %v", job.Result)
 
 				if job.Strategy != nil || job.RawStrategy.Kind == yaml.ScalarNode {
 					strategyRc, err := runner.newRunContext(ctx, run, nil)
@@ -227,13 +226,13 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 							return err
 						}
 					} else {
-						log.Debugf("Job.Strategy.FailFast: %v", job.Strategy.GetFailFast())
-						log.Debugf("Job.Strategy.FailFastString: %v", job.Strategy.FailFastString)
-						log.Debugf("Job.Strategy.MaxParallelString: %v", job.Strategy.MaxParallelString)
-						log.Debugf("Job.Strategy.RawMatrix: %v", job.Strategy.RawMatrix)
+						logging.Debugf("Job.Strategy.FailFast: %v", job.Strategy.GetFailFast())
+						logging.Debugf("Job.Strategy.FailFastString: %v", job.Strategy.FailFastString)
+						logging.Debugf("Job.Strategy.MaxParallelString: %v", job.Strategy.MaxParallelString)
+						logging.Debugf("Job.Strategy.RawMatrix: %v", job.Strategy.RawMatrix)
 						// An unevaluated expression is left in place, which GetMatrixes below rejects.
 						if err := strategyRc.NewExpressionEvaluator(ctx).EvaluateYamlNode(ctx, &job.Strategy.RawMatrix); err != nil {
-							log.Errorf("Error while evaluating matrix: %v", err)
+							logging.Errorf("Error while evaluating matrix: %v", err)
 						}
 						for _, value := range []*string{&job.Strategy.FailFastString, &job.Strategy.MaxParallelString} {
 							if evaluated, err := strategyRc.ExprEval.Interpolate(ctx, *value); err == nil {
@@ -247,11 +246,11 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 				if err != nil {
 					return fmt.Errorf("could not get job matrix: %w", err)
 				}
-				log.Debugf("Job Matrices: %v", matrixes)
+				logging.Debugf("Job Matrices: %v", matrixes)
 
 				maxParallel := maxParallelFor(job.Strategy, len(matrixes))
 
-				log.Infof("Running job with maxParallel=%d for %d matrix combinations", maxParallel, len(matrixes))
+				logging.Infof("Running job with maxParallel=%d for %d matrix combinations", maxParallel, len(matrixes))
 
 				for i, matrix := range matrixes {
 					index, total := i, len(matrixes)
@@ -310,7 +309,7 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 			if len(pipeline) == 1 {
 				// Single run/job: execute directly without additional parallelization wrapper
 				// This ensures max-parallel is the only limiting factor
-				log.Debugf("Single pipeline element, executing directly")
+				logging.Debugf("Single pipeline element, executing directly")
 				return pipeline[0](ctx)
 			}
 
@@ -320,9 +319,9 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 			// If MaxParallel is set in config, use it
 			if runner.config.MaxParallel > 0 {
 				parallelism = runner.config.MaxParallel
-				log.Debugf("Using configured max-parallel: %d", parallelism)
+				logging.Debugf("Using configured max-parallel: %d", parallelism)
 			} else {
-				log.Debugf("Using CPU count for parallelism: %d", parallelism)
+				logging.Debugf("Using CPU count for parallelism: %d", parallelism)
 			}
 
 			// Don't exceed the number of pipeline elements
@@ -330,7 +329,7 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 				parallelism = len(pipeline)
 			}
 
-			log.Infof("Executing %d pipeline elements with parallelism %d", len(pipeline), parallelism)
+			logging.Infof("Executing %d pipeline elements with parallelism %d", len(pipeline), parallelism)
 			return common.NewParallelExecutor(parallelism, pipeline...)(ctx)
 		})
 	}

@@ -171,3 +171,14 @@ func TestDiscardAndLevelHandler(t *testing.T) {
 	v, _ := inner.LastRecord().Attr("a")
 	assert.Equal(t, 1, v)
 }
+
+func TestSetOutput(t *testing.T) {
+	prev := logging.Output()
+	t.Cleanup(func() { logging.SetOutput(prev) })
+
+	var buf strings.Builder
+	logging.SetOutput(&buf)
+	assert.Equal(t, &buf, logging.Output())
+	logging.Errorf("to the buffer")
+	assert.Contains(t, buf.String(), "to the buffer")
+}
