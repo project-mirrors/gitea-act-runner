@@ -106,9 +106,6 @@ func WithJobLogger(ctx context.Context, jobID, jobName string, config *Config, m
 	var handlers []logging.Handler
 	if h := common.LoggerHandler(ctx); h != nil { // Adapt to Gitea
 		handlers = append(handlers, h)
-		if out, ok := output.(*jobLogHandler); ok {
-			out.rawStepErrors = true
-		}
 	}
 	handlers = append(handlers, &maskedHandler{
 		Handler: output,
@@ -360,11 +357,10 @@ func (m *maskedHandler) WithAttrs(attrs []logging.Attr) logging.Handler {
 
 // jobLogHandler writes a job's log to w, one record per line in the shape format gives it.
 type jobLogHandler struct {
-	w             io.Writer
-	mu            *sync.Mutex // shared by every handler derived with WithAttrs, as they share w
-	attrs         []logging.Attr
-	format        func(logging.Record) ([]byte, error)
-	rawStepErrors bool // the reporter forces a step's errors to raw output, so show them that way
+	w      io.Writer
+	mu     *sync.Mutex // shared by every handler derived with WithAttrs, as they share w
+	attrs  []logging.Attr
+	format func(logging.Record) ([]byte, error)
 }
 
 // newJobLogHandler writes readable text.
@@ -382,13 +378,6 @@ func (h *jobLogHandler) WithAttrs(attrs []logging.Attr) logging.Handler {
 
 func (h *jobLogHandler) Handle(_ context.Context, r logging.Record) error {
 	r.Attrs = slices.Concat(h.attrs, r.Attrs)
-	if h.rawStepErrors && r.Level >= logging.LevelError {
-		if stage, _ := r.Attr("stage"); stage == "Main" {
-			if _, ok := r.Attr("stepNumber"); ok {
-				r.Attrs = append(r.Attrs, logging.Attr{Key: rawOutputField, Value: true})
-			}
-		}
-	}
 	line, err := h.format(r)
 	if err != nil {
 		return err
