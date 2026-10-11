@@ -262,9 +262,7 @@ func TestNewJobExecutorDownloadsAllActionsBeforeTheFirstStep(t *testing.T) {
 		defer sm.AssertExpectations(t)
 	}
 
-	hook := logtest.New()
-
-	logger := logging.New(hook)
+	logger, hook := logtest.NewLogger()
 	err := newJobExecutor(jim, sfm, rc)(common.WithLogger(ctx, logger.With("job", "test")))
 	require.NoError(t, err)
 
@@ -969,8 +967,7 @@ func TestReadSingleFileFromContainerArchiveFindsMatchingRegularFile(t *testing.T
 }
 
 func TestReadSingleFileFromContainerArchiveTruncatesWhenTooLarge(t *testing.T) {
-	hook := logtest.New()
-	logger := logging.New(hook)
+	logger, hook := logtest.NewLogger()
 	ctx := common.WithLogger(context.Background(), logger)
 	cm := &containerMock{}
 	content := strings.Repeat("a", 300)
@@ -995,8 +992,7 @@ func TestReadSingleFileFromContainerArchiveTruncatesWhenTooLarge(t *testing.T) {
 }
 
 func TestReadSingleFileFromContainerArchiveKeepsExactLimitWithoutWarning(t *testing.T) {
-	hook := logtest.New()
-	logger := logging.New(hook)
+	logger, hook := logtest.NewLogger()
 	ctx := common.WithLogger(context.Background(), logger)
 	cm := &containerMock{}
 	cm.On("GetContainerArchive", ctx, "/var/run/act/workflow/SUMMARY.md").Return(

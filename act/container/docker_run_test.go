@@ -354,8 +354,7 @@ func TestRemoveIgnoresAutoRemoveRace(t *testing.T) {
 		{name: "real failure", err: removeFailure, wantErr: removeFailure},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			hook := logtest.New()
-			logger := logging.New(hook)
+			logger, hook := logtest.NewLogger()
 			ctx := common.WithLogger(context.Background(), logger)
 			client := &mockDockerClient{}
 			client.On("ContainerKill", ctx, "abc", killOpts).Return(mobyclient.ContainerKillResult{}, nil)
@@ -616,8 +615,7 @@ func TestCheckVolumes(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
-			hook := logtest.New()
-			logger := logging.New(hook)
+			logger, hook := logtest.NewLogger()
 			ctx := common.WithLogger(context.Background(), logger)
 			cr := &containerReference{
 				input: &NewContainerInput{
@@ -716,8 +714,7 @@ func TestSanitizeOptionsHostConfig(t *testing.T) {
 // mergeOptions merges both option sources into a bare container, returning the result and its log.
 func mergeOptions(t *testing.T, runnerOptions, workflowOptions string, privileged bool) (*container.HostConfig, *logtest.Handler) {
 	t.Helper()
-	hook := logtest.New()
-	logger := logging.New(hook)
+	logger, hook := logtest.NewLogger()
 	cr := &containerReference{input: &NewContainerInput{
 		RunnerOptions:   runnerOptions,
 		WorkflowOptions: workflowOptions,
@@ -810,8 +807,7 @@ func TestSanitizeConfigKeepsTmpfsMounts(t *testing.T) {
 	require.Len(t, hostConfig.Mounts, 1)
 
 	for _, validVolumes := range [][]string{nil, {"data"}, {"**:ro"}} {
-		hook := logtest.New()
-		logger := logging.New(hook)
+		logger, hook := logtest.NewLogger()
 		_, sanitized := (&containerReference{input: &NewContainerInput{ValidVolumes: validVolumes}}).sanitizeConfig(common.WithLogger(context.Background(), logger), &container.Config{}, &container.HostConfig{Mounts: []mount.Mount{
 			hostConfig.Mounts[0],
 			{Type: mount.TypeVolume, Target: "/anonymous"},
@@ -936,8 +932,7 @@ func TestMergeContainerConfigsWarnsOnlyAboutOptionsThatWereGiven(t *testing.T) {
 func TestDockerCreateKeepsInputEntrypoint(t *testing.T) {
 	for _, entrypoint := range [][]string{nil, {"sleep", "3600"}} {
 		for _, optionEntrypoint := range []string{"/sbin/dumb-init", ""} {
-			hook := logtest.New()
-			logger := logging.New(hook)
+			logger, hook := logtest.NewLogger()
 			cr := &containerReference{
 				input: &NewContainerInput{
 					NetworkMode:     "bridge",

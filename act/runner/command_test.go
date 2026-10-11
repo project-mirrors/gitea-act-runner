@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"gitea.com/gitea/runner/act/common"
-	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/common/logging/logtest"
 
 	"gitea.dev/actionslib/pkg/model"
@@ -27,8 +26,7 @@ func unsecureRC() *RunContext {
 
 func TestSetEnv(t *testing.T) {
 	a := assert.New(t)
-	hook := logtest.New()
-	logger := logging.New(hook)
+	logger, hook := logtest.NewLogger()
 	ctx := common.WithLogger(context.Background(), logger)
 	rc := unsecureRC()
 	handler := rc.commandHandler(ctx)
@@ -122,8 +120,7 @@ func TestAddpath(t *testing.T) {
 }
 
 func TestStopCommands(t *testing.T) {
-	hook := logtest.New()
-	logger := logging.New(hook)
+	logger, hook := logtest.NewLogger()
 
 	a := assert.New(t)
 	ctx := common.WithLogger(context.Background(), logger)
@@ -177,8 +174,7 @@ func TestAddpathADO(t *testing.T) {
 }
 
 func TestAddmask(t *testing.T) {
-	hook := logtest.New()
-	logger := logging.New(hook)
+	logger, hook := logtest.NewLogger()
 
 	a := assert.New(t)
 	ctx := context.Background()
