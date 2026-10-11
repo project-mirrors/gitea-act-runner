@@ -19,11 +19,6 @@ func NewLogrusHandler(l *logrus.Logger) Handler {
 	return &logrusHandler{entry: logrus.NewEntry(l)}
 }
 
-// NewLogrusEntryHandler is NewLogrusHandler for an Entry that already carries fields.
-func NewLogrusEntryHandler(e *logrus.Entry) Handler {
-	return &logrusHandler{entry: e}
-}
-
 func (h *logrusHandler) Enabled(_ context.Context, level Level) bool {
 	return h.entry.Logger.IsLevelEnabled(toLogrusLevel(level))
 }

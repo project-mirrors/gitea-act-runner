@@ -103,10 +103,11 @@ func WithJobLogger(ctx context.Context, jobID, jobName string, config *Config, m
 		output = newJobLogHandler(os.Stdout, color)
 	}
 
-	handlers := make([]logging.Handler, 0, 2)
-	{ // Adapt to Gitea
-		if h := common.LoggerHandler(ctx); h != nil {
-			handlers = append(handlers, h)
+	var handlers []logging.Handler
+	if h := common.LoggerHandler(ctx); h != nil { // Adapt to Gitea
+		handlers = append(handlers, h)
+		if out, ok := output.(*jobLogHandler); ok {
+			out.rawStepErrors = true
 		}
 	}
 	handlers = append(handlers, &maskedHandler{
@@ -357,16 +358,18 @@ func (m *maskedHandler) WithAttrs(attrs []logging.Attr) logging.Handler {
 	return &maskedHandler{Handler: m.Handler.WithAttrs(attrs), masker: m.masker}
 }
 
-// jobLogHandler writes a job's log as readable text, one record per line.
+// jobLogHandler writes a job's log to w, one record per line in the shape format gives it.
 type jobLogHandler struct {
-	w     io.Writer
-	mu    *sync.Mutex // shared by every handler derived with WithAttrs, as they share w
-	color int
-	attrs []logging.Attr
+	w             io.Writer
+	mu            *sync.Mutex // shared by every handler derived with WithAttrs, as they share w
+	attrs         []logging.Attr
+	format        func(logging.Record) ([]byte, error)
+	rawStepErrors bool // the reporter forces a step's errors to raw output, so show them that way
 }
 
+// newJobLogHandler writes readable text.
 func newJobLogHandler(w io.Writer, color int) *jobLogHandler {
-	return &jobLogHandler{w: w, mu: &sync.Mutex{}, color: color}
+	return &jobLogHandler{w: w, mu: &sync.Mutex{}, format: textFormatter{w: w, color: color}.format}
 }
 
 func (h *jobLogHandler) Enabled(context.Context, logging.Level) bool { return true }
@@ -378,15 +381,30 @@ func (h *jobLogHandler) WithAttrs(attrs []logging.Attr) logging.Handler {
 }
 
 func (h *jobLogHandler) Handle(_ context.Context, r logging.Record) error {
-	line := h.format(r)
+	r.Attrs = slices.Concat(h.attrs, r.Attrs)
+	if h.rawStepErrors && r.Level >= logging.LevelError {
+		if stage, _ := r.Attr("stage"); stage == "Main" {
+			if _, ok := r.Attr("stepNumber"); ok {
+				r.Attrs = append(r.Attrs, logging.Attr{Key: rawOutputField, Value: true})
+			}
+		}
+	}
+	line, err := h.format(r)
+	if err != nil {
+		return err
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, err := h.w.Write(line)
+	_, err = h.w.Write(line)
 	return err
 }
 
-func (h *jobLogHandler) format(r logging.Record) []byte {
-	r.Attrs = slices.Concat(h.attrs, r.Attrs)
+type textFormatter struct {
+	w     io.Writer
+	color int
+}
+
+func (f textFormatter) format(r logging.Record) ([]byte, error) {
 	b := &bytes.Buffer{}
 
 	// the web renderer decodes command data, so this local view has to as well
@@ -395,14 +413,14 @@ func (h *jobLogHandler) format(r logging.Record) []byte {
 	}
 	r.Message = strings.TrimSuffix(r.Message, "\n")
 
-	if h.isColored() {
-		h.printColored(b, r)
+	if f.isColored() {
+		f.printColored(b, r)
 	} else {
-		h.print(b, r)
+		f.print(b, r)
 	}
 
 	b.WriteByte('\n')
-	return b.Bytes()
+	return b.Bytes(), nil
 }
 
 func attrIsTrue(r logging.Record, key string) bool {
@@ -410,7 +428,7 @@ func attrIsTrue(r logging.Record, key string) bool {
 	return v == true
 }
 
-func (h *jobLogHandler) printColored(b *bytes.Buffer, r logging.Record) {
+func (f textFormatter) printColored(b *bytes.Buffer, r logging.Record) {
 	job, _ := r.Attr("job")
 
 	debugFlag := ""
@@ -421,18 +439,18 @@ func (h *jobLogHandler) printColored(b *bytes.Buffer, r logging.Record) {
 	switch {
 	case attrIsTrue(r, rawOutputField):
 		if attrIsTrue(r, scriptLineCyanField) {
-			fmt.Fprintf(b, "\x1b[%dm|\x1b[0m \x1b[36;1m%s\x1b[0m", h.color, r.Message)
+			fmt.Fprintf(b, "\x1b[%dm|\x1b[0m \x1b[36;1m%s\x1b[0m", f.color, r.Message)
 		} else {
-			fmt.Fprintf(b, "\x1b[%dm|\x1b[0m %s", h.color, r.Message)
+			fmt.Fprintf(b, "\x1b[%dm|\x1b[0m %s", f.color, r.Message)
 		}
 	case attrIsTrue(r, "dryrun"):
-		fmt.Fprintf(b, "\x1b[1m\x1b[%dm\x1b[7m*DRYRUN*\x1b[0m \x1b[%dm[%s] \x1b[0m%s%s", gray, h.color, job, debugFlag, r.Message)
+		fmt.Fprintf(b, "\x1b[1m\x1b[%dm\x1b[7m*DRYRUN*\x1b[0m \x1b[%dm[%s] \x1b[0m%s%s", gray, f.color, job, debugFlag, r.Message)
 	default:
-		fmt.Fprintf(b, "\x1b[%dm[%s] \x1b[0m%s%s", h.color, job, debugFlag, r.Message)
+		fmt.Fprintf(b, "\x1b[%dm[%s] \x1b[0m%s%s", f.color, job, debugFlag, r.Message)
 	}
 }
 
-func (h *jobLogHandler) print(b *bytes.Buffer, r logging.Record) {
+func (f textFormatter) print(b *bytes.Buffer, r logging.Record) {
 	job, _ := r.Attr("job")
 
 	debugFlag := ""
@@ -450,8 +468,8 @@ func (h *jobLogHandler) print(b *bytes.Buffer, r logging.Record) {
 	}
 }
 
-func (h *jobLogHandler) isColored() bool {
-	isColored := checkIfTerminal(h.w)
+func (f textFormatter) isColored() bool {
+	isColored := checkIfTerminal(f.w)
 
 	if force, ok := os.LookupEnv("CLICOLOR_FORCE"); ok && force != "0" {
 		isColored = true
