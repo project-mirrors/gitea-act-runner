@@ -57,9 +57,8 @@ func (c *console) setOutput(w io.Writer) {
 // moving off logrus changes nothing a user can see: sorted key=value fields on a plain stream,
 // and a colored prefix with elapsed or full time on a terminal.
 type consoleHandler struct {
-	c      *console
-	attrs  []slog.Attr
-	prefix string // group names joined for keys added after WithGroup
+	c     *console
+	attrs []slog.Attr
 }
 
 func (h *consoleHandler) Enabled(_ context.Context, level slog.Level) bool {
@@ -67,23 +66,11 @@ func (h *consoleHandler) Enabled(_ context.Context, level slog.Level) bool {
 }
 
 func (h *consoleHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	out := *h
-	out.attrs = slices.Clone(h.attrs)
-	for _, a := range attrs {
-		a.Key = h.prefix + a.Key
-		out.attrs = append(out.attrs, a)
-	}
-	return &out
+	return &consoleHandler{c: h.c, attrs: append(slices.Clone(h.attrs), attrs...)}
 }
 
-func (h *consoleHandler) WithGroup(name string) slog.Handler {
-	if name == "" {
-		return h
-	}
-	out := *h
-	out.prefix = h.prefix + name + "."
-	return &out
-}
+// WithGroup is a no-op, as only NewSlogHandler wraps a consoleHandler and it never groups.
+func (h *consoleHandler) WithGroup(string) slog.Handler { return h }
 
 func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 	c := h.c
@@ -93,10 +80,10 @@ func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 
 	data := make(map[string]any, len(h.attrs)+r.NumAttrs())
 	for _, a := range h.attrs {
-		addAttr(data, "", a)
+		data[a.Key] = a.Value.Resolve().Any()
 	}
 	r.Attrs(func(a slog.Attr) bool {
-		addAttr(data, h.prefix, a)
+		data[a.Key] = a.Value.Resolve().Any()
 		return true
 	})
 
@@ -128,17 +115,6 @@ func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 	defer c.mu.Unlock()
 	_, err := c.out.Write(line)
 	return err
-}
-
-func addAttr(data map[string]any, prefix string, a slog.Attr) {
-	v := a.Value.Resolve()
-	if v.Kind() == slog.KindGroup {
-		for _, ga := range v.Group() {
-			addAttr(data, prefix+a.Key+".", ga)
-		}
-		return
-	}
-	data[prefix+a.Key] = v.Any()
 }
 
 // prefixFieldClashes moves fields that share a name with a fixed key out of its way.

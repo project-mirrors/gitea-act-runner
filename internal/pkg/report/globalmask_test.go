@@ -13,10 +13,10 @@ import (
 )
 
 func TestGlobalMasks(t *testing.T) {
-	prevOut, prevFormat := logging.Output(), logging.GetTextFormat()
+	prevOut := logging.Output()
 	t.Cleanup(func() {
 		logging.SetOutput(prevOut)
-		logging.SetTextFormat(prevFormat)
+		logging.SetTextFormat(logging.TextOptions{})
 	})
 	var out strings.Builder
 	logging.SetOutput(&out)

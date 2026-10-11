@@ -39,12 +39,14 @@ linters:
           deny:
             - pkg: golang.org/x/exp
               desc: it's experimental and unreliable
-        logrus:
+        logging:
           files:
             - $all
             - "!**/act/common/logging/**"
           deny:
             - pkg: github.com/sirupsen/logrus
+              desc: log through gitea.com/gitea/runner/act/common/logging
+            - pkg: log/slog
               desc: log through gitea.com/gitea/runner/act/common/logging
     nolintlint:
       allow-unused: false

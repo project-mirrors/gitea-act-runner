@@ -209,14 +209,24 @@ func TestAppendSecretMaskerSkipsUselessEncodings(t *testing.T) {
 }
 
 func TestJobLogFormatterDecodesCommandData(t *testing.T) {
-	h := newJobLogHandler(io.Discard, 0)
 	format := func(message string) string {
-		return string(h.format(logging.Record{Message: message, Attrs: []logging.Attr{{Key: rawOutputField, Value: true}}}))
+		line, err := textFormatter{w: io.Discard}.format(logging.Record{Message: message, Attrs: []logging.Attr{{Key: rawOutputField, Value: true}}})
+		require.NoError(t, err)
+		return string(line)
 	}
 
 	assert.Contains(t, format("##[error]deploy 50%25 traffic"), "##[error]deploy 50% traffic")
 	// a plain line is not command data and keeps its literal escapes
 	assert.Contains(t, format("progress 50%25 done"), "progress 50%25 done")
+
+	buf := &bytes.Buffer{}
+	h := newJobLogHandler(buf, 0)
+	h.rawStepErrors = true
+	l := logging.New(h).With("job", "j1", "stage", "Main", "stepNumber", 0)
+	l.Error("failed")
+	l.Warn("warned")
+	logging.New(h).With("job", "j1", "stage", "Post").Error("post failed")
+	assert.Equal(t, "[j1]   | failed\n[j1] warned\n[j1] post failed\n", buf.String())
 }
 
 type factoryFunc func() logging.Handler
