@@ -5,7 +5,6 @@ package logging
 
 import (
 	"runtime"
-	"sync"
 
 	"github.com/sirupsen/logrus"
 )
@@ -21,16 +20,8 @@ type TextOptions struct {
 	Filter func(line []byte) []byte
 }
 
-var (
-	textMu      sync.Mutex
-	textOptions TextOptions
-)
-
 // SetTextFormat sets the text format of the process-wide Logger.
 func SetTextFormat(o TextOptions) {
-	textMu.Lock()
-	defer textMu.Unlock()
-	textOptions = o
 	logrus.SetFormatter(&filteringFormatter{
 		inner: &logrus.TextFormatter{
 			DisableColors:    o.DisableColors,
@@ -42,17 +33,8 @@ func SetTextFormat(o TextOptions) {
 	})
 }
 
-// GetTextFormat returns what SetTextFormat last set, the zero value if it never was.
-func GetTextFormat() TextOptions {
-	textMu.Lock()
-	defer textMu.Unlock()
-	return textOptions
-}
-
 // SetReportCaller makes the process-wide Logger record where each call came from, which costs time.
 func SetReportCaller(on bool) { logrus.SetReportCaller(on) }
-
-func ReportCaller() bool { return logrus.StandardLogger().ReportCaller }
 
 type filteringFormatter struct {
 	inner  logrus.Formatter

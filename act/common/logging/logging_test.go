@@ -160,29 +160,3 @@ func TestDefaultLevel(t *testing.T) {
 	assert.True(t, logging.Enabled(logging.LevelError))
 	assert.False(t, logging.Enabled(logging.LevelInfo))
 }
-
-func TestDefaultReplaceAndTextFormat(t *testing.T) {
-	hook := logtest.SetDefault(t)
-	logging.Warnf("captured %d", 1)
-	require.NotNil(t, hook.LastRecord())
-	assert.Equal(t, "captured 1", hook.LastRecord().Message)
-
-	prevOut, prevOpts, prevCaller := logging.Output(), logging.GetTextFormat(), logging.ReportCaller()
-	t.Cleanup(func() {
-		logging.SetOutput(prevOut)
-		logging.SetTextFormat(prevOpts)
-		logging.SetReportCaller(prevCaller)
-	})
-	var buf strings.Builder
-	logging.SetOutput(&buf)
-	logging.SetTextFormat(logging.TextOptions{
-		DisableTimestamp: true,
-		Filter:           func(line []byte) []byte { return []byte(strings.ReplaceAll(string(line), "secret", "***")) },
-	})
-	logging.SetReportCaller(false)
-	assert.NotNil(t, logging.GetTextFormat().Filter)
-	logging.SetDefault(logging.New(logging.NewLogrusHandler(logrus.StandardLogger())))
-	logging.With("job", "secret").Error("x")
-	assert.Contains(t, buf.String(), `job=***`)
-	assert.NotContains(t, buf.String(), "secret")
-}

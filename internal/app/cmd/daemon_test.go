@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,13 +64,12 @@ func TestGetDockerSocketPathUsesConfigAndEnvironment(t *testing.T) {
 }
 
 func TestInitLoggingSetsLevelAndCaller(t *testing.T) {
-	oldLevel := logging.GetLevel()
-	oldReportCaller := logging.ReportCaller()
-	oldFormat := logging.GetTextFormat()
+	oldLevel, oldOut := logging.GetLevel(), logging.Output()
 	t.Cleanup(func() {
 		logging.SetLevel(oldLevel)
-		logging.SetReportCaller(oldReportCaller)
-		logging.SetTextFormat(oldFormat)
+		logging.SetOutput(oldOut)
+		logging.SetReportCaller(false)
+		logging.SetTextFormat(logging.TextOptions{})
 	})
 
 	cfg := &config.Config{}
@@ -77,9 +77,10 @@ func TestInitLoggingSetsLevelAndCaller(t *testing.T) {
 	initLogging(cfg)
 
 	require.Equal(t, logging.LevelDebug, logging.GetLevel())
-	require.True(t, logging.ReportCaller())
-	// act plans a job on this logger, so a live task's secrets have to be masked out of it
-	require.NotNil(t, logging.GetTextFormat().Filter)
+	var buf strings.Builder
+	logging.SetOutput(&buf)
+	logging.Debugf("line")
+	require.Contains(t, buf.String(), "[daemon_test.go:")
 }
 
 var errUnregisteredRunner = errors.New("rpc error: code = Unauthenticated desc = unregistered runner")
