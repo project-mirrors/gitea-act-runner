@@ -417,18 +417,12 @@ func TestRestoreCalledWorkflowContext(t *testing.T) {
 }
 
 func TestTaskLogFields(t *testing.T) {
-	fields := func(token string) map[string]any {
+	fields := func(token string) []any {
 		taskContext, err := structpb.NewStruct(map[string]any{"repository": "owner/repo", "run_id": "159", "run_number": "14", "gitea_runtime_token": token})
 		require.NoError(t, err)
-		pairs := taskLogFields(&runnerv1.Task{Id: 72, Context: taskContext}, "build")
-		got := map[string]any{}
-		for i := 0; i < len(pairs); i += 2 {
-			got[pairs[i].(string)] = pairs[i+1]
-		}
-		return got
+		return taskLogFields(&runnerv1.Task{Id: 72, Context: taskContext}, "build")
 	}
-	want := map[string]any{"task_id": int64(72), "job": "build", "repository": "owner/repo", "run_id": "159", "run_number": "14"}
+	want := []any{"task_id", int64(72), "job", "build", "repository", "owner/repo", "run_id", "159", "run_number", "14"}
 	assert.Equal(t, want, fields("malformed"))
-	want["job_id"] = int64(221)
-	assert.Equal(t, want, fields("header."+base64.RawURLEncoding.EncodeToString([]byte(`{"TaskID":72,"JobID":221}`))+".signature"))
+	assert.Equal(t, append(want, "job_id", int64(221)), fields("header."+base64.RawURLEncoding.EncodeToString([]byte(`{"TaskID":72,"JobID":221}`))+".signature"))
 }

@@ -160,7 +160,7 @@ func TestIsInternalEnvKey(t *testing.T) {
 }
 
 func TestPrintColoredScriptLineCyan(t *testing.T) {
-	h := newJobLogHandler(io.Discard, cyan)
+	f := textFormatter{w: io.Discard, color: cyan}
 	record := logging.Record{
 		Level:   logging.LevelInfo,
 		Message: "echo one",
@@ -171,6 +171,6 @@ func TestPrintColoredScriptLineCyan(t *testing.T) {
 		},
 	}
 	buf := &bytes.Buffer{}
-	h.printColored(buf, record)
+	f.printColored(buf, record)
 	assert.Equal(t, "\x1b[36m|\x1b[0m \x1b[36;1mecho one\x1b[0m", buf.String())
 }

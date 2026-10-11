@@ -72,6 +72,7 @@ func TestNoWorkflowsFoundByPlanner(t *testing.T) {
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 
 	out := logging.Output()
+	t.Cleanup(func() { logging.SetOutput(out) })
 	var buf bytes.Buffer
 	logging.SetOutput(&buf)
 	logging.SetLevel(logging.LevelDebug)
@@ -84,7 +85,6 @@ func TestNoWorkflowsFoundByPlanner(t *testing.T) {
 	assert.NotNil(t, plan)
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 	assert.Contains(t, buf.String(), "no workflows found by planner")
-	logging.SetOutput(out)
 }
 
 func TestGraphMissingEvent(t *testing.T) {
@@ -92,6 +92,7 @@ func TestGraphMissingEvent(t *testing.T) {
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 
 	out := logging.Output()
+	t.Cleanup(func() { logging.SetOutput(out) })
 	var buf bytes.Buffer
 	logging.SetOutput(&buf)
 	logging.SetLevel(logging.LevelDebug)
@@ -102,7 +103,6 @@ func TestGraphMissingEvent(t *testing.T) {
 	assert.Empty(t, plan.Stages)
 
 	assert.Contains(t, buf.String(), "no events found for workflow: no-event.yml")
-	logging.SetOutput(out)
 }
 
 func TestGraphMissingFirst(t *testing.T) {
@@ -120,6 +120,7 @@ func TestGraphWithMissing(t *testing.T) {
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 
 	out := logging.Output()
+	t.Cleanup(func() { logging.SetOutput(out) })
 	var buf bytes.Buffer
 	logging.SetOutput(&buf)
 	logging.SetLevel(logging.LevelDebug)
@@ -129,7 +130,6 @@ func TestGraphWithMissing(t *testing.T) {
 	assert.Empty(t, plan.Stages)
 	assert.EqualError(t, err, "unable to build dependency graph for missing (missing.yml)") //nolint:testifylint // pre-existing issue from nektos/act
 	assert.Contains(t, buf.String(), "unable to build dependency graph for missing (missing.yml)")
-	logging.SetOutput(out)
 }
 
 func TestGraphWithSomeMissing(t *testing.T) {
@@ -139,6 +139,7 @@ func TestGraphWithSomeMissing(t *testing.T) {
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 
 	out := logging.Output()
+	t.Cleanup(func() { logging.SetOutput(out) })
 	var buf bytes.Buffer
 	logging.SetOutput(&buf)
 	logging.SetLevel(logging.LevelDebug)
@@ -149,7 +150,6 @@ func TestGraphWithSomeMissing(t *testing.T) {
 	assert.Len(t, plan.Stages, 1)
 	assert.Contains(t, buf.String(), "unable to build dependency graph for missing (missing.yml)")
 	assert.Contains(t, buf.String(), "unable to build dependency graph for no first (no-first.yml)")
-	logging.SetOutput(out)
 }
 
 func TestNewPlanExecutorRequiresRunsOnBeforeRunningAnyJob(t *testing.T) {

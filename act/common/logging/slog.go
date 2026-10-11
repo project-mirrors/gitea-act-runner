@@ -6,7 +6,6 @@ package logging
 import (
 	"context"
 	"log/slog"
-	"time"
 )
 
 type slogHandler struct {
@@ -23,11 +22,7 @@ func (s slogHandler) Enabled(ctx context.Context, level Level) bool {
 }
 
 func (s slogHandler) Handle(ctx context.Context, r Record) error {
-	t := r.Time
-	if t.IsZero() {
-		t = time.Now()
-	}
-	rec := slog.NewRecord(t, slog.Level(r.Level), r.Message, r.PC)
+	rec := slog.NewRecord(r.Time, slog.Level(r.Level), r.Message, r.PC)
 	rec.AddAttrs(toSlogAttrs(r.Attrs)...)
 	return s.h.Handle(ctx, rec)
 }

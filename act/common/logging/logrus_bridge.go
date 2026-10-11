@@ -16,7 +16,7 @@ import (
 func init() {
 	logrus.SetOutput(io.Discard)
 	logrus.SetFormatter(discardFormatter{})
-	logrus.SetLevel(logrus.TraceLevel) // the level filter is the process-wide Logger's
+	logrus.SetLevel(toLogrusLevel(GetLevel()))
 	logrus.AddHook(bridgeHook{})
 }
 
@@ -42,7 +42,26 @@ func (bridgeHook) Fire(e *logrus.Entry) error {
 	for k, v := range e.Data {
 		attrs = append(attrs, Attr{Key: k, Value: v})
 	}
-	return l.h.Handle(ctx, Record{Time: e.Time, Level: level, Message: e.Message, Attrs: attrs})
+	r := Record{Time: e.Time, Level: level, Message: e.Message, Attrs: attrs}
+	if e.Caller != nil {
+		r.PC = e.Caller.PC + 1 // Frame.PC is one below the return address Record.PC holds
+	}
+	return l.h.Handle(ctx, r)
+}
+
+func toLogrusLevel(l Level) logrus.Level {
+	switch {
+	case l <= LevelTrace:
+		return logrus.TraceLevel
+	case l <= LevelDebug:
+		return logrus.DebugLevel
+	case l <= LevelInfo:
+		return logrus.InfoLevel
+	case l <= LevelWarn:
+		return logrus.WarnLevel
+	default:
+		return logrus.ErrorLevel
+	}
 }
 
 func fromLogrusLevel(l logrus.Level) Level {
@@ -61,11 +80,11 @@ func fromLogrusLevel(l logrus.Level) Level {
 }
 
 // LogrusBridgeIntact reports whether logrus's global logger is still set up as the bridge needs,
-// discarding its own output and passing every level to the hook. A dependency that calls
-// logrus.SetOutput or SetLevel breaks that, and its lines then show up twice or not at all.
+// discarding its own output and following the process-wide level. A dependency that calls
+// logrus.SetOutput or SetLevel breaks that, and its lines then show up twice, or at the wrong level.
 func LogrusBridgeIntact() bool {
 	std := logrus.StandardLogger()
-	if std.Out != io.Discard || std.GetLevel() != logrus.TraceLevel {
+	if std.Out != io.Discard || std.GetLevel() != toLogrusLevel(GetLevel()) {
 		return false
 	}
 	for _, level := range logrus.AllLevels {
