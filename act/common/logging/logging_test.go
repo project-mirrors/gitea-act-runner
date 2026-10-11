@@ -182,3 +182,29 @@ func TestSetOutput(t *testing.T) {
 	logging.Errorf("to the buffer")
 	assert.Contains(t, buf.String(), "to the buffer")
 }
+
+func TestDefaultReplaceAndTextFormat(t *testing.T) {
+	hook := logtest.SetDefault(t)
+	logging.Warnf("captured %d", 1)
+	require.NotNil(t, hook.LastRecord())
+	assert.Equal(t, "captured 1", hook.LastRecord().Message)
+
+	prevOut, prevOpts, prevCaller := logging.Output(), logging.GetTextFormat(), logging.ReportCaller()
+	t.Cleanup(func() {
+		logging.SetOutput(prevOut)
+		logging.SetTextFormat(prevOpts)
+		logging.SetReportCaller(prevCaller)
+	})
+	var buf strings.Builder
+	logging.SetOutput(&buf)
+	logging.SetTextFormat(logging.TextOptions{
+		DisableTimestamp: true,
+		Filter:           func(line []byte) []byte { return []byte(strings.ReplaceAll(string(line), "secret", "***")) },
+	})
+	logging.SetReportCaller(false)
+	assert.NotNil(t, logging.GetTextFormat().Filter)
+	logging.SetDefault(logging.New(logging.NewLogrusHandler(logrus.StandardLogger())))
+	logging.With("job", "secret").Error("x")
+	assert.Contains(t, buf.String(), `job=***`)
+	assert.NotContains(t, buf.String(), "secret")
+}

@@ -14,13 +14,13 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/config"
 	"gitea.com/gitea/runner/internal/pkg/metrics"
 	"gitea.com/gitea/runner/internal/pkg/process"
 	"gitea.com/gitea/runner/internal/pkg/report"
 
 	runnerv1 "gitea.dev/actionslib/runner/v1"
-	log "github.com/sirupsen/logrus"
 )
 
 func (r *Runner) runPostTaskScript(ctx context.Context, reporter *report.Reporter, task *runnerv1.Task, workdir string) {
@@ -38,7 +38,7 @@ func (r *Runner) runPostTaskScript(ctx context.Context, reporter *report.Reporte
 	defer cancel()
 
 	env := r.postTaskScriptEnv(reporter, task, workdir)
-	log.Infof("running post-task script %q for task %d", script, task.Id)
+	logging.Infof("running post-task script %q for task %d", script, task.Id)
 
 	cmd := exec.CommandContext(scriptCtx, script)
 	cmd.Env = envListFromMap(env)
@@ -55,11 +55,11 @@ func (r *Runner) runPostTaskScript(ctx context.Context, reporter *report.Reporte
 	treeKill := process.NewTreeKill(cmd)
 
 	if err := cmd.Start(); err != nil {
-		log.Warnf("post-task script %q for task %d: %v", script, task.Id, err)
+		logging.Warnf("post-task script %q for task %d: %v", script, task.Id, err)
 		return
 	}
 	if k, kerr := treeKill.Capture(cmd.Process); kerr != nil {
-		log.Warnf("post-task script %q for task %d: process tree kill setup failed, falling back to single-process kill: %v", script, task.Id, kerr)
+		logging.Warnf("post-task script %q for task %d: process tree kill setup failed, falling back to single-process kill: %v", script, task.Id, kerr)
 	} else {
 		defer k.Close()
 	}
@@ -71,14 +71,14 @@ func (r *Runner) runPostTaskScript(ctx context.Context, reporter *report.Reporte
 	common.FlushWriter(stderr)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			log.Warnf("post-task script %q for task %d: %v", script, task.Id, err)
+			logging.Warnf("post-task script %q for task %d: %v", script, task.Id, err)
 			return
 		}
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-			log.Warnf("post-task script %q for task %d exited with code %d", script, task.Id, exitErr.ExitCode())
+			logging.Warnf("post-task script %q for task %d exited with code %d", script, task.Id, exitErr.ExitCode())
 			return
 		}
-		log.Warnf("post-task script %q for task %d: %v", script, task.Id, err)
+		logging.Warnf("post-task script %q for task %d: %v", script, task.Id, err)
 	}
 }
 
@@ -125,7 +125,7 @@ func envListFromMap(env map[string]string) []string {
 // cmd.Wait() returns.
 func postTaskScriptLogWriter(stream string) io.Writer {
 	return common.NewLineWriter(func(line string) bool {
-		log.Infof("post-task script %s: %s", stream, strings.TrimRight(line, "\r\n"))
+		logging.Infof("post-task script %s: %s", stream, strings.TrimRight(line, "\r\n"))
 		return true
 	})
 }

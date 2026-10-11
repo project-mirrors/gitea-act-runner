@@ -8,8 +8,9 @@ import (
 	"net/http"
 	"time"
 
+	"gitea.com/gitea/runner/act/common/logging"
+
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	log "github.com/sirupsen/logrus"
 )
 
 // StartServer starts an HTTP server that serves Prometheus metrics on /metrics
@@ -26,9 +27,9 @@ func StartServer(ctx context.Context, addr string, readiness func() (bool, strin
 	}
 
 	go func() {
-		log.Infof("metrics server listening on %s", addr)
+		logging.Infof("metrics server listening on %s", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.WithError(err).Error("metrics server failed")
+			logging.WithError(err).Error("metrics server failed")
 		}
 	}()
 
@@ -37,7 +38,7 @@ func StartServer(ctx context.Context, addr string, readiness func() (bool, strin
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutCtx); err != nil {
-			log.WithError(err).Warn("metrics server shutdown error")
+			logging.WithError(err).Warn("metrics server shutdown error")
 		}
 	}()
 }

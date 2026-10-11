@@ -10,9 +10,9 @@ import (
 	"slices"
 	"strings"
 
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/container"
 
-	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/http/httpproxy"
 )
 
@@ -87,10 +87,10 @@ func BypassProxyForDockerHost(dockerHost string) {
 	noProxy := appendNoProxy(cfg.NoProxy, host)
 	for _, name := range []string{"no_proxy", "NO_PROXY"} {
 		if err := os.Setenv(name, noProxy); err != nil {
-			log.Warnf("cannot set %s for the runner process: %v", name, err)
+			logging.Warnf("cannot set %s for the runner process: %v", name, err)
 		}
 	}
-	log.Debugf("docker host %s is reached directly, no_proxy is now %q", host, noProxy)
+	logging.Debugf("docker host %s is reached directly, no_proxy is now %q", host, noProxy)
 }
 
 // WarnIfDaemonHasNoProxy points at the one part the runner cannot set: the docker daemon
@@ -101,11 +101,11 @@ func WarnIfDaemonHasNoProxy(ctx context.Context) {
 	}
 	info, err := container.GetHostInfo(ctx)
 	if err != nil {
-		log.Debugf("cannot read the docker daemon's proxy configuration: %v", err)
+		logging.Debugf("cannot read the docker daemon's proxy configuration: %v", err)
 		return
 	}
 	if info.HTTPProxy == "" && info.HTTPSProxy == "" {
-		log.Warn("the runner has a proxy but the docker daemon reports none, so image pulls will not use it: https://docs.docker.com/engine/daemon/proxy/")
+		logging.Warn("the runner has a proxy but the docker daemon reports none, so image pulls will not use it: https://docs.docker.com/engine/daemon/proxy/")
 	}
 }
 

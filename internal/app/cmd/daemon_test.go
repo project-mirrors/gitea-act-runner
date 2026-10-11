@@ -15,13 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/config"
-	"gitea.com/gitea/runner/internal/pkg/report"
 
 	"connectrpc.com/connect"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"gitea.dev/actionslib/runner/v1/runnerv1connect"
-	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -64,24 +63,23 @@ func TestGetDockerSocketPathUsesConfigAndEnvironment(t *testing.T) {
 }
 
 func TestInitLoggingSetsLevelAndCaller(t *testing.T) {
-	oldLevel := log.GetLevel()
-	oldReportCaller := log.StandardLogger().ReportCaller
+	oldLevel := logging.GetLevel()
+	oldReportCaller := logging.ReportCaller()
+	oldFormat := logging.GetTextFormat()
 	t.Cleanup(func() {
-		log.SetLevel(oldLevel)
-		log.SetReportCaller(oldReportCaller)
+		logging.SetLevel(oldLevel)
+		logging.SetReportCaller(oldReportCaller)
+		logging.SetTextFormat(oldFormat)
 	})
-
-	oldFormatter := log.StandardLogger().Formatter
-	t.Cleanup(func() { log.SetFormatter(oldFormatter) })
 
 	cfg := &config.Config{}
 	cfg.Log.Level = "debug"
 	initLogging(cfg)
 
-	require.Equal(t, log.DebugLevel, log.GetLevel())
-	require.True(t, log.StandardLogger().ReportCaller)
+	require.Equal(t, logging.LevelDebug, logging.GetLevel())
+	require.True(t, logging.ReportCaller())
 	// act plans a job on this logger, so a live task's secrets have to be masked out of it
-	require.IsType(t, report.MaskingFormatter(nil), log.StandardLogger().Formatter)
+	require.NotNil(t, logging.GetTextFormat().Filter)
 }
 
 var errUnregisteredRunner = errors.New("rpc error: code = Unauthenticated desc = unregistered runner")

@@ -10,9 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/config"
-
-	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -37,7 +36,7 @@ func openJobLog(cfg config.LogJob, taskID int64, started time.Time) *jobLog {
 	}
 
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil { // repository output, readable by this user only
-		log.Warnf("cannot create job log directory %s: %v", cfg.Dir, err)
+		logging.Warnf("cannot create job log directory %s: %v", cfg.Dir, err)
 		return nil
 	}
 	pruneJobLogs(cfg.Dir, cfg.Retention, started)
@@ -45,10 +44,10 @@ func openJobLog(cfg config.LogJob, taskID int64, started time.Time) *jobLog {
 	name := fmt.Sprintf("%s-task-%d.log", started.UTC().Format(jobLogNameLayout), taskID)
 	file, err := os.OpenFile(filepath.Join(cfg.Dir, name), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
-		log.Warnf("cannot create job log: %v", err)
+		logging.Warnf("cannot create job log: %v", err)
 		return nil
 	}
-	log.Infof("writing the log of task %d to %s", taskID, file.Name())
+	logging.Infof("writing the log of task %d to %s", taskID, file.Name())
 	return &jobLog{file: file, max: int64(cfg.MaxSize)}
 }
 
@@ -72,7 +71,7 @@ func (j *jobLog) close(trailer string) {
 	j.closed = true
 	j.line(runnerLine(trailer)) // past the cap on purpose: no trailer means the runner died mid-job
 	if err := j.file.Close(); err != nil {
-		log.Warnf("cannot close %s: %v", j.file.Name(), err)
+		logging.Warnf("cannot close %s: %v", j.file.Name(), err)
 	}
 }
 
@@ -83,7 +82,7 @@ func (j *jobLog) line(content string) {
 	j.size += int64(n)
 	if err != nil {
 		j.stopped = true // reported once, a failing write is a full disk and retrying floods the log
-		log.Warnf("cannot write %s: %v", j.file.Name(), err)
+		logging.Warnf("cannot write %s: %v", j.file.Name(), err)
 	}
 }
 
@@ -99,7 +98,7 @@ func pruneJobLogs(root string, retention time.Duration, now time.Time) {
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		log.Warnf("cannot list job log directory %s: %v", root, err)
+		logging.Warnf("cannot list job log directory %s: %v", root, err)
 		return
 	}
 
@@ -114,7 +113,7 @@ func pruneJobLogs(root string, retention time.Duration, now time.Time) {
 		}
 		name := filepath.Join(root, entry.Name())
 		if err := os.Remove(name); err != nil {
-			log.Warnf("cannot remove expired job log %s: %v", name, err)
+			logging.Warnf("cannot remove expired job log %s: %v", name, err)
 		}
 	}
 }

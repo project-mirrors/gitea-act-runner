@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
 	"gitea.com/gitea/runner/act/runner"
 	"gitea.com/gitea/runner/internal/pkg/client/mocks"
 	"gitea.com/gitea/runner/internal/pkg/config"
@@ -26,7 +27,6 @@ import (
 	connect_go "connectrpc.com/connect"
 	"gitea.dev/actionslib/pkg/model"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
-	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -1311,24 +1311,23 @@ func TestReporter_ServerFailureResultIsReportedAsFailure(t *testing.T) {
 }
 
 func TestReporter_NoteReport(t *testing.T) {
-	hook := logrustest.NewGlobal()
-	defer hook.Reset()
+	hook := logtest.SetDefault(t)
 
 	reporter := &Reporter{reportFailing: map[string]bool{}}
 
 	// A pending output is not a transport failure and must not read as one.
 	reporter.noteReport(metrics.LabelMethodUpdateTask, fmt.Errorf("wrapped: %w", errOutputsNotSent))
-	assert.Empty(t, hook.AllEntries())
+	assert.Empty(t, hook.AllRecords())
 
 	// An outage logs once at each end, not every report interval for hours.
 	reporter.noteReport(metrics.LabelMethodUpdateTask, errors.New("connection refused"))
 	reporter.noteReport(metrics.LabelMethodUpdateTask, errors.New("connection refused"))
-	require.Len(t, hook.AllEntries(), 1)
-	assert.Contains(t, hook.LastEntry().Message, "connection refused")
+	require.Len(t, hook.AllRecords(), 1)
+	assert.Contains(t, hook.LastRecord().Message, "connection refused")
 
 	reporter.noteReport(metrics.LabelMethodUpdateTask, nil)
-	require.Len(t, hook.AllEntries(), 2)
-	assert.Contains(t, hook.LastEntry().Message, "reconnected")
+	require.Len(t, hook.AllRecords(), 2)
+	assert.Contains(t, hook.LastRecord().Message, "reconnected")
 }
 
 // A job's final error can carry a secret, e.g. one interpolated into a failing

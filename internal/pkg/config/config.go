@@ -15,9 +15,10 @@ import (
 	"strings"
 	"time"
 
+	"gitea.com/gitea/runner/act/common/logging"
+
 	"github.com/docker/go-units"
 	"github.com/joho/godotenv"
-	log "github.com/sirupsen/logrus"
 	"go.yaml.in/yaml/v4"
 	"golang.org/x/net/http/httpguts"
 )
@@ -408,26 +409,26 @@ func LoadDefault(file string) (*Config, error) {
 
 	// Validate and fix invalid config combinations to prevent confusing behavior.
 	if cfg.Runner.ToolCacheMode == ToolCacheModeShared && cfg.Runner.Capacity > 1 {
-		log.Warnf("runner.tool_cache_mode %q with capacity %d: two jobs writing the same tool version at once corrupt it",
+		logging.Warnf("runner.tool_cache_mode %q with capacity %d: two jobs writing the same tool version at once corrupt it",
 			ToolCacheModeShared, cfg.Runner.Capacity)
 	}
 	if cfg.Runner.FetchTimeout > RequestTimeout {
-		log.Warnf("fetch_timeout (%v) exceeds the RPC timeout (%v), capping it", cfg.Runner.FetchTimeout, RequestTimeout)
+		logging.Warnf("fetch_timeout (%v) exceeds the RPC timeout (%v), capping it", cfg.Runner.FetchTimeout, RequestTimeout)
 		cfg.Runner.FetchTimeout = RequestTimeout
 	}
 	if cfg.Runner.FetchIntervalMax < cfg.Runner.FetchInterval {
-		log.Warnf("fetch_interval_max (%v) is less than fetch_interval (%v), setting fetch_interval_max to fetch_interval",
+		logging.Warnf("fetch_interval_max (%v) is less than fetch_interval (%v), setting fetch_interval_max to fetch_interval",
 			cfg.Runner.FetchIntervalMax, cfg.Runner.FetchInterval)
 		cfg.Runner.FetchIntervalMax = cfg.Runner.FetchInterval
 	}
 	if cfg.Runner.LogReportMaxLatency >= cfg.Runner.LogReportInterval {
-		log.Warnf("log_report_max_latency (%v) >= log_report_interval (%v), the max-latency timer will never fire before the periodic ticker; consider lowering log_report_max_latency",
+		logging.Warnf("log_report_max_latency (%v) >= log_report_interval (%v), the max-latency timer will never fire before the periodic ticker; consider lowering log_report_max_latency",
 			cfg.Runner.LogReportMaxLatency, cfg.Runner.LogReportInterval)
 	}
 
 	// although `container.network_mode` will be deprecated, but we have to be compatible with it for now.
 	if cfg.Container.NetworkMode != "" && cfg.Container.Network == "" {
-		log.Warn("You are trying to use deprecated configuration item of `container.network_mode`, please use `container.network` instead.")
+		logging.Warn("You are trying to use deprecated configuration item of `container.network_mode`, please use `container.network` instead.")
 		if cfg.Container.NetworkMode == "bridge" {
 			// Previously, if the value of `container.network_mode` is `bridge`, we will create a new network for job.
 			// But “bridge” is easily confused with the bridge network created by Docker by default.
@@ -493,7 +494,7 @@ func warnUnknownKeys(file string, document *yaml.Node) {
 	var loadErrs *yaml.LoadErrors
 	if err := document.Load(&Config{}, yaml.WithV3Defaults(), yaml.WithKnownFields()); errors.As(err, &loadErrs) {
 		for _, loadErr := range loadErrs.Errors {
-			log.Warnf("config file %q: %s, it will be ignored", file, loadErr)
+			logging.Warnf("config file %q: %s, it will be ignored", file, loadErr)
 		}
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"gitea.com/gitea/runner/internal/app/run"
 	"gitea.com/gitea/runner/internal/pkg/config"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -67,7 +66,7 @@ func runCacheServer(configFile *string, cacheArgs *cacheServerArgs) func(cmd *co
 			return err
 		}
 
-		log.Infof("cache server is listening on %v", cacheHandler.ExternalURL())
+		logging.Infof("cache server is listening on %v", cacheHandler.ExternalURL())
 
 		<-cmd.Context().Done()
 

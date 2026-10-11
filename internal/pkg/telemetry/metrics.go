@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/metrics"
 
 	"gitea.dev/actionslib/runner/v1/runnerv1connect"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
-	log "github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -61,7 +61,7 @@ func pushMetrics(exporter *client, res *resource.Resource, gatherer prometheus.G
 				return
 			case <-ticker.C:
 				if err := push(ctx); err != nil && ctx.Err() == nil {
-					log.WithError(err).Warn("OTLP metrics export failed, set OTEL_METRICS_EXPORTER=none to disable it")
+					logging.WithError(err).Warn("OTLP metrics export failed, set OTEL_METRICS_EXPORTER=none to disable it")
 				}
 			}
 		}
