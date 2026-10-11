@@ -9,6 +9,8 @@ import (
 	"os"
 	"runtime"
 	"sync/atomic"
+
+	"github.com/sirupsen/logrus"
 )
 
 // TextOptions describes how the process-wide Logger writes a record as text.
@@ -39,8 +41,11 @@ func Default() *Logger { return std.Load() }
 // initial console Logger.
 func SetDefault(l *Logger) { std.Store(l) }
 
-// SetLevel sets the minimum level of the initial process-wide Logger.
-func SetLevel(level Level) { stdState.level.Set(slog.Level(level)) }
+// SetLevel sets the minimum level of the initial process-wide Logger and of what libraries log through logrus.
+func SetLevel(level Level) {
+	stdState.level.Set(slog.Level(level))
+	logrus.SetLevel(toLogrusLevel(level))
+}
 
 // GetLevel returns the minimum level of the initial process-wide Logger.
 func GetLevel() Level { return Level(stdState.level.Level()) }
@@ -67,6 +72,7 @@ func SetReportCaller(on bool) {
 	stdState.mu.Lock()
 	defer stdState.mu.Unlock()
 	stdState.reportCaller = on
+	logrus.SetReportCaller(on)
 }
 
 func Enabled(level Level) bool { return Default().Enabled(level) }

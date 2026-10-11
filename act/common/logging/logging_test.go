@@ -133,25 +133,38 @@ func TestSlogHandler(t *testing.T) {
 }
 
 func TestLogrusBridge(t *testing.T) {
-	hook := logtest.NewWithLevel(logging.LevelTrace)
-	prev := logging.Default()
-	t.Cleanup(func() { logging.SetDefault(prev) })
-	logging.SetDefault(logging.New(hook))
+	prevLevel, prevDefault := logging.GetLevel(), logging.Default()
+	t.Cleanup(func() {
+		logging.SetLevel(prevLevel)
+		logging.SetReportCaller(false)
+		logging.SetDefault(prevDefault)
+	})
+	logging.SetLevel(logging.LevelInfo)
+	assert.False(t, logrus.IsLevelEnabled(logrus.DebugLevel))
+	logging.SetLevel(logging.LevelTrace)
+	logging.SetReportCaller(true)
+	h := logtest.NewWithLevel(logging.LevelTrace)
+	logging.SetDefault(logging.New(h))
 
 	logrus.WithField("lib", "docker").Warnf("from a library %d", 1)
+	_, _, line, _ := runtime.Caller(0)
 	logrus.Debug("below")
 	logrus.Trace("lowest")
 
-	recs := hook.AllRecords()
+	recs := h.AllRecords()
 	require.Len(t, recs, 3)
 	assert.Equal(t, "from a library 1", recs[0].Message)
 	assert.Equal(t, logging.LevelWarn, recs[0].Level)
 	v, _ := recs[0].Attr("lib")
 	assert.Equal(t, "docker", v)
 	assert.Equal(t, logging.LevelDebug, recs[1].Level)
+	f := frameOf(t, recs[1].PC)
+	assert.True(t, strings.HasSuffix(f.Function, "TestLogrusBridge"), f.Function)
+	assert.Equal(t, line+1, f.Line)
 	assert.Equal(t, logging.LevelTrace, recs[2].Level)
 
-	logging.SetDefault(logging.New(logtest.New())) // Info and up only
+	h = logtest.New() // logrus passes Debug, the Logger does not
+	logging.SetDefault(logging.New(h))
 	logrus.Debug("dropped")
-	assert.Len(t, hook.AllRecords(), 3)
+	assert.Empty(t, h.AllRecords())
 }
