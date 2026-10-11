@@ -92,8 +92,7 @@ func frameOf(t *testing.T, pc uintptr) runtime.Frame {
 }
 
 func TestCallerPC(t *testing.T) {
-	h := logtest.New()
-	l := logging.New(h)
+	l, h := logtest.NewLogger()
 	l.Infof("method")
 	l.Info("method")
 	for _, r := range h.AllRecords() {
