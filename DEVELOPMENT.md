@@ -41,6 +41,9 @@ Both take printf-style messages, and `With("key", value)` adds fields.
   Going around either leaks them.
 - Libraries that log through logrus's global logger are forwarded to the process-wide one, so they
   follow its level and masking too. Do not import logrus yourself, the linter rejects it.
+- That forwarding only works while logrus's global logger is left as `logging` configures it. A
+  dependency that calls `logrus.SetOutput` or `SetLevel` breaks it, so check
+  `logging.LogrusBridgeIntact()` when adding or upgrading one.
 - Tests read what was logged with `logtest.NewLogger()`, or `logtest.SetDefault(t)` for the
   package functions.
 
