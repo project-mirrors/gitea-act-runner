@@ -7,13 +7,14 @@ package runner
 import (
 	"bytes"
 	"context"
+	"io"
 	"strings"
 	"testing"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 
 	"gitea.dev/actionslib/pkg/model"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	yaml "go.yaml.in/yaml/v4"
@@ -84,11 +85,8 @@ env:
 	require.NoError(t, yaml.Unmarshal([]byte(raw), &step))
 
 	buf := &bytes.Buffer{}
-	logger := logrus.New()
-	logger.SetOutput(buf)
-	logger.SetLevel(logrus.InfoLevel)
-	logger.SetFormatter(&jobLogFormatter{color: cyan})
-	entry := logger.WithFields(logrus.Fields{"job": "j1"})
+	logger := logging.New(logging.NewLevelHandler(newJobLogHandler(buf, cyan), logging.LevelInfo))
+	entry := logger.With("job", "j1")
 	ctx := common.WithLogger(context.Background(), entry)
 
 	sr := &stepRun{
@@ -133,11 +131,8 @@ env:
 	require.NoError(t, yaml.Unmarshal([]byte(raw), &step))
 
 	buf := &bytes.Buffer{}
-	logger := logrus.New()
-	logger.SetOutput(buf)
-	logger.SetLevel(logrus.InfoLevel)
-	logger.SetFormatter(&jobLogFormatter{color: cyan})
-	entry := logger.WithFields(logrus.Fields{"job": "j1"})
+	logger := logging.New(logging.NewLevelHandler(newJobLogHandler(buf, cyan), logging.LevelInfo))
+	entry := logger.With("job", "j1")
 	ctx := common.WithLogger(context.Background(), entry)
 
 	printRunActionHeader(ctx, &step, map[string]string{"CUSTOM": "value", "GITHUB_TOKEN": "tok"}, &RunContext{})
@@ -166,17 +161,17 @@ func TestIsInternalEnvKey(t *testing.T) {
 }
 
 func TestPrintColoredScriptLineCyan(t *testing.T) {
-	f := &jobLogFormatter{color: cyan}
-	entry := &logrus.Entry{
-		Level:   logrus.InfoLevel,
+	f := textFormatter{w: io.Discard, color: cyan}
+	record := logging.Record{
+		Level:   logging.LevelInfo,
 		Message: "echo one",
-		Data: logrus.Fields{
-			"job":               "j1",
-			rawOutputField:      true,
-			scriptLineCyanField: true,
+		Attrs: []logging.Attr{
+			{Key: "job", Value: "j1"},
+			{Key: rawOutputField, Value: true},
+			{Key: scriptLineCyanField, Value: true},
 		},
 	}
 	buf := &bytes.Buffer{}
-	f.printColored(buf, entry)
+	f.printColored(buf, record)
 	assert.Equal(t, "\x1b[36m|\x1b[0m \x1b[36;1mecho one\x1b[0m", buf.String())
 }

@@ -23,6 +23,7 @@ import (
 	"gitea.com/gitea/runner/act/artifactcache"
 	"gitea.com/gitea/runner/act/artifacts"
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/runner"
 	"gitea.com/gitea/runner/internal/app/run"
 	"gitea.com/gitea/runner/internal/pkg/config"
@@ -482,7 +483,7 @@ func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command
 		// init a cache server
 		handler, err := artifactcache.StartHandler(artifactcache.Options{
 			Policy: run.CachePolicy(&config.Config{Cache: config.DefaultCache()}),
-			Logger: log.StandardLogger().WithField("module", "cache_request"),
+			Logger: logging.Default().With("module", "cache_request"),
 		})
 		if err != nil {
 			return err
@@ -553,7 +554,7 @@ func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command
 		}
 
 		if !execArgs.debug {
-			logLevel := log.InfoLevel
+			logLevel := logging.LevelInfo
 			config.JobLoggerLevel = &logLevel
 		}
 

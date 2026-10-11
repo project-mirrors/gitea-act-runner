@@ -4,13 +4,19 @@
 package runner
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/url"
 	"strings"
 	"testing"
 
-	"github.com/sirupsen/logrus"
+	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -49,10 +55,7 @@ func TestValueMasker(t *testing.T) {
 			ctx := WithMasks(t.Context(), &entry.masks)
 			masker := valueMasker(false, AppendSecretMaskers(nil, entry.secrets))
 			for line := range strings.SplitSeq(entry.lines, "\n") {
-				lentry := masker(&logrus.Entry{
-					Context: ctx,
-					Message: line,
-				})
+				lentry := masker(ctx, logging.Record{Message: line})
 				for _, line := range entry.disallowed {
 					assert.NotContains(t, lentry.Message, line)
 				}
@@ -79,7 +82,7 @@ func TestValueMaskerEncodedSecrets(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			masker := valueMasker(false, AppendSecretMaskers(nil, map[string]string{"TOKEN": tc.secret}))
-			entry := masker(&logrus.Entry{Context: t.Context(), Message: strings.Join(tc.encoded, " ")})
+			entry := masker(t.Context(), logging.Record{Message: strings.Join(tc.encoded, " ")})
 
 			assert.Contains(t, entry.Message, "***")
 			for _, disallowed := range tc.encoded {
@@ -105,7 +108,7 @@ func TestValueMaskerJSONEscapesBothWays(t *testing.T) {
 		{"literal (JS JSON.stringify / .NET)", jsonStringEscapeNoHTML(secret)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			entry := masker(&logrus.Entry{Context: t.Context(), Message: `{"t":"` + tc.form + `"}`})
+			entry := masker(t.Context(), logging.Record{Message: `{"t":"` + tc.form + `"}`})
 
 			assert.Contains(t, entry.Message, "***")
 			assert.NotContains(t, entry.Message, tc.form)
@@ -118,7 +121,7 @@ func TestValueMaskerJSONEscapesBothWays(t *testing.T) {
 func TestValueMaskerHidesExtraMasks(t *testing.T) {
 	masker := valueMasker(false, (&Config{ExtraMasks: []string{"pr0xypw"}}).maskers())
 
-	entry := masker(&logrus.Entry{Context: t.Context(), Message: "proxy is http://user:pr0xypw@proxy:3128"})
+	entry := masker(t.Context(), logging.Record{Message: "proxy is http://user:pr0xypw@proxy:3128"})
 
 	assert.Equal(t, "proxy is http://user:***@proxy:3128", entry.Message)
 }
@@ -137,7 +140,7 @@ func TestValueMaskerEncodedMasks(t *testing.T) {
 		{"encoded: " + base64.StdEncoding.EncodeToString([]byte("s3cr3t")), "encoded: ***"},
 		{"encoded: " + base64.StdEncoding.EncodeToString([]byte("first")), "encoded: ***"},
 	} {
-		entry := masker(&logrus.Entry{Context: WithMasks(t.Context(), &masks), Message: tc.line})
+		entry := masker(WithMasks(t.Context(), &masks), logging.Record{Message: tc.line})
 		assert.Equal(t, tc.want, entry.Message, tc.line)
 	}
 }
@@ -154,7 +157,7 @@ func TestValueMaskerBase64Alignments(t *testing.T) {
 	for _, prefix := range []string{"x-access-token:", "user:", "ab:"} {
 		t.Run(prefix, func(t *testing.T) {
 			encoded := base64.StdEncoding.EncodeToString([]byte(prefix + secret))
-			entry := masker(&logrus.Entry{Context: t.Context(), Message: "Authorization: Basic " + encoded})
+			entry := masker(t.Context(), logging.Record{Message: "Authorization: Basic " + encoded})
 
 			assert.Contains(t, entry.Message, "***")
 			assert.NotEqual(t, "Authorization: Basic "+encoded, entry.Message)
@@ -172,7 +175,7 @@ func TestValueMaskerBase64Alignments(t *testing.T) {
 func TestValueMaskerCachedReplacerSeesNewMasks(t *testing.T) {
 	masker := valueMasker(false, AppendSecretMaskers(nil, map[string]string{"TOKEN": "secret-token"}))
 	mask := func(masks *[]string, message string) string {
-		return masker(&logrus.Entry{Context: WithMasks(t.Context(), masks), Message: message}).Message
+		return masker(WithMasks(t.Context(), masks), logging.Record{Message: message}).Message
 	}
 
 	job := []string{"first mask"}
@@ -206,15 +209,61 @@ func TestAppendSecretMaskerSkipsUselessEncodings(t *testing.T) {
 }
 
 func TestJobLogFormatterDecodesCommandData(t *testing.T) {
-	logger := logrus.New()
-	logger.Out = io.Discard
 	format := func(message string) string {
-		out, err := (&jobLogFormatter{}).Format(&logrus.Entry{Logger: logger, Message: message, Data: logrus.Fields{rawOutputField: true}})
+		line, err := textFormatter{w: io.Discard}.format(logging.Record{Message: message, Attrs: []logging.Attr{{Key: rawOutputField, Value: true}}})
 		require.NoError(t, err)
-		return string(out)
+		return string(line)
 	}
 
 	assert.Contains(t, format("##[error]deploy 50%25 traffic"), "##[error]deploy 50% traffic")
 	// a plain line is not command data and keeps its literal escapes
 	assert.Contains(t, format("progress 50%25 done"), "progress 50%25 done")
+}
+
+type factoryFunc func() logging.Handler
+
+func (f factoryFunc) WithJobLogger() logging.Handler { return f() }
+
+func TestWithJobLoggerFansOutAndMasksOnlyOutput(t *testing.T) {
+	output, hook := logtest.NewWithLevel(logging.LevelTrace), logtest.NewWithLevel(logging.LevelTrace)
+	ctx := WithJobLoggerFactory(t.Context(), factoryFunc(func() logging.Handler { return output }))
+	ctx = common.WithLoggerHandler(ctx, hook)
+	level := logging.LevelInfo
+	cfg := &Config{Secrets: map[string]string{"TOKEN": "s3cr3t-value"}, JobLoggerLevel: &level}
+
+	ctx = WithJobLogger(ctx, "j1", "build", cfg, &[]string{}, nil)
+	ctx = withStepLogger(ctx, 2, "s2", "step two", "Main")
+	ctx = WithCompositeStepLogger(ctx, "inner")
+	common.Logger(ctx).Infof("token is %s", "s3cr3t-value")
+	common.Logger(ctx).Debugf("below the job logger level")
+
+	// the reporter masks for itself, so its record keeps the original
+	require.Len(t, hook.AllRecords(), 1)
+	assert.Equal(t, "token is s3cr3t-value", hook.LastRecord().Message)
+	require.Len(t, output.AllRecords(), 1)
+	assert.Equal(t, "token is ***", output.LastRecord().Message)
+
+	for _, want := range []struct {
+		key string
+		val any
+	}{{"job", "build"}, {"jobID", "j1"}, {"stepNumber", 2}, {"stage", "Main"}, {"stepID", []string{"s2", "inner"}}} {
+		got, ok := hook.LastRecord().Attr(want.key)
+		assert.True(t, ok, want.key)
+		assert.Equal(t, want.val, got, want.key)
+	}
+}
+
+func TestJobLogJSONHandler(t *testing.T) {
+	buf := &bytes.Buffer{}
+	logger := logging.New(newJobLogJSONHandler(buf)).With("job", "build", "msg", "clash").WithError(errors.New("boom"))
+	logger.Warnf("careful %d", 1)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+	assert.Equal(t, "careful 1", got["msg"])
+	assert.Equal(t, "warning", got["level"])
+	assert.Equal(t, "build", got["job"])
+	assert.Equal(t, "boom", got["error"])
+	assert.Equal(t, "clash", got["fields.msg"])
+	assert.NotEmpty(t, got["time"])
 }

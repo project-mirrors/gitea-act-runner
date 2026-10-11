@@ -230,7 +230,8 @@ func Serve(ctx context.Context, artifactPath, addr, port string) context.CancelF
 	go func() {
 		logger.Infof("Start server on http://%s", server.Addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal(err)
+			logger.Error(err)
+			os.Exit(1)
 		}
 	}()
 

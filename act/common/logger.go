@@ -7,46 +7,53 @@ package common
 import (
 	"context"
 
-	"github.com/sirupsen/logrus"
+	"gitea.com/gitea/runner/act/common/logging"
 )
 
 type loggerContextKey string
 
-const loggerContextKeyVal = loggerContextKey("logrus.FieldLogger")
+const loggerContextKeyVal = loggerContextKey("logging.Logger")
 
 // Logger returns the appropriate logger for current context
-func Logger(ctx context.Context) logrus.FieldLogger {
-	val := ctx.Value(loggerContextKeyVal)
-	if val != nil {
-		if logger, ok := val.(logrus.FieldLogger); ok {
-			return logger
-		}
+func Logger(ctx context.Context) *logging.Logger {
+	if logger, ok := ctx.Value(loggerContextKeyVal).(*logging.Logger); ok {
+		return logger
 	}
-	return logrus.StandardLogger()
+	return logging.Default()
 }
 
 // WithLogger adds a value to the context for the logger
-func WithLogger(ctx context.Context, logger logrus.FieldLogger) context.Context {
+func WithLogger(ctx context.Context, logger *logging.Logger) context.Context {
 	return context.WithValue(ctx, loggerContextKeyVal, logger)
 }
 
-type loggerHookKey string
+type loggerHandlerKey string
 
-const loggerHookKeyVal = loggerHookKey("logrus.Hook")
+const loggerHandlerKeyVal = loggerHandlerKey("logging.Handler")
 
-// LoggerHook returns the appropriate logger hook for current context
-// the hook affects job logger, not global logger
-func LoggerHook(ctx context.Context) logrus.Hook {
-	val := ctx.Value(loggerHookKeyVal)
-	if val != nil {
-		if hook, ok := val.(logrus.Hook); ok {
-			return hook
-		}
+// LoggerHandler returns the extra handler the job logger sends its records to, or nil.
+// It affects the job logger, not the global logger.
+func LoggerHandler(ctx context.Context) logging.Handler {
+	if h, ok := ctx.Value(loggerHandlerKeyVal).(logging.Handler); ok {
+		return h
 	}
 	return nil
 }
 
-// WithLoggerHook adds a value to the context for the logger hook
-func WithLoggerHook(ctx context.Context, hook logrus.Hook) context.Context {
-	return context.WithValue(ctx, loggerHookKeyVal, hook)
+// WithLoggerHandler adds the extra handler for the job logger to the context
+func WithLoggerHandler(ctx context.Context, h logging.Handler) context.Context {
+	return context.WithValue(ctx, loggerHandlerKeyVal, h)
+}
+
+type stepIDsContextKey struct{}
+
+// StepIDs returns the IDs of the step and the composite steps enclosing the current one, outermost first.
+func StepIDs(ctx context.Context) []string {
+	ids, _ := ctx.Value(stepIDsContextKey{}).([]string)
+	return ids
+}
+
+// WithStepIDs replaces the step IDs in the context
+func WithStepIDs(ctx context.Context, ids []string) context.Context {
+	return context.WithValue(ctx, stepIDsContextKey{}, ids)
 }

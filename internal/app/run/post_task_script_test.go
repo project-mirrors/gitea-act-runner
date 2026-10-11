@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/config"
 	"gitea.com/gitea/runner/internal/pkg/metrics"
 	"gitea.com/gitea/runner/internal/pkg/report"
 
 	runnerv1 "gitea.dev/actionslib/runner/v1"
-	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -146,12 +146,12 @@ func TestRunPostTaskScriptIntegration(t *testing.T) {
 
 func setReporterJobResult(t *testing.T, reporter *report.Reporter, result runnerv1.Result) {
 	t.Helper()
-	require.NoError(t, reporter.Fire(&log.Entry{
+	require.NoError(t, reporter.Handle(t.Context(), logging.Record{
 		Time:    time.Now(),
 		Message: "job finished",
-		Data: log.Fields{
-			"stage":     "Post",
-			"jobResult": metrics.ResultToStatusLabel(result),
+		Attrs: []logging.Attr{
+			{Key: "stage", Value: "Post"},
+			{Key: "jobResult", Value: metrics.ResultToStatusLabel(result)},
 		},
 	}))
 }

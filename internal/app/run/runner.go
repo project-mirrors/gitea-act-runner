@@ -28,6 +28,7 @@ import (
 
 	"gitea.com/gitea/runner/act/artifactcache"
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/container"
 	"gitea.com/gitea/runner/act/runner"
 	"gitea.com/gitea/runner/internal/pkg/client"
@@ -109,7 +110,7 @@ func NewRunner(cfg *config.Config, reg *config.Registration, cli client.Client) 
 			Upstream:   cfg.Cache.ExternalServer,
 			S3:         cacheS3(cfg),
 			Policy:     CachePolicy(cfg),
-			Logger:     log.StandardLogger().WithField("module", "cache_request"),
+			Logger:     logging.Default().With("module", "cache_request"),
 		})
 		if err != nil {
 			log.Errorf("cannot init cache server, it will be disabled: %v", err)
@@ -645,7 +646,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	reporter.Logf("workflow prepared")
 
 	// add logger recorders
-	ctx = common.WithLoggerHook(ctx, reporter)
+	ctx = common.WithLoggerHandler(ctx, reporter)
 
 	if !log.IsLevelEnabled(log.DebugLevel) {
 		ctx = runner.WithJobLoggerFactory(ctx, NullLogger{})

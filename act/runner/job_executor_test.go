@@ -21,11 +21,11 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
 	"gitea.com/gitea/runner/act/container"
 
 	"gitea.dev/actionslib/pkg/model"
-	log "github.com/sirupsen/logrus"
-	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -136,11 +136,8 @@ func (apm *actionPreparerMock) actionDownloadInfo() (string, string, bool) {
 
 func TestPrintPrepareActionsGolden(t *testing.T) {
 	buf := &bytes.Buffer{}
-	logger := log.New()
-	logger.SetOutput(buf)
-	logger.SetLevel(log.InfoLevel)
-	logger.SetFormatter(&jobLogFormatter{color: cyan})
-	ctx := common.WithLogger(context.Background(), logger.WithFields(log.Fields{"job": "j1"}))
+	logger := logging.New(logging.NewLevelHandler(newJobLogHandler(buf, cyan), logging.LevelInfo))
+	ctx := common.WithLogger(context.Background(), logger.With("job", "j1"))
 
 	preparers := []actionPreparer{
 		&actionPreparerMock{reference: "actions/checkout@v7", sha: "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0", ok: true},
@@ -162,10 +159,8 @@ func TestPrintPrepareActionsGolden(t *testing.T) {
 
 func TestPrintPrepareActionsSkipsWithoutActions(t *testing.T) {
 	buf := &bytes.Buffer{}
-	logger := log.New()
-	logger.SetOutput(buf)
-	logger.SetFormatter(&jobLogFormatter{color: cyan})
-	ctx := common.WithLogger(context.Background(), logger.WithFields(log.Fields{"job": "j1"}))
+	logger := logging.New(logging.NewLevelHandler(newJobLogHandler(buf, cyan), logging.LevelInfo))
+	ctx := common.WithLogger(context.Background(), logger.With("job", "j1"))
 
 	require.NoError(t, printPrepareActions(&RunContext{}, nil)(ctx))
 
@@ -173,8 +168,8 @@ func TestPrintPrepareActionsSkipsWithoutActions(t *testing.T) {
 }
 
 func TestPrintPrepareActionsFailsJobOnDownloadError(t *testing.T) {
-	logger, _ := logrustest.NewNullLogger()
-	ctx := common.WithJobErrorContainer(common.WithLogger(context.Background(), logger.WithField("job", "j1")))
+	logger := logging.New(logtest.New())
+	ctx := common.WithJobErrorContainer(common.WithLogger(context.Background(), logger.With("job", "j1")))
 
 	downloadErr := errors.New("failed to fetch \"actions/checkout\"")
 	rc := &RunContext{}
@@ -203,10 +198,8 @@ func TestPrintCompleteJobName(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			buf := &bytes.Buffer{}
-			logger := log.New()
-			logger.SetOutput(buf)
-			logger.SetFormatter(&jobLogFormatter{color: cyan})
-			ctx := common.WithLogger(context.Background(), logger.WithFields(log.Fields{"job": "j1"}))
+			logger := logging.New(logging.NewLevelHandler(newJobLogHandler(buf, cyan), logging.LevelInfo))
+			ctx := common.WithLogger(context.Background(), logger.With("job", "j1"))
 
 			require.NoError(t, printCompleteJobName(tt.rc)(ctx))
 
@@ -269,14 +262,16 @@ func TestNewJobExecutorDownloadsAllActionsBeforeTheFirstStep(t *testing.T) {
 		defer sm.AssertExpectations(t)
 	}
 
-	logger, hook := logrustest.NewNullLogger()
-	err := newJobExecutor(jim, sfm, rc)(common.WithLogger(ctx, logger.WithField("job", "test")))
+	hook := logtest.New()
+
+	logger := logging.New(hook)
+	err := newJobExecutor(jim, sfm, rc)(common.WithLogger(ctx, logger.With("job", "test")))
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"pre1", "pre2", "step1", "step2"}, executorOrder)
 
 	setup := make([]string, 0)
-	for _, entry := range hook.AllEntries() {
+	for _, entry := range hook.AllRecords() {
 		if strings.HasPrefix(entry.Message, "Prepare all required actions") || strings.HasPrefix(entry.Message, "Download action") ||
 			strings.HasPrefix(entry.Message, "Complete job name") {
 			setup = append(setup, entry.Message)
@@ -974,7 +969,8 @@ func TestReadSingleFileFromContainerArchiveFindsMatchingRegularFile(t *testing.T
 }
 
 func TestReadSingleFileFromContainerArchiveTruncatesWhenTooLarge(t *testing.T) {
-	logger, hook := logrustest.NewNullLogger()
+	hook := logtest.New()
+	logger := logging.New(hook)
 	ctx := common.WithLogger(context.Background(), logger)
 	cm := &containerMock{}
 	content := strings.Repeat("a", 300)
@@ -992,14 +988,15 @@ func TestReadSingleFileFromContainerArchiveTruncatesWhenTooLarge(t *testing.T) {
 	assert.LessOrEqual(t, len(body), maxBytes)
 	keep := maxBytes - len(jobSummaryTruncationMarker)
 	assert.Equal(t, []byte(content[:keep]+jobSummaryTruncationMarker), body)
-	if assert.Len(t, hook.Entries, 1) {
-		assert.Contains(t, hook.Entries[0].Message, "job summary truncated")
+	if assert.Len(t, hook.AllRecords(), 1) {
+		assert.Contains(t, hook.AllRecords()[0].Message, "job summary truncated")
 	}
 	cm.AssertExpectations(t)
 }
 
 func TestReadSingleFileFromContainerArchiveKeepsExactLimitWithoutWarning(t *testing.T) {
-	logger, hook := logrustest.NewNullLogger()
+	hook := logtest.New()
+	logger := logging.New(hook)
 	ctx := common.WithLogger(context.Background(), logger)
 	cm := &containerMock{}
 	cm.On("GetContainerArchive", ctx, "/var/run/act/workflow/SUMMARY.md").Return(
@@ -1012,7 +1009,7 @@ func TestReadSingleFileFromContainerArchiveKeepsExactLimitWithoutWarning(t *test
 	// A summary that is exactly at the limit is kept whole and not flagged as truncated.
 	assert.True(t, ok)
 	assert.Equal(t, []byte("abc"), body)
-	assert.Empty(t, hook.Entries)
+	assert.Empty(t, hook.AllRecords())
 	cm.AssertExpectations(t)
 }
 

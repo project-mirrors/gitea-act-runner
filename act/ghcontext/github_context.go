@@ -74,7 +74,7 @@ func SetRef(ctx context.Context, ghc *model.GithubContext, repoPath string) {
 	if ghc.Ref == "" {
 		ref, err := pinned(ctx, "ref:"+repoPath, func() (string, error) { return findGitRef(ctx, repoPath) })
 		if err != nil {
-			logger.Warningf("unable to get git ref: %v", err)
+			logger.Warnf("unable to get git ref: %v", err)
 		} else {
 			logger.Debugf("using github ref: %s", ref)
 			ghc.Ref = ref
@@ -121,7 +121,7 @@ func SetSha(ctx context.Context, ghc *model.GithubContext, repoPath string) {
 			return revision, err
 		})
 		if err != nil {
-			logger.Warningf("unable to get git revision: %v", err)
+			logger.Warnf("unable to get git revision: %v", err)
 		} else {
 			ghc.Sha = sha
 		}
@@ -134,7 +134,7 @@ func SetRepositoryAndOwner(ctx context.Context, ghc *model.GithubContext, repoPa
 	if ghc.Repository == "" {
 		repo, err := findGithubRepo(ctx, repoPath)
 		if err != nil {
-			common.Logger(ctx).Warningf("unable to get git repo (repoPath: %v): %v", repoPath, err)
+			common.Logger(ctx).Warnf("unable to get git repo (repoPath: %v): %v", repoPath, err)
 			return
 		}
 		ghc.Repository = repo

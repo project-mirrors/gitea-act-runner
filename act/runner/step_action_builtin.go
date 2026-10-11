@@ -34,7 +34,7 @@ func (sab *stepActionBuiltin) main() common.Executor {
 		}
 
 		printRunActionHeader(ctx, sab.Step, sab.env, sab.RunContext)
-		rawLogger := common.Logger(ctx).WithField(rawOutputField, true)
+		rawLogger := common.Logger(ctx).With(rawOutputField, true)
 		defer rawLogger.Infof("::endgroup::")
 
 		rc := sab.RunContext

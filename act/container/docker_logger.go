@@ -12,7 +12,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/sirupsen/logrus"
+	"gitea.com/gitea/runner/act/common/logging"
 )
 
 type dockerMessage struct {
@@ -26,7 +26,7 @@ type dockerMessage struct {
 	Progress string `json:"progress"`
 }
 
-func logDockerResponse(logger logrus.FieldLogger, dockerResponse io.ReadCloser, isError bool) error {
+func logDockerResponse(logger *logging.Logger, dockerResponse io.ReadCloser, isError bool) error {
 	if dockerResponse == nil {
 		return nil
 	}
@@ -77,7 +77,7 @@ func logDockerResponse(logger logrus.FieldLogger, dockerResponse io.ReadCloser, 
 	return nil
 }
 
-func writeLog(logger logrus.FieldLogger, isError bool, format string, args ...any) {
+func writeLog(logger *logging.Logger, isError bool, format string, args ...any) {
 	if isError {
 		logger.Errorf(format, args...)
 	} else {

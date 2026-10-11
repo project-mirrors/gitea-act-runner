@@ -19,6 +19,8 @@ import (
 	"testing"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/pkg/stdcopy"
@@ -26,7 +28,6 @@ import (
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
 	mobyclient "github.com/moby/moby/client"
-	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -353,7 +354,8 @@ func TestRemoveIgnoresAutoRemoveRace(t *testing.T) {
 		{name: "real failure", err: removeFailure, wantErr: removeFailure},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			logger, hook := test.NewNullLogger()
+			hook := logtest.New()
+			logger := logging.New(hook)
 			ctx := common.WithLogger(context.Background(), logger)
 			client := &mockDockerClient{}
 			client.On("ContainerKill", ctx, "abc", killOpts).Return(mobyclient.ContainerKillResult{}, nil)
@@ -377,7 +379,7 @@ func TestRemoveIgnoresAutoRemoveRace(t *testing.T) {
 			} else {
 				assert.Empty(t, cr.id)
 			}
-			assert.Empty(t, hook.AllEntries())
+			assert.Empty(t, hook.AllRecords())
 			client.AssertExpectations(t)
 		})
 	}
@@ -614,7 +616,8 @@ func TestCheckVolumes(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
-			logger, hook := test.NewNullLogger()
+			hook := logtest.New()
+			logger := logging.New(hook)
 			ctx := common.WithLogger(context.Background(), logger)
 			cr := &containerReference{
 				input: &NewContainerInput{
@@ -624,7 +627,7 @@ func TestCheckVolumes(t *testing.T) {
 			_, hostConf := cr.sanitizeConfig(ctx, &container.Config{}, &container.HostConfig{Binds: tc.binds, Mounts: tc.mounts})
 			assert.Equal(t, tc.expectedBinds, hostConf.Binds)
 			assert.ElementsMatch(t, tc.expectedMounts, hostConf.Mounts)
-			assert.Len(t, hook.AllEntries(), len(tc.binds)+len(tc.mounts)-len(tc.expectedBinds)-len(tc.expectedMounts)) // every drop is warned about
+			assert.Len(t, hook.AllRecords(), len(tc.binds)+len(tc.mounts)-len(tc.expectedBinds)-len(tc.expectedMounts)) // every drop is warned about
 		})
 	}
 }
@@ -652,7 +655,7 @@ func TestMergeContainerConfigsKeepsTheRunnersFilesAndEnvToItself(t *testing.T) {
 	t.Setenv("RUNNER_SECRET", "s3cr3t")
 
 	for _, option := range []string{"--env-file " + hostFile, "--label-file " + hostFile} {
-		logger, _ := test.NewNullLogger()
+		logger := logging.New(logtest.New())
 		cr := &containerReference{input: &NewContainerInput{NetworkMode: "bridge", WorkflowOptions: option}}
 
 		_, _, err := cr.mergeContainerConfigs(common.WithLogger(context.Background(), logger), &container.Config{}, &container.HostConfig{})
@@ -665,7 +668,7 @@ func TestMergeContainerConfigsKeepsTheRunnersFilesAndEnvToItself(t *testing.T) {
 	}
 
 	// a bare name is no longer resolved from the runner's environment, for either source
-	logger, _ := test.NewNullLogger()
+	logger := logging.New(logtest.New())
 	cr := &containerReference{input: &NewContainerInput{
 		NetworkMode:     "bridge",
 		RunnerOptions:   "--env RUNNER_SECRET",
@@ -678,7 +681,7 @@ func TestMergeContainerConfigsKeepsTheRunnersFilesAndEnvToItself(t *testing.T) {
 }
 
 func TestSanitizeOptionsHostConfig(t *testing.T) {
-	logger, _ := test.NewNullLogger()
+	logger := logging.New(logtest.New())
 
 	// every field the sanitizer resets, so a reset dropped in a refactor fails here
 	hostConfig := &container.HostConfig{
@@ -711,9 +714,10 @@ func TestSanitizeOptionsHostConfig(t *testing.T) {
 }
 
 // mergeOptions merges both option sources into a bare container, returning the result and its log.
-func mergeOptions(t *testing.T, runnerOptions, workflowOptions string, privileged bool) (*container.HostConfig, *test.Hook) {
+func mergeOptions(t *testing.T, runnerOptions, workflowOptions string, privileged bool) (*container.HostConfig, *logtest.Handler) {
 	t.Helper()
-	logger, hook := test.NewNullLogger()
+	hook := logtest.New()
+	logger := logging.New(hook)
 	cr := &containerReference{input: &NewContainerInput{
 		RunnerOptions:   runnerOptions,
 		WorkflowOptions: workflowOptions,
@@ -765,7 +769,7 @@ func TestMergeContainerConfigsStripsDangerousOptionsWhenUnprivileged(t *testing.
 }
 
 func TestCheckVolumesRejectsEscapingHostPaths(t *testing.T) {
-	logger, _ := test.NewNullLogger()
+	logger := logging.New(logtest.New())
 	ctx := common.WithLogger(context.Background(), logger)
 
 	base := t.TempDir()
@@ -806,14 +810,15 @@ func TestSanitizeConfigKeepsTmpfsMounts(t *testing.T) {
 	require.Len(t, hostConfig.Mounts, 1)
 
 	for _, validVolumes := range [][]string{nil, {"data"}, {"**:ro"}} {
-		logger, hook := test.NewNullLogger()
+		hook := logtest.New()
+		logger := logging.New(hook)
 		_, sanitized := (&containerReference{input: &NewContainerInput{ValidVolumes: validVolumes}}).sanitizeConfig(common.WithLogger(context.Background(), logger), &container.Config{}, &container.HostConfig{Mounts: []mount.Mount{
 			hostConfig.Mounts[0],
 			{Type: mount.TypeVolume, Target: "/anonymous"},
 			{Type: mount.TypeTmpfs, Source: "/etc", Target: "/etc-copy"},
 		}})
 		assert.Equal(t, hostConfig.Mounts, sanitized.Mounts)
-		assert.Len(t, hook.AllEntries(), 2)
+		assert.Len(t, hook.AllRecords(), 2)
 	}
 }
 
@@ -896,7 +901,7 @@ func TestContainerInfoFromInspect(t *testing.T) {
 }
 
 func TestMergeContainerConfigsVolumesReplaceRunnerMounts(t *testing.T) {
-	logger, _ := test.NewNullLogger()
+	logger := logging.New(logtest.New())
 	ctx := common.WithLogger(context.Background(), logger)
 	cr := &containerReference{
 		input: &NewContainerInput{
@@ -919,7 +924,7 @@ func TestMergeContainerConfigsVolumesReplaceRunnerMounts(t *testing.T) {
 func TestMergeContainerConfigsWarnsOnlyAboutOptionsThatWereGiven(t *testing.T) {
 	warnings := func(runnerOptions, workflowOptions string) int {
 		_, hook := mergeOptions(t, runnerOptions, workflowOptions, false)
-		return len(hook.AllEntries())
+		return len(hook.AllRecords())
 	}
 
 	assert.Zero(t, warnings("--volume /host/tools:/opt/hostedtoolcache", ""))
@@ -931,7 +936,8 @@ func TestMergeContainerConfigsWarnsOnlyAboutOptionsThatWereGiven(t *testing.T) {
 func TestDockerCreateKeepsInputEntrypoint(t *testing.T) {
 	for _, entrypoint := range [][]string{nil, {"sleep", "3600"}} {
 		for _, optionEntrypoint := range []string{"/sbin/dumb-init", ""} {
-			logger, hook := test.NewNullLogger()
+			hook := logtest.New()
+			logger := logging.New(hook)
 			cr := &containerReference{
 				input: &NewContainerInput{
 					NetworkMode:     "bridge",
@@ -952,13 +958,13 @@ func TestDockerCreateKeepsInputEntrypoint(t *testing.T) {
 			}
 			require.NoError(t, cr.create(nil, nil)(common.WithLogger(t.Context(), logger)))
 			assert.Equal(t, "created", cr.id)
-			assert.Equal(t, len(entrypoint) > 0, len(hook.AllEntries()) == 1)
+			assert.Equal(t, len(entrypoint) > 0, len(hook.AllRecords()) == 1)
 		}
 	}
 }
 
 func TestMergeContainerConfigsKeepsNetworkAliasesFromOptions(t *testing.T) {
-	logger, _ := test.NewNullLogger()
+	logger := logging.New(logtest.New())
 	cr := &containerReference{input: &NewContainerInput{
 		NetworkMode: "job-network", NetworkAliases: []string{"redis"}, WorkflowOptions: "--network-alias redis-primary",
 	}}

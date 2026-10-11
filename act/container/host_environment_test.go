@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -170,8 +170,7 @@ func TestHostEnvironmentAllocatePTY(t *testing.T) {
 }
 
 func TestHostEnvironmentRemovePreservesWorkdirByDefault(t *testing.T) {
-	logger := logrus.New()
-	ctx := common.WithLogger(context.Background(), logrus.NewEntry(logger))
+	ctx := common.WithLogger(context.Background(), logging.Default())
 	base := t.TempDir()
 	miscRoot := filepath.Join(base, "misc")
 	path := filepath.Join(miscRoot, "hostexecutor")
@@ -193,8 +192,7 @@ func TestHostEnvironmentRemovePreservesWorkdirByDefault(t *testing.T) {
 }
 
 func TestHostEnvironmentRemoveCleansWorkdirWhenOwned(t *testing.T) {
-	logger := logrus.New()
-	ctx := common.WithLogger(context.Background(), logrus.NewEntry(logger))
+	ctx := common.WithLogger(context.Background(), logging.Default())
 	base := t.TempDir()
 	miscRoot := filepath.Join(base, "misc")
 	path := filepath.Join(miscRoot, "hostexecutor")
@@ -252,8 +250,7 @@ func TestHostEnvironmentRemoveDoesNotHangOnStuckCleanUp(t *testing.T) {
 	hostCleanupTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { hostCleanupTimeout = orig })
 
-	logger := logrus.New()
-	ctx := common.WithLogger(context.Background(), logrus.NewEntry(logger))
+	ctx := common.WithLogger(context.Background(), logging.Default())
 	base := t.TempDir()
 	path := filepath.Join(base, "misc", "hostexecutor")
 	require.NoError(t, os.MkdirAll(path, 0o700))
@@ -306,8 +303,7 @@ func TestHostEnvironmentRemoveDoesNotHangOnStuckPathRemoval(t *testing.T) {
 		removeAll = origRemoveAll
 	})
 
-	logger := logrus.New()
-	ctx := common.WithLogger(context.Background(), logrus.NewEntry(logger))
+	ctx := common.WithLogger(context.Background(), logging.Default())
 	base := t.TempDir()
 	path := filepath.Join(base, "misc", "hostexecutor")
 	require.NoError(t, os.MkdirAll(path, 0o700))

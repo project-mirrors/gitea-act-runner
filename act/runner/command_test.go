@@ -12,9 +12,10 @@ import (
 	"testing"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
 
 	"gitea.dev/actionslib/pkg/model"
-	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +27,8 @@ func unsecureRC() *RunContext {
 
 func TestSetEnv(t *testing.T) {
 	a := assert.New(t)
-	logger, hook := test.NewNullLogger()
+	hook := logtest.New()
+	logger := logging.New(hook)
 	ctx := common.WithLogger(context.Background(), logger)
 	rc := unsecureRC()
 	handler := rc.commandHandler(ctx)
@@ -37,7 +39,7 @@ func TestSetEnv(t *testing.T) {
 	rc.setEnvFile(ctx, map[string]string{"name": "node_options"}, "--require env.js")
 	a.NotContains(rc.Env, "NODE_OPTIONS")
 	a.NotContains(rc.Env, "node_options")
-	entries := hook.AllEntries()
+	entries := hook.AllRecords()
 	require.Len(t, entries, 3)
 	a.Equal("##[error]Can't update NODE_OPTIONS environment variable using ::set-env:: command.", entries[1].Message)
 	a.Equal("##[error]Can't store NODE_OPTIONS output parameter using '$GITHUB_ENV' command.", entries[2].Message)
@@ -120,7 +122,8 @@ func TestAddpath(t *testing.T) {
 }
 
 func TestStopCommands(t *testing.T) {
-	logger, hook := test.NewNullLogger()
+	hook := logtest.New()
+	logger := logging.New(hook)
 
 	a := assert.New(t)
 	ctx := common.WithLogger(context.Background(), logger)
@@ -137,7 +140,7 @@ func TestStopCommands(t *testing.T) {
 	a.Equal("abcd", rc.Env["x"])
 
 	messages := make([]string, 0)
-	for _, entry := range hook.AllEntries() {
+	for _, entry := range hook.AllRecords() {
 		messages = append(messages, entry.Message)
 	}
 
@@ -174,7 +177,8 @@ func TestAddpathADO(t *testing.T) {
 }
 
 func TestAddmask(t *testing.T) {
-	logger, hook := test.NewNullLogger()
+	hook := logtest.New()
+	logger := logging.New(hook)
 
 	a := assert.New(t)
 	ctx := context.Background()
@@ -184,7 +188,7 @@ func TestAddmask(t *testing.T) {
 	handler := rc.commandHandler(loggerCtx)
 	handler("::ADD-MASK::my::secret")
 
-	a.Equal("***", hook.LastEntry().Message)
+	a.Equal("***", hook.LastRecord().Message)
 	a.Equal([]string{"my::secret"}, rc.Masks)
 }
 

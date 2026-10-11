@@ -4,21 +4,15 @@
 package run
 
 import (
-	"io"
-
-	log "github.com/sirupsen/logrus"
+	"gitea.com/gitea/runner/act/common/logging"
 )
 
 // NullLogger is used to create a new JobLogger to discard logs. This
 // will prevent these logs from being logged to the stdout, but
-// forward them to the Reporter via its hook.
+// forward them to the Reporter via its handler.
 type NullLogger struct{}
 
-// WithJobLogger creates a new logrus.Logger that will discard all logs.
-func (n NullLogger) WithJobLogger() *log.Logger {
-	logger := log.New()
-	logger.SetOutput(io.Discard)
-	logger.SetLevel(log.TraceLevel)
-
-	return logger
+// WithJobLogger returns a handler that discards all logs.
+func (n NullLogger) WithJobLogger() logging.Handler {
+	return logging.DiscardHandler
 }

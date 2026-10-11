@@ -15,12 +15,12 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
 	"gitea.com/gitea/runner/act/container"
 
 	"gitea.dev/actionslib/pkg/model"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/client"
-	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -83,10 +83,10 @@ func TestDockerProxyMountedJob(t *testing.T) {
 		}
 	})
 
-	hook := &test.Hook{}
-	require.NoError(t, runner.NewPlanExecutor(plan)(common.WithLoggerHook(ctx, hook)))
+	hook := logtest.New()
+	require.NoError(t, runner.NewPlanExecutor(plan)(common.WithLoggerHandler(ctx, hook)))
 	var messages []string
-	for _, entry := range hook.AllEntries() {
+	for _, entry := range hook.AllRecords() {
 		messages = append(messages, strings.TrimSpace(entry.Message))
 	}
 	require.Contains(t, messages, "docker proxy post verified")

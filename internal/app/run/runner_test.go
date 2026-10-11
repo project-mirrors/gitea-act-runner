@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/runner"
 	clientmocks "gitea.com/gitea/runner/internal/pkg/client/mocks"
 	"gitea.com/gitea/runner/internal/pkg/config"
@@ -79,9 +80,9 @@ func TestRunnerRunningCountAndNullLogger(t *testing.T) {
 	r.runningCount.Add(2)
 	require.Equal(t, int64(2), r.RunningCount())
 
-	logger := NullLogger{}.WithJobLogger()
-	require.NotNil(t, logger)
-	require.NotNil(t, logger.Out)
+	handler := NullLogger{}.WithJobLogger()
+	require.NotNil(t, handler)
+	require.False(t, handler.Enabled(t.Context(), logging.LevelError))
 }
 
 func TestRunnerReclaimsVolumesAfterReporting(t *testing.T) {

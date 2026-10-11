@@ -15,7 +15,6 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -30,10 +29,10 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/disk"
 
 	"github.com/julienschmidt/httprouter"
-	"github.com/sirupsen/logrus"
 	"github.com/timshannon/bolthold"
 	"go.etcd.io/bbolt"
 )
@@ -85,7 +84,7 @@ type Handler struct {
 	listener net.Listener
 	port     int
 	server   *http.Server
-	logger   logrus.FieldLogger
+	logger   *logging.Logger
 
 	gcing atomic.Bool
 	gcAt  time.Time
@@ -133,7 +132,7 @@ type Options struct {
 	InternalSecret string
 
 	Policy Policy
-	Logger logrus.FieldLogger
+	Logger *logging.Logger
 }
 
 // StartHandler starts an embedded cache or forwards cache requests to Upstream.
@@ -147,11 +146,9 @@ func StartHandler(opts Options) (*Handler, error) {
 	}
 
 	if logger == nil {
-		discard := logrus.New()
-		discard.Out = io.Discard
-		logger = discard
+		logger = logging.New(logging.DiscardHandler)
 	}
-	logger = logger.WithField("module", "artifactcache")
+	logger = logger.With("module", "artifactcache")
 	h.logger = logger
 
 	if opts.OutboundIP != "" {

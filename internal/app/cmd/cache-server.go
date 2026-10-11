@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"gitea.com/gitea/runner/act/artifactcache"
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/app/run"
 	"gitea.com/gitea/runner/internal/pkg/config"
 
@@ -60,7 +61,7 @@ func runCacheServer(configFile *string, cacheArgs *cacheServerArgs) func(cmd *co
 			Port:           port,
 			InternalSecret: secret,
 			Policy:         run.CachePolicy(cfg),
-			Logger:         log.StandardLogger().WithField("module", "cache_request"),
+			Logger:         logging.Default().With("module", "cache_request"),
 		})
 		if err != nil {
 			return err

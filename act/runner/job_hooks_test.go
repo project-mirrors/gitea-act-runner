@@ -12,9 +12,10 @@ import (
 	"testing"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
 
 	"gitea.dev/actionslib/pkg/model"
-	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,8 +65,8 @@ func newHookRunContext(jobContainer *hookContainer, config *Config) (*RunContext
 		Run:          &model.Run{JobID: "job", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job": {}}}},
 		JobContainer: jobContainer,
 	}
-	logger, _ := test.NewNullLogger()
-	ctx := common.WithJobErrorContainer(common.WithLogger(context.Background(), logger.WithField("test", true)))
+	logger := logging.New(logtest.New())
+	ctx := common.WithJobErrorContainer(common.WithLogger(context.Background(), logger.With("test", true)))
 	rc.ExprEval = rc.NewExpressionEvaluator(ctx)
 	return rc, ctx
 }

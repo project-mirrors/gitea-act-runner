@@ -19,8 +19,8 @@ import (
 	"sync"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 
-	"github.com/sirupsen/logrus"
 	"golang.org/x/term"
 )
 
@@ -73,8 +73,9 @@ func WithMasks(ctx context.Context, masks *[]string) context.Context {
 	return context.WithValue(ctx, masksContextKeyVal, masks)
 }
 
+// JobLoggerFactory supplies the handler a job's own log output goes to, in place of stdout.
 type JobLoggerFactory interface {
-	WithJobLogger() *logrus.Logger
+	WithJobLogger() logging.Handler
 }
 
 type jobLoggerFactoryContextKey string
@@ -89,84 +90,70 @@ func WithJobLoggerFactory(ctx context.Context, factory JobLoggerFactory) context
 func WithJobLogger(ctx context.Context, jobID, jobName string, config *Config, masks *[]string, matrix map[string]any) context.Context {
 	ctx = WithMasks(ctx, masks)
 
-	var logger *logrus.Logger
+	var output logging.Handler
 	if jobLoggerFactory, ok := ctx.Value(jobLoggerFactoryContextKeyVal).(JobLoggerFactory); ok && jobLoggerFactory != nil {
-		logger = jobLoggerFactory.WithJobLogger()
+		output = jobLoggerFactory.WithJobLogger()
+	} else if config.JSONLogger {
+		output = newJobLogJSONHandler(os.Stdout)
 	} else {
-		var formatter logrus.Formatter
-		if config.JSONLogger {
-			formatter = &logrus.JSONFormatter{}
-		} else {
-			mux.Lock()
-			defer mux.Unlock()
-			nextColor++
-			formatter = &jobLogFormatter{color: colors[nextColor%len(colors)]}
-		}
-
-		logger = logrus.New()
-		logger.SetOutput(os.Stdout)
-		logger.SetLevel(logrus.GetLevel())
-		logger.SetFormatter(formatter)
+		mux.Lock()
+		nextColor++
+		color := colors[nextColor%len(colors)]
+		mux.Unlock()
+		output = newJobLogHandler(os.Stdout, color)
 	}
 
-	{ // Adapt to Gitea
-		if hook := common.LoggerHook(ctx); hook != nil {
-			logger.AddHook(hook)
-		}
-		if config.JobLoggerLevel != nil {
-			logger.SetLevel(*config.JobLoggerLevel)
-		} else {
-			logger.SetLevel(logrus.TraceLevel)
-		}
+	var handlers []logging.Handler
+	if h := common.LoggerHandler(ctx); h != nil { // Adapt to Gitea
+		handlers = append(handlers, h)
 	}
-
-	logger.SetFormatter(&maskedFormatter{
-		Formatter: logger.Formatter,
-		masker:    valueMasker(config.InsecureSecrets, config.maskers()),
+	handlers = append(handlers, &maskedHandler{
+		Handler: output,
+		masker:  valueMasker(config.InsecureSecrets, config.maskers()),
 	})
-	rtn := logger.WithFields(logrus.Fields{
-		"job":    jobName,
-		"jobID":  jobID,
-		"dryrun": common.Dryrun(ctx),
-		"matrix": matrix,
-	}).WithContext(ctx)
+
+	level := logging.LevelTrace
+	if config.JobLoggerLevel != nil {
+		level = *config.JobLoggerLevel
+	}
+
+	rtn := logging.New(logging.NewLevelHandler(logging.NewMultiHandler(handlers...), level)).With(
+		"job", jobName,
+		"jobID", jobID,
+		"dryrun", common.Dryrun(ctx),
+		"matrix", matrix,
+	).WithContext(ctx)
 
 	return common.WithLogger(ctx, rtn)
 }
 
 func WithCompositeLogger(ctx context.Context, masks *[]string) context.Context {
 	ctx = WithMasks(ctx, masks)
-	return common.WithLogger(ctx, common.Logger(ctx).WithFields(logrus.Fields{}).WithContext(ctx))
+	return common.WithLogger(ctx, common.Logger(ctx).WithContext(ctx))
 }
 
 func WithCompositeStepLogger(ctx context.Context, stepID string) context.Context {
-	val := common.Logger(ctx)
-	stepIDs := make([]string, 0)
+	stepIDs := append(slices.Clone(common.StepIDs(ctx)), stepID)
+	ctx = common.WithStepIDs(ctx, stepIDs)
 
-	if logger, ok := val.(*logrus.Entry); ok {
-		if oldStepIDs, ok := logger.Data["stepID"].([]string); ok {
-			stepIDs = append(stepIDs, oldStepIDs...)
-		}
-	}
-
-	stepIDs = append(stepIDs, stepID)
-
-	return common.WithLogger(ctx, common.Logger(ctx).WithFields(logrus.Fields{
-		"stepID": stepIDs,
-	}).WithContext(ctx))
+	return common.WithLogger(ctx, common.Logger(ctx).With("stepID", stepIDs).WithContext(ctx))
 }
 
 func withStepLogger(ctx context.Context, stepNumber int, stepID, stepName, stageName string) context.Context {
-	rtn := common.Logger(ctx).WithFields(logrus.Fields{
-		"stepNumber": stepNumber,
-		"step":       stepName,
-		"stepID":     []string{stepID},
-		"stage":      stageName,
-	})
+	stepIDs := []string{stepID}
+	ctx = common.WithStepIDs(ctx, stepIDs)
+
+	rtn := common.Logger(ctx).With(
+		"stepNumber", stepNumber,
+		"step", stepName,
+		"stepID", stepIDs,
+		"stage", stageName,
+	)
 	return common.WithLogger(ctx, rtn)
 }
 
-type entryProcessor func(entry *logrus.Entry) *logrus.Entry
+// entryProcessor rewrites a record before the output handler sees it.
+type entryProcessor func(ctx context.Context, r logging.Record) logging.Record
 
 var secretValueEncoders = []func(string) string{
 	func(v string) string { return base64.StdEncoding.EncodeToString([]byte(v)) },
@@ -321,16 +308,16 @@ func valueMasker(insecureSecrets bool, oldnew []string) entryProcessor {
 		replacer *strings.Replacer
 	)
 
-	return func(entry *logrus.Entry) *logrus.Entry {
+	return func(ctx context.Context, r logging.Record) logging.Record {
 		if insecureSecrets {
-			return entry
+			return r
 		}
 
-		masks := Masks(entry.Context)
+		masks := Masks(ctx)
 
 		if len(*masks) == 0 {
-			entry.Message = defReplacer.Replace(entry.Message)
-			return entry
+			r.Message = defReplacer.Replace(r.Message)
+			return r
 		}
 
 		mu.Lock()
@@ -349,89 +336,129 @@ func valueMasker(insecureSecrets bool, oldnew []string) entryProcessor {
 		cmasker := replacer
 		mu.Unlock()
 
-		entry.Message = cmasker.Replace(entry.Message)
+		r.Message = cmasker.Replace(r.Message)
 
-		return entry
+		return r
 	}
 }
 
-type maskedFormatter struct {
-	logrus.Formatter
+type maskedHandler struct {
+	logging.Handler
 	masker entryProcessor
 }
 
-func (f *maskedFormatter) Format(entry *logrus.Entry) ([]byte, error) {
-	return f.Formatter.Format(f.masker(entry))
+func (m *maskedHandler) Handle(ctx context.Context, r logging.Record) error {
+	return m.Handler.Handle(ctx, m.masker(ctx, r))
 }
 
-type jobLogFormatter struct {
+func (m *maskedHandler) WithAttrs(attrs []logging.Attr) logging.Handler {
+	return &maskedHandler{Handler: m.Handler.WithAttrs(attrs), masker: m.masker}
+}
+
+// jobLogHandler writes a job's log to w, one record per line in the shape format gives it.
+type jobLogHandler struct {
+	w      io.Writer
+	mu     *sync.Mutex // shared by every handler derived with WithAttrs, as they share w
+	attrs  []logging.Attr
+	format func(logging.Record) ([]byte, error)
+}
+
+// newJobLogHandler writes readable text.
+func newJobLogHandler(w io.Writer, color int) *jobLogHandler {
+	return &jobLogHandler{w: w, mu: &sync.Mutex{}, format: textFormatter{w: w, color: color}.format}
+}
+
+func (h *jobLogHandler) Enabled(context.Context, logging.Level) bool { return true }
+
+func (h *jobLogHandler) WithAttrs(attrs []logging.Attr) logging.Handler {
+	c := *h
+	c.attrs = slices.Concat(h.attrs, attrs)
+	return &c
+}
+
+func (h *jobLogHandler) Handle(_ context.Context, r logging.Record) error {
+	r.Attrs = slices.Concat(h.attrs, r.Attrs)
+	line, err := h.format(r)
+	if err != nil {
+		return err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, err = h.w.Write(line)
+	return err
+}
+
+type textFormatter struct {
+	w     io.Writer
 	color int
 }
 
-func (f *jobLogFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+func (f textFormatter) format(r logging.Record) ([]byte, error) {
 	b := &bytes.Buffer{}
 
 	// the web renderer decodes command data, so this local view has to as well
-	if _, _, _, ok := tryParseRawActionCommand(entry.Message + "\n"); ok {
-		entry.Message = UnescapeCommandData(entry.Message)
+	if _, _, _, ok := tryParseRawActionCommand(r.Message + "\n"); ok {
+		r.Message = UnescapeCommandData(r.Message)
 	}
+	r.Message = strings.TrimSuffix(r.Message, "\n")
 
-	if f.isColored(entry) {
-		f.printColored(b, entry)
+	if f.isColored() {
+		f.printColored(b, r)
 	} else {
-		f.print(b, entry)
+		f.print(b, r)
 	}
 
 	b.WriteByte('\n')
 	return b.Bytes(), nil
 }
 
-func (f *jobLogFormatter) printColored(b *bytes.Buffer, entry *logrus.Entry) {
-	entry.Message = strings.TrimSuffix(entry.Message, "\n")
+func attrIsTrue(r logging.Record, key string) bool {
+	v, _ := r.Attr(key)
+	return v == true
+}
 
-	job := entry.Data["job"]
+func (f textFormatter) printColored(b *bytes.Buffer, r logging.Record) {
+	job, _ := r.Attr("job")
 
 	debugFlag := ""
-	if entry.Level == logrus.DebugLevel {
+	if r.Level == logging.LevelDebug {
 		debugFlag = "[DEBUG] "
 	}
 
 	switch {
-	case entry.Data[rawOutputField] == true:
-		if entry.Data[scriptLineCyanField] == true {
-			fmt.Fprintf(b, "\x1b[%dm|\x1b[0m \x1b[36;1m%s\x1b[0m", f.color, entry.Message)
+	case attrIsTrue(r, rawOutputField):
+		if attrIsTrue(r, scriptLineCyanField) {
+			fmt.Fprintf(b, "\x1b[%dm|\x1b[0m \x1b[36;1m%s\x1b[0m", f.color, r.Message)
 		} else {
-			fmt.Fprintf(b, "\x1b[%dm|\x1b[0m %s", f.color, entry.Message)
+			fmt.Fprintf(b, "\x1b[%dm|\x1b[0m %s", f.color, r.Message)
 		}
-	case entry.Data["dryrun"] == true:
-		fmt.Fprintf(b, "\x1b[1m\x1b[%dm\x1b[7m*DRYRUN*\x1b[0m \x1b[%dm[%s] \x1b[0m%s%s", gray, f.color, job, debugFlag, entry.Message)
+	case attrIsTrue(r, "dryrun"):
+		fmt.Fprintf(b, "\x1b[1m\x1b[%dm\x1b[7m*DRYRUN*\x1b[0m \x1b[%dm[%s] \x1b[0m%s%s", gray, f.color, job, debugFlag, r.Message)
 	default:
-		fmt.Fprintf(b, "\x1b[%dm[%s] \x1b[0m%s%s", f.color, job, debugFlag, entry.Message)
+		fmt.Fprintf(b, "\x1b[%dm[%s] \x1b[0m%s%s", f.color, job, debugFlag, r.Message)
 	}
 }
 
-func (f *jobLogFormatter) print(b *bytes.Buffer, entry *logrus.Entry) {
-	entry.Message = strings.TrimSuffix(entry.Message, "\n")
-
-	job := entry.Data["job"]
+func (f textFormatter) print(b *bytes.Buffer, r logging.Record) {
+	job, _ := r.Attr("job")
 
 	debugFlag := ""
-	if entry.Level == logrus.DebugLevel {
+	if r.Level == logging.LevelDebug {
 		debugFlag = "[DEBUG] "
 	}
 
 	switch {
-	case entry.Data[rawOutputField] == true:
-		fmt.Fprintf(b, "[%s]   | %s", job, entry.Message)
-	case entry.Data["dryrun"] == true:
-		fmt.Fprintf(b, "*DRYRUN* [%s] %s%s", job, debugFlag, entry.Message)
+	case attrIsTrue(r, rawOutputField):
+		fmt.Fprintf(b, "[%s]   | %s", job, r.Message)
+	case attrIsTrue(r, "dryrun"):
+		fmt.Fprintf(b, "*DRYRUN* [%s] %s%s", job, debugFlag, r.Message)
 	default:
-		fmt.Fprintf(b, "[%s] %s%s", job, debugFlag, entry.Message)
+		fmt.Fprintf(b, "[%s] %s%s", job, debugFlag, r.Message)
 	}
 }
 
-func (f *jobLogFormatter) isColored(entry *logrus.Entry) bool {
-	isColored := checkIfTerminal(entry.Logger.Out)
+func (f textFormatter) isColored() bool {
+	isColored := checkIfTerminal(f.w)
 
 	if force, ok := os.LookupEnv("CLICOLOR_FORCE"); ok && force != "0" {
 		isColored = true

@@ -193,7 +193,7 @@ func setReusedWorkflowCallerResult(rc *RunContext, runner *runnerImpl) common.Ex
 				unlock := lockJob(rc.Run.Job())
 				rc.result(reusedWorkflowJobResult)
 				unlock()
-				common.Logger(ctx).WithField("jobResult", reusedWorkflowJobResult).Infof("Job %s", reusedWorkflowJobResultMessage)
+				common.Logger(ctx).With("jobResult", reusedWorkflowJobResult).Infof("Job %s", reusedWorkflowJobResultMessage)
 			}
 		}
 
