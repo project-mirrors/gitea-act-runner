@@ -6,7 +6,6 @@ package common
 
 import (
 	"context"
-	"slices"
 
 	"gitea.com/gitea/runner/act/common/logging"
 )
@@ -56,5 +55,5 @@ func StepIDs(ctx context.Context) []string {
 
 // WithStepIDs replaces the step IDs in the context
 func WithStepIDs(ctx context.Context, ids []string) context.Context {
-	return context.WithValue(ctx, stepIDsContextKey{}, slices.Clone(ids))
+	return context.WithValue(ctx, stepIDsContextKey{}, ids)
 }

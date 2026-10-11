@@ -22,8 +22,6 @@ func New(h Handler) *Logger {
 	return &Logger{h: h, ctx: context.Background()}
 }
 
-func (l *Logger) Handler() Handler { return l.h }
-
 // With returns a Logger that adds the key/value pairs to every record, like slog.Logger.With.
 func (l *Logger) With(args ...any) *Logger {
 	if len(args) == 0 {
