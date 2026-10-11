@@ -9,6 +9,8 @@ import (
 	"os"
 	"runtime"
 	"sync/atomic"
+
+	"github.com/sirupsen/logrus"
 )
 
 // TextOptions describes how the process-wide Logger writes a record as text.
@@ -39,8 +41,11 @@ func Default() *Logger { return std.Load() }
 // initial console Logger.
 func SetDefault(l *Logger) { std.Store(l) }
 
-// SetLevel sets the minimum level of the initial process-wide Logger.
-func SetLevel(level Level) { stdState.level.Set(slog.Level(level)) }
+// SetLevel sets the minimum level of the initial process-wide Logger and of what libraries log through logrus.
+func SetLevel(level Level) {
+	stdState.level.Set(slog.Level(level))
+	logrus.SetLevel(toLogrusLevel(level))
+}
 
 // GetLevel returns the minimum level of the initial process-wide Logger.
 func GetLevel() Level { return Level(stdState.level.Level()) }
@@ -62,24 +67,12 @@ func SetTextFormat(o TextOptions) {
 	stdState.opts = o
 }
 
-// GetTextFormat returns what SetTextFormat last set, the zero value if it never was.
-func GetTextFormat() TextOptions {
-	stdState.mu.Lock()
-	defer stdState.mu.Unlock()
-	return stdState.opts
-}
-
 // SetReportCaller makes the initial process-wide Logger record where each call came from, which costs time.
 func SetReportCaller(on bool) {
 	stdState.mu.Lock()
 	defer stdState.mu.Unlock()
 	stdState.reportCaller = on
-}
-
-func ReportCaller() bool {
-	stdState.mu.Lock()
-	defer stdState.mu.Unlock()
-	return stdState.reportCaller
+	logrus.SetReportCaller(on)
 }
 
 func Enabled(level Level) bool { return Default().Enabled(level) }

@@ -170,10 +170,6 @@ func (r *Reporter) ResetSteps(l int) {
 // Enabled makes the Reporter see every record, the job logger's level filter runs before it.
 func (r *Reporter) Enabled(context.Context, logging.Level) bool { return true }
 
-func (r *Reporter) Handle(_ context.Context, rec logging.Record) error {
-	return r.handle(rec)
-}
-
 // WithAttrs returns a Handler feeding the same Reporter, with attrs added to every record.
 func (r *Reporter) WithAttrs(attrs []logging.Attr) logging.Handler {
 	return &reporterHandler{r: r, attrs: attrs}
@@ -184,11 +180,13 @@ type reporterHandler struct {
 	attrs []logging.Attr
 }
 
-func (h *reporterHandler) Enabled(context.Context, logging.Level) bool { return true }
+func (h *reporterHandler) Enabled(ctx context.Context, level logging.Level) bool {
+	return h.r.Enabled(ctx, level)
+}
 
-func (h *reporterHandler) Handle(_ context.Context, rec logging.Record) error {
+func (h *reporterHandler) Handle(ctx context.Context, rec logging.Record) error {
 	rec.Attrs = slices.Concat(h.attrs, rec.Attrs)
-	return h.r.handle(rec)
+	return h.r.Handle(ctx, rec)
 }
 
 func (h *reporterHandler) WithAttrs(attrs []logging.Attr) logging.Handler {
@@ -252,7 +250,7 @@ func (r *Reporter) unlockAndNotify(urgentState bool) {
 	}
 }
 
-func (r *Reporter) handle(entry logging.Record) error {
+func (r *Reporter) Handle(_ context.Context, entry logging.Record) error {
 	urgentState := false
 
 	r.stateMu.Lock()
@@ -705,7 +703,7 @@ func (r *Reporter) ReportState(reportResult bool) error {
 	r.outputsMu.Unlock()
 
 	// Consume stateChanged atomically with the snapshot; restored on error
-	// below so a concurrent Fire() during UpdateTask isn't silently lost.
+	// below so a log record handled during UpdateTask isn't silently lost.
 	// Heartbeat at stateReportInterval even when nothing changed, so the server
 	// doesn't time out long-running silent jobs as orphaned (#826).
 	last := r.lastReportedAtNanos.Load()
