@@ -80,11 +80,11 @@ func fromLogrusLevel(l logrus.Level) Level {
 }
 
 // LogrusBridgeIntact reports whether logrus's global logger is still set up as the bridge needs,
-// discarding its own output and passing every level to the hook. A dependency that calls
-// logrus.SetOutput or SetLevel breaks that, and its lines then show up twice or not at all.
+// discarding its own output and following the process-wide level. A dependency that calls
+// logrus.SetOutput or SetLevel breaks that, and its lines then show up twice, or at the wrong level.
 func LogrusBridgeIntact() bool {
 	std := logrus.StandardLogger()
-	if std.Out != io.Discard || std.GetLevel() != logrus.TraceLevel {
+	if std.Out != io.Discard || std.GetLevel() != toLogrusLevel(GetLevel()) {
 		return false
 	}
 	for _, level := range logrus.AllLevels {
