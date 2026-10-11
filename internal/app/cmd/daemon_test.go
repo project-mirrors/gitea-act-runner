@@ -187,3 +187,10 @@ func TestShouldRetryDeclare(t *testing.T) {
 		require.Equal(t, tc.retry, shouldRetryDeclare(tc.err), tc.err.Error())
 	}
 }
+
+// A dependency that reconfigures logrus's global logger when it is loaded makes its own log lines
+// show up twice or not at all, so this fails when upgrading one starts doing that. It does not
+// cover a dependency that does so later, while running.
+func TestLogrusBridgeSurvivesDependencies(t *testing.T) {
+	require.True(t, logging.LogrusBridgeIntact())
+}
