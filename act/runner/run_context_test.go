@@ -1399,8 +1399,7 @@ func TestRunContext_cleanupFailedStart(t *testing.T) {
 				Run:           &model.Run{JobID: "job", Workflow: workflow},
 				platformImage: "node:20",
 			}
-			hook := logtest.New()
-			logger := logging.New(hook)
+			logger, hook := logtest.NewLogger()
 			ctx := common.WithLogger(common.WithDryrun(t.Context(), true), logger)
 			rc.ExprEval = rc.NewExpressionEvaluator(ctx)
 			err = rc.startContainer().Then(rc.stopContainer()).Finally(rc.closeContainer())(ctx)

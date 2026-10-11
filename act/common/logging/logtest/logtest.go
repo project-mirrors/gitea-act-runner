@@ -29,6 +29,12 @@ func New() *Handler {
 	return NewWithLevel(logging.LevelInfo)
 }
 
+// NewLogger returns a Logger writing to a new Handler from New, and that Handler.
+func NewLogger() (*logging.Logger, *Handler) {
+	h := New()
+	return logging.New(h), h
+}
+
 func NewWithLevel(minLevel logging.Level) *Handler {
 	return &Handler{store: &store{}, minLevel: minLevel}
 }

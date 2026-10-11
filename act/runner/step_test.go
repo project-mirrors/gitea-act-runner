@@ -513,8 +513,7 @@ func TestRunStepExecutorParity(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			step := newStep(t, test.step)
-			hook := logtest.New()
-			logger := logging.New(hook)
+			logger, hook := logtest.NewLogger()
 			err := runStepExecutor(step, stepStageMain, test.executor)(common.WithLogger(context.Background(), logger))
 
 			require.ErrorContains(t, err, test.wantError)
@@ -525,8 +524,7 @@ func TestRunStepExecutorParity(t *testing.T) {
 
 	t.Run("file command error honors continue-on-error", func(t *testing.T) {
 		step := newStep(t, &model.Step{ID: "commands", RawContinueOnError: "true"})
-		hook := logtest.New()
-		logger := logging.New(hook)
+		logger, hook := logtest.NewLogger()
 		err := runStepExecutor(step, stepStageMain, func(context.Context) error {
 			require.NoError(t, os.WriteFile(step.env["GITHUB_ENV"], []byte("GOOD=1\nmalformed\n"), 0o600))
 			require.NoError(t, os.WriteFile(step.env["GITHUB_OUTPUT"], []byte("kept=value\n"), 0o600))
