@@ -17,10 +17,10 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 
 	"gitea.dev/actionslib/pkg/model"
 	"github.com/joho/godotenv"
-	log "github.com/sirupsen/logrus"
 	assert "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +28,7 @@ import (
 var (
 	baseImage = "node:24-bookworm-slim"
 	platforms map[string]string
-	logLevel  = log.DebugLevel
+	logLevel  = logging.LevelDebug
 	workdir   = "testdata"
 	secrets   map[string]string
 	testRunID = strings.ToLower(rand.Text()[:8]) // keeps docker names apart from concurrent test processes on one daemon
@@ -55,7 +55,7 @@ func init() {
 	}
 
 	if l := os.Getenv("ACT_TEST_LOG_LEVEL"); l != "" {
-		if lvl, err := log.ParseLevel(l); err == nil {
+		if lvl, err := logging.ParseLevel(l); err == nil {
 			logLevel = lvl
 		}
 	}
@@ -71,10 +71,11 @@ func TestNoWorkflowsFoundByPlanner(t *testing.T) {
 	planner, err := model.NewWorkflowPlanner("res", true)
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 
-	out := log.StandardLogger().Out
+	out := logging.Output()
+	t.Cleanup(func() { logging.SetOutput(out) })
 	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	log.SetLevel(log.DebugLevel)
+	logging.SetOutput(&buf)
+	logging.SetLevel(logging.LevelDebug)
 	plan, err := planner.PlanEvent("pull_request")
 	assert.NotNil(t, plan)
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
@@ -84,17 +85,17 @@ func TestNoWorkflowsFoundByPlanner(t *testing.T) {
 	assert.NotNil(t, plan)
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 	assert.Contains(t, buf.String(), "no workflows found by planner")
-	log.SetOutput(out)
 }
 
 func TestGraphMissingEvent(t *testing.T) {
 	planner, err := model.NewWorkflowPlanner("testdata/issue-1595/no-event.yml", true)
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 
-	out := log.StandardLogger().Out
+	out := logging.Output()
+	t.Cleanup(func() { logging.SetOutput(out) })
 	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	log.SetLevel(log.DebugLevel)
+	logging.SetOutput(&buf)
+	logging.SetLevel(logging.LevelDebug)
 
 	plan, err := planner.PlanEvent("push")
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
@@ -102,7 +103,6 @@ func TestGraphMissingEvent(t *testing.T) {
 	assert.Empty(t, plan.Stages)
 
 	assert.Contains(t, buf.String(), "no events found for workflow: no-event.yml")
-	log.SetOutput(out)
 }
 
 func TestGraphMissingFirst(t *testing.T) {
@@ -119,29 +119,30 @@ func TestGraphWithMissing(t *testing.T) {
 	planner, err := model.NewWorkflowPlanner("testdata/issue-1595/missing.yml", true)
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 
-	out := log.StandardLogger().Out
+	out := logging.Output()
+	t.Cleanup(func() { logging.SetOutput(out) })
 	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	log.SetLevel(log.DebugLevel)
+	logging.SetOutput(&buf)
+	logging.SetLevel(logging.LevelDebug)
 
 	plan, err := planner.PlanEvent("push")
 	assert.NotNil(t, plan)
 	assert.Empty(t, plan.Stages)
 	assert.EqualError(t, err, "unable to build dependency graph for missing (missing.yml)") //nolint:testifylint // pre-existing issue from nektos/act
 	assert.Contains(t, buf.String(), "unable to build dependency graph for missing (missing.yml)")
-	log.SetOutput(out)
 }
 
 func TestGraphWithSomeMissing(t *testing.T) {
-	log.SetLevel(log.DebugLevel)
+	logging.SetLevel(logging.LevelDebug)
 
 	planner, err := model.NewWorkflowPlanner("testdata/issue-1595/", true)
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 
-	out := log.StandardLogger().Out
+	out := logging.Output()
+	t.Cleanup(func() { logging.SetOutput(out) })
 	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	log.SetLevel(log.DebugLevel)
+	logging.SetOutput(&buf)
+	logging.SetLevel(logging.LevelDebug)
 
 	plan, err := planner.PlanAll()
 	assert.Error(t, err, "unable to build dependency graph for no first (no-first.yml)") //nolint:testifylint // pre-existing issue from nektos/act
@@ -149,7 +150,6 @@ func TestGraphWithSomeMissing(t *testing.T) {
 	assert.Len(t, plan.Stages, 1)
 	assert.Contains(t, buf.String(), "unable to build dependency graph for missing (missing.yml)")
 	assert.Contains(t, buf.String(), "unable to build dependency graph for no first (no-first.yml)")
-	log.SetOutput(out)
 }
 
 func TestNewPlanExecutorRequiresRunsOnBeforeRunningAnyJob(t *testing.T) {
@@ -221,7 +221,7 @@ type TestJobFileInfo struct {
 func (j *TestJobFileInfo) runTest(ctx context.Context, t *testing.T, cfg *Config) {
 	fmt.Printf("::group::%s\n", j.workflowPath) //nolint:forbidigo // pre-existing issue from nektos/act
 
-	log.SetLevel(logLevel)
+	logging.SetLevel(logLevel)
 
 	workdir, err := filepath.Abs(j.workdir)
 	assert.NoError(t, err, workdir) //nolint:testifylint // pre-existing issue from nektos/act

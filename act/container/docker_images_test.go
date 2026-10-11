@@ -12,13 +12,14 @@ import (
 	"strings"
 	"testing"
 
-	log "github.com/sirupsen/logrus"
+	"gitea.com/gitea/runner/act/common/logging"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func init() {
-	log.SetLevel(log.DebugLevel)
+	logging.SetLevel(logging.LevelDebug)
 }
 
 // buildScratchImage builds a tiny empty image for the given platform locally (FROM scratch, no

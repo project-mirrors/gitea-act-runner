@@ -11,7 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	log "github.com/sirupsen/logrus"
+	"gitea.com/gitea/runner/act/common/logging"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -27,7 +28,7 @@ func TestContainerPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		cwd, err := os.Getwd()
 		if err != nil {
-			log.Error(err)
+			logging.Error(err)
 		}
 
 		rootDrive := os.Getenv("SystemDrive")
@@ -49,7 +50,7 @@ func TestContainerPath(t *testing.T) {
 	} else {
 		cwd, err := os.Getwd()
 		if err != nil {
-			log.Error(err)
+			logging.Error(err)
 		}
 		for _, v := range []containerPathJob{
 			{"/home/act/go/src/github.com/nektos/act", "/home/act/go/src/github.com/nektos/act", ""},

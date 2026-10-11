@@ -100,13 +100,13 @@ func TestCallerPC(t *testing.T) {
 	}
 
 	std := logrus.StandardLogger()
-	prevOut, prevCaller, prevHooks := std.Out, std.ReportCaller, std.ReplaceHooks(logrus.LevelHooks{})
+	prevOut, prevCaller, prevHooks := logging.Output(), std.ReportCaller, std.ReplaceHooks(logrus.LevelHooks{})
 	t.Cleanup(func() {
-		std.SetOutput(prevOut)
+		logging.SetOutput(prevOut)
 		std.SetReportCaller(prevCaller)
 		std.ReplaceHooks(prevHooks)
 	})
-	std.SetOutput(io.Discard)
+	logging.SetOutput(io.Discard)
 	std.SetReportCaller(true)
 	hook := logrustest.NewGlobal()
 	logging.Infof("global")

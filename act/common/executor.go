@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"runtime/debug"
 
-	log "github.com/sirupsen/logrus"
+	"gitea.com/gitea/runner/act/common/logging"
 )
 
 // Executor define contract for the steps of a workflow
@@ -74,33 +74,33 @@ func NewParallelExecutor(parallel int, executors ...Executor) Executor {
 		errs := make(chan error, len(executors))
 
 		if 1 > parallel {
-			log.Debugf("Parallel tasks (%d) below minimum, setting to 1", parallel)
+			logging.Debugf("Parallel tasks (%d) below minimum, setting to 1", parallel)
 			parallel = 1
 		}
 
-		log.Infof("NewParallelExecutor: Creating %d workers for %d executors", parallel, len(executors))
+		logging.Infof("NewParallelExecutor: Creating %d workers for %d executors", parallel, len(executors))
 
 		for i := 0; i < parallel; i++ {
 			go func(workerID int, work <-chan Executor, errs chan<- error) {
-				log.Debugf("Worker %d started", workerID)
+				logging.Debugf("Worker %d started", workerID)
 				taskCount := 0
 				for executor := range work {
 					taskCount++
-					log.Debugf("Worker %d executing task %d", workerID, taskCount)
+					logging.Debugf("Worker %d executing task %d", workerID, taskCount)
 					// Recover from panics in executors to avoid crashing the worker
 					// goroutine which would leave the runner process hung.
 					// https://gitea.com/gitea/runner/issues/371
 					errs <- func() (err error) {
 						defer func() {
 							if r := recover(); r != nil {
-								log.Errorf("panic in executor: %v\n%s", r, debug.Stack())
+								logging.Errorf("panic in executor: %v\n%s", r, debug.Stack())
 								err = fmt.Errorf("panic: %v", r)
 							}
 						}()
 						return executor(ctx)
 					}()
 				}
-				log.Debugf("Worker %d finished (%d tasks executed)", workerID, taskCount)
+				logging.Debugf("Worker %d finished (%d tasks executed)", workerID, taskCount)
 			}(i, work, errs)
 		}
 

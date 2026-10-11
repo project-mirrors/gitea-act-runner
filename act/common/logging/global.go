@@ -3,7 +3,11 @@
 
 package logging
 
-import "github.com/sirupsen/logrus"
+import (
+	"io"
+
+	"github.com/sirupsen/logrus"
+)
 
 var std = New(NewLogrusHandler(logrus.StandardLogger()))
 
@@ -15,6 +19,12 @@ func SetLevel(level Level) { logrus.SetLevel(toLogrusLevel(level)) }
 
 // GetLevel returns the minimum level of the process-wide Logger.
 func GetLevel() Level { return fromLogrusLevel(logrus.GetLevel()) }
+
+// SetOutput sets where the process-wide Logger writes.
+func SetOutput(w io.Writer) { logrus.SetOutput(w) }
+
+// Output returns where the process-wide Logger writes.
+func Output() io.Writer { return logrus.StandardLogger().Out }
 
 func Enabled(level Level) bool { return std.Enabled(level) }
 

@@ -9,13 +9,14 @@ import (
 	"errors"
 	"testing"
 
+	"gitea.com/gitea/runner/act/common/logging"
+
 	"gitea.dev/actionslib/pkg/model"
-	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestSetRef(t *testing.T) {
-	log.SetLevel(log.DebugLevel)
+	logging.SetLevel(logging.LevelDebug)
 
 	oldFindGitRef := findGitRef
 	oldFindGitRevision := findGitRevision
@@ -129,7 +130,7 @@ func TestSetRef(t *testing.T) {
 }
 
 func TestSetSha(t *testing.T) {
-	log.SetLevel(log.DebugLevel)
+	logging.SetLevel(logging.LevelDebug)
 
 	oldFindGitRef := findGitRef
 	oldFindGitRevision := findGitRevision
