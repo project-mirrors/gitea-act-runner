@@ -9,7 +9,7 @@ import (
 
 // NullLogger is used to create a new JobLogger to discard logs. This
 // will prevent these logs from being logged to the stdout, but
-// forward them to the Reporter via its hook.
+// forward them to the Reporter via its handler.
 type NullLogger struct{}
 
 // WithJobLogger returns a handler that discards all logs.

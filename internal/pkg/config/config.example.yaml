@@ -6,7 +6,7 @@
 # each task's log kept under log.job. Neither controls how workflow step output is streamed
 # to the Gitea UI; tune that with runner.log_report_* below.
 log:
-  # logrus severity: trace, debug, info, warn, error, fatal, panic.
+  # Severity: trace, debug, info, warn, error. fatal and panic are accepted and mean error.
   # trace and debug turn on caller/file:line in log lines. Default if omitted: info.
   #level: info
   # Write a copy of each task's log to dir as <start time>-task-<id>.log, so a job's output
