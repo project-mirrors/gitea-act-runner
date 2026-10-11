@@ -190,3 +190,12 @@ func TestLogrusBridge(t *testing.T) {
 	logrus.Debug("dropped")
 	assert.Len(t, hook.AllRecords(), 3)
 }
+
+func TestLogrusBridgeIntact(t *testing.T) {
+	assert.True(t, logging.LogrusBridgeIntact())
+
+	prev := logrus.StandardLogger().Out
+	t.Cleanup(func() { logrus.SetOutput(prev) })
+	logrus.SetOutput(&strings.Builder{}) // what a dependency doing this would do
+	assert.False(t, logging.LogrusBridgeIntact())
+}
