@@ -209,9 +209,10 @@ func TestAppendSecretMaskerSkipsUselessEncodings(t *testing.T) {
 }
 
 func TestJobLogFormatterDecodesCommandData(t *testing.T) {
-	h := newJobLogHandler(io.Discard, 0)
 	format := func(message string) string {
-		return string(h.format(logging.Record{Message: message, Attrs: []logging.Attr{{Key: rawOutputField, Value: true}}}))
+		line, err := textFormatter{w: io.Discard}.format(logging.Record{Message: message, Attrs: []logging.Attr{{Key: rawOutputField, Value: true}}})
+		require.NoError(t, err)
+		return string(line)
 	}
 
 	assert.Contains(t, format("##[error]deploy 50%25 traffic"), "##[error]deploy 50% traffic")

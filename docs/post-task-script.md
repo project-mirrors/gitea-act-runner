@@ -82,7 +82,7 @@ The script environment is **not** a full copy of the job container environment. 
 
 ## Output and errors
 
-- **Stdout/stderr** are written to the **runner process log** (logrus), prefixed with `post-task script stdout:` / `post-task script stderr:`.
+- **Stdout/stderr** are written to the **runner process log**, prefixed with `post-task script stdout:` / `post-task script stderr:`.
 - **Non-zero exit codes** are logged as warnings only. They do **not** change the job result already reported to Gitea.
 - **Timeouts and start failures** are logged as warnings; the runner still completes the task acknowledgement.
 

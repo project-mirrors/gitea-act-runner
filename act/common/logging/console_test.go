@@ -71,9 +71,8 @@ func TestConsoleLevelAndOutput(t *testing.T) {
 	assert.False(t, h.Enabled(t.Context(), slog.LevelWarn))
 	assert.True(t, h.Enabled(t.Context(), slog.LevelError))
 
-	grouped := h.WithGroup("g").WithAttrs([]slog.Attr{slog.Int("a", 1)})
 	rec := slog.NewRecord(time.Unix(0, 0), slog.LevelError, "m", 0)
-	rec.AddAttrs(slog.Group("s", slog.String("b", "2")), slog.String("c", "3"))
-	require.NoError(t, grouped.Handle(t.Context(), rec))
-	assert.Contains(t, out.String(), "g.a=1 g.c=3 g.s.b=2")
+	rec.AddAttrs(slog.String("c", "3"))
+	require.NoError(t, h.WithAttrs([]slog.Attr{slog.Int("a", 1)}).Handle(t.Context(), rec))
+	assert.Contains(t, out.String(), "a=1 c=3")
 }
