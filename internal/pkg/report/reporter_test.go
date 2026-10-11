@@ -565,7 +565,7 @@ func TestReporter_BatchSizeFlush(t *testing.T) {
 		"batch size threshold should have triggered immediate flush")
 }
 
-// TestReporter_StateChangedNotLostDuringReport asserts that a Fire() arriving
+// TestReporter_StateChangedNotLostDuringReport asserts that a log record arriving
 // mid-UpdateTask re-dirties the flag so the change is picked up by the next report.
 func TestReporter_StateChangedNotLostDuringReport(t *testing.T) {
 	var updateTaskCalls atomic.Int64
@@ -607,7 +607,7 @@ func TestReporter_StateChangedNotLostDuringReport(t *testing.T) {
 	// Wait until UpdateTask is in flight (snapshot taken, flag consumed).
 	<-inFlight
 
-	// Concurrent Fire() modifies state — must re-flip stateChanged so the
+	// A concurrent log record modifies state — must re-flip stateChanged so the
 	// change is not lost when the in-flight ReportState finishes.
 	require.NoError(t, fire(reporter, logEntry{
 		Message: "step starts",
@@ -619,15 +619,15 @@ func TestReporter_StateChangedNotLostDuringReport(t *testing.T) {
 	require.NoError(t, <-done)
 
 	// stateChanged must still be true so the next ReportState picks up the
-	// concurrent Fire()'s change instead of skipping via the early-return path.
+	// concurrent record's change instead of skipping via the early-return path.
 	reporter.stateMu.RLock()
 	changed := reporter.stateChanged
 	reporter.stateMu.RUnlock()
-	assert.True(t, changed, "stateChanged must remain true after a concurrent Fire() during in-flight ReportState")
+	assert.True(t, changed, "stateChanged must remain true after a concurrent log record during in-flight ReportState")
 
 	// And the next ReportState must actually send a second UpdateTask.
 	require.NoError(t, reporter.ReportState(false))
-	assert.Equal(t, int64(2), updateTaskCalls.Load(), "concurrent Fire() change must trigger a second UpdateTask, not be silently lost")
+	assert.Equal(t, int64(2), updateTaskCalls.Load(), "concurrent log record change must trigger a second UpdateTask, not be silently lost")
 }
 
 // TestReporter_StateChangedRestoredOnError verifies that when UpdateTask fails,
@@ -1501,5 +1501,5 @@ func fire(r *Reporter, e logEntry) error {
 	for k, v := range e.Data {
 		attrs = append(attrs, logging.Attr{Key: k, Value: v})
 	}
-	return r.Handle(context.Background(), logging.Record{Message: e.Message, Level: e.Level, Attrs: attrs})
+	return r.WithAttrs(attrs).Handle(context.Background(), logging.Record{Message: e.Message, Level: e.Level})
 }

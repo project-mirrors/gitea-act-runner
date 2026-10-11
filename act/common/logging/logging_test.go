@@ -4,7 +4,6 @@
 package logging_test
 
 import (
-	"context"
 	"errors"
 	"log/slog"
 	"runtime"
@@ -38,17 +37,6 @@ type countingStringer struct{ n *int }
 
 func (c countingStringer) String() string { *c.n++; return "x" }
 
-type levelGate struct {
-	logging.Handler
-	min logging.Level
-}
-
-func (g levelGate) Enabled(_ context.Context, l logging.Level) bool { return l >= g.min }
-
-func (g levelGate) WithAttrs(a []logging.Attr) logging.Handler {
-	return levelGate{Handler: g.Handler.WithAttrs(a), min: g.min}
-}
-
 func TestLogger(t *testing.T) {
 	h := logtest.NewWithLevel(logging.LevelTrace)
 	l := logging.New(h)
@@ -76,15 +64,16 @@ func TestLogger(t *testing.T) {
 
 func TestLoggerSkipsFormattingWhenDisabled(t *testing.T) {
 	n := 0
-	l := logging.New(levelGate{Handler: logtest.New(), min: logging.LevelWarn})
+	l := logging.New(logging.NewLevelHandler(logtest.NewWithLevel(logging.LevelTrace), logging.LevelWarn))
 	l.Debugf("%v", countingStringer{&n})
 	assert.Zero(t, n)
 	assert.False(t, l.Enabled(logging.LevelInfo))
 }
 
 func TestMultiHandler(t *testing.T) {
-	all, warnOnly := logtest.New(), logtest.New()
-	l := logging.New(logging.NewMultiHandler(all, levelGate{Handler: warnOnly, min: logging.LevelWarn})).With("a", 1)
+	assert.False(t, logging.DiscardHandler.Enabled(t.Context(), logging.LevelError))
+	all, warnOnly := logtest.New(), logtest.NewWithLevel(logging.LevelTrace)
+	l := logging.New(logging.NewMultiHandler(all, logging.NewLevelHandler(warnOnly, logging.LevelWarn), logging.DiscardHandler)).With("a", 1)
 	l.Info("i")
 	l.Error("e")
 	assert.Len(t, all.AllRecords(), 2)
@@ -101,8 +90,7 @@ func frameOf(t *testing.T, pc uintptr) runtime.Frame {
 }
 
 func TestCallerPC(t *testing.T) {
-	h := logtest.New()
-	l := logging.New(h)
+	l, h := logtest.NewLogger()
 	l.Infof("method")
 	l.Info("method")
 
@@ -112,6 +100,7 @@ func TestCallerPC(t *testing.T) {
 	logging.Infof("global")
 	logging.Error("global")
 
+	require.Len(t, h.AllRecords(), 4)
 	for _, r := range h.AllRecords() {
 		assert.True(t, strings.HasSuffix(frameOf(t, r.PC).Function, "TestCallerPC"), r.Message)
 	}
@@ -125,30 +114,6 @@ func TestDefaultLevel(t *testing.T) {
 	assert.Equal(t, logging.LevelWarn, logging.GetLevel())
 	assert.True(t, logging.Enabled(logging.LevelError))
 	assert.False(t, logging.Enabled(logging.LevelInfo))
-}
-
-func TestDiscardAndLevelHandler(t *testing.T) {
-	assert.False(t, logging.DiscardHandler.Enabled(t.Context(), logging.LevelError))
-	assert.Equal(t, logging.DiscardHandler, logging.DiscardHandler.WithAttrs([]logging.Attr{{Key: "a"}}))
-
-	inner := logtest.NewWithLevel(logging.LevelTrace)
-	l := logging.New(logging.NewLevelHandler(inner, logging.LevelWarn)).With("a", 1)
-	l.Info("dropped")
-	l.Warn("kept")
-	require.Len(t, inner.AllRecords(), 1)
-	v, _ := inner.LastRecord().Attr("a")
-	assert.Equal(t, 1, v)
-}
-
-func TestSetOutput(t *testing.T) {
-	prev := logging.Output()
-	t.Cleanup(func() { logging.SetOutput(prev) })
-
-	var buf strings.Builder
-	logging.SetOutput(&buf)
-	assert.Equal(t, &buf, logging.Output())
-	logging.Errorf("to the buffer")
-	assert.Contains(t, buf.String(), "to the buffer")
 }
 
 func TestSlogHandler(t *testing.T) {

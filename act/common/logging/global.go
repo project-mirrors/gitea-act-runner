@@ -62,24 +62,11 @@ func SetTextFormat(o TextOptions) {
 	stdState.opts = o
 }
 
-// GetTextFormat returns what SetTextFormat last set, the zero value if it never was.
-func GetTextFormat() TextOptions {
-	stdState.mu.Lock()
-	defer stdState.mu.Unlock()
-	return stdState.opts
-}
-
 // SetReportCaller makes the initial process-wide Logger record where each call came from, which costs time.
 func SetReportCaller(on bool) {
 	stdState.mu.Lock()
 	defer stdState.mu.Unlock()
 	stdState.reportCaller = on
-}
-
-func ReportCaller() bool {
-	stdState.mu.Lock()
-	defer stdState.mu.Unlock()
-	return stdState.reportCaller
 }
 
 func Enabled(level Level) bool { return Default().Enabled(level) }

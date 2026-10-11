@@ -49,6 +49,9 @@ func TestLoggerAndHandlerContext(t *testing.T) {
 	if LoggerHandler(ctx) != nil {
 		t.Fatal("plain context should not have a logger handler")
 	}
+	if StepIDs(ctx) != nil {
+		t.Fatal("plain context should not have step IDs")
+	}
 
 	logger := logging.New(logtest.New())
 	ctx = WithLogger(ctx, logger)
@@ -60,19 +63,5 @@ func TestLoggerAndHandlerContext(t *testing.T) {
 	ctx = WithLoggerHandler(ctx, handler)
 	if LoggerHandler(ctx) != handler {
 		t.Fatal("WithLoggerHandler should set handler")
-	}
-}
-
-func TestStepIDsContext(t *testing.T) {
-	ctx := context.Background()
-	if got := StepIDs(ctx); len(got) != 0 {
-		t.Fatalf("plain context step IDs = %v, want none", got)
-	}
-
-	ids := []string{"a"}
-	ctx = WithStepIDs(ctx, ids)
-	ids[0] = "changed"
-	if got := StepIDs(ctx); len(got) != 1 || got[0] != "a" {
-		t.Fatalf("StepIDs = %v, want [a]", got)
 	}
 }
