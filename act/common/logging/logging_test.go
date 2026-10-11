@@ -176,4 +176,11 @@ func TestLogrusBridgeIntact(t *testing.T) {
 	t.Cleanup(func() { logrus.SetOutput(prev) })
 	logrus.SetOutput(&strings.Builder{}) // what a dependency doing this would do
 	assert.False(t, logging.LogrusBridgeIntact())
+	logrus.SetOutput(prev)
+	assert.True(t, logging.LogrusBridgeIntact())
+
+	prevLevel := logrus.GetLevel()
+	t.Cleanup(func() { logrus.SetLevel(prevLevel) })
+	logrus.SetLevel(logrus.PanicLevel)
+	assert.False(t, logging.LogrusBridgeIntact())
 }
