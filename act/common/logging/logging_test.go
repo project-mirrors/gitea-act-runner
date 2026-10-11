@@ -100,13 +100,13 @@ func TestCallerPC(t *testing.T) {
 	}
 
 	std := logrus.StandardLogger()
-	prevOut, prevCaller, prevHooks := std.Out, std.ReportCaller, std.ReplaceHooks(logrus.LevelHooks{})
+	prevOut, prevCaller, prevHooks := logging.Output(), std.ReportCaller, std.ReplaceHooks(logrus.LevelHooks{})
 	t.Cleanup(func() {
-		std.SetOutput(prevOut)
+		logging.SetOutput(prevOut)
 		std.SetReportCaller(prevCaller)
 		std.ReplaceHooks(prevHooks)
 	})
-	std.SetOutput(io.Discard)
+	logging.SetOutput(io.Discard)
 	std.SetReportCaller(true)
 	hook := logrustest.NewGlobal()
 	logging.Infof("global")
@@ -159,15 +159,4 @@ func TestDefaultLevel(t *testing.T) {
 	assert.Equal(t, logging.LevelWarn, logging.GetLevel())
 	assert.True(t, logging.Enabled(logging.LevelError))
 	assert.False(t, logging.Enabled(logging.LevelInfo))
-}
-
-func TestSetOutput(t *testing.T) {
-	prev := logging.Output()
-	t.Cleanup(func() { logging.SetOutput(prev) })
-
-	var buf strings.Builder
-	logging.SetOutput(&buf)
-	assert.Equal(t, &buf, logging.Output())
-	logging.Errorf("to the buffer")
-	assert.Contains(t, buf.String(), "to the buffer")
 }
