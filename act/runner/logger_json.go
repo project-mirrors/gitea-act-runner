@@ -4,39 +4,23 @@
 package runner
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"slices"
 	"sync"
 	"time"
 
 	"gitea.com/gitea/runner/act/common/logging"
 )
 
-// jobLogJSONHandler writes one JSON object per record, in the shape of logrus's JSONFormatter.
-type jobLogJSONHandler struct {
-	w     io.Writer
-	mu    *sync.Mutex // shared by every handler derived with WithAttrs, as they share w
-	attrs []logging.Attr
+// newJobLogJSONHandler writes one JSON object per record, in the shape of logrus's JSONFormatter.
+func newJobLogJSONHandler(w io.Writer) *jobLogHandler {
+	return &jobLogHandler{w: w, mu: &sync.Mutex{}, format: formatJSON}
 }
 
-func newJobLogJSONHandler(w io.Writer) *jobLogJSONHandler {
-	return &jobLogJSONHandler{w: w, mu: &sync.Mutex{}}
-}
-
-func (h *jobLogJSONHandler) Enabled(context.Context, logging.Level) bool { return true }
-
-func (h *jobLogJSONHandler) WithAttrs(attrs []logging.Attr) logging.Handler {
-	c := *h
-	c.attrs = slices.Concat(h.attrs, attrs)
-	return &c
-}
-
-func (h *jobLogJSONHandler) Handle(_ context.Context, r logging.Record) error {
-	data := make(map[string]any, len(h.attrs)+len(r.Attrs)+3)
-	for _, a := range slices.Concat(h.attrs, r.Attrs) {
+func formatJSON(r logging.Record) ([]byte, error) {
+	data := make(map[string]any, len(r.Attrs)+3)
+	for _, a := range r.Attrs {
 		switch v := a.Value.(type) {
 		case error:
 			data[a.Key] = v.Error() // an error marshals to {}
@@ -55,14 +39,9 @@ func (h *jobLogJSONHandler) Handle(_ context.Context, r logging.Record) error {
 
 	line, err := json.Marshal(data)
 	if err != nil {
-		return fmt.Errorf("failed to marshal fields to JSON, %w", err)
+		return nil, fmt.Errorf("failed to marshal fields to JSON, %w", err)
 	}
-	line = append(line, '\n')
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	_, err = h.w.Write(line)
-	return err
+	return append(line, '\n'), nil
 }
 
 func jsonLevel(l logging.Level) string {
