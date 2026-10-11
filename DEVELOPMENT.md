@@ -33,14 +33,15 @@ depending on the prefix:
 
 ## Logging
 
-Log through `act/common/logging`, never `log/slog` or logrus directly. A job's logger comes from
-`common.Logger(ctx)`; code with no job uses the package functions (`logging.Infof`, `logging.With`).
-Both take printf-style messages, and `With("key", value)` adds fields.
+Log through `act/common/logging`; the linter rejects importing `log/slog` or logrus elsewhere.
+A job's logger comes from `common.Logger(ctx)`; code with no job uses the package functions
+(`logging.Infof`, `logging.With`). Both take printf-style messages, and `With("key", value)` adds
+fields.
 
 - The process-wide logger masks the secrets of every live task, the job logger masks its own.
   Going around either leaks them.
 - Libraries that log through logrus's global logger are forwarded to the process-wide one, so they
-  follow its level and masking too. Do not import logrus yourself, the linter rejects it.
+  follow its level and masking too.
 - Tests read what was logged with `logtest.NewLogger()`, or `logtest.SetDefault(t)` for the
   package functions.
 
