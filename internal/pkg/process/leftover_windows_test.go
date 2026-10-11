@@ -70,7 +70,7 @@ func TestKillProcessesWithCWDUnderTerminatesMatch(t *testing.T) {
 	cmd := startSleeperIn(t, dir)
 	awaitCWD(t, cmd.Process.Pid)
 
-	killed, err := KillProcessesWithCWDUnder(context.Background(), []string{dir})
+	killed, err := KillProcessesWithCWDUnder(t.Context(), []string{dir})
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, killed, 1)
 
@@ -85,7 +85,7 @@ func TestKillProcessesWithCWDUnderSparesUnrelated(t *testing.T) {
 	cmd := startSleeperIn(t, elsewhere)
 	awaitCWD(t, cmd.Process.Pid)
 
-	_, err := KillProcessesWithCWDUnder(context.Background(), []string{workspace})
+	_, err := KillProcessesWithCWDUnder(t.Context(), []string{workspace})
 	require.NoError(t, err)
 	require.True(t, processAlive(cmd.Process.Pid), "process outside owned dirs must be spared")
 }

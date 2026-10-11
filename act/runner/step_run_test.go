@@ -68,7 +68,7 @@ func TestStepRun(t *testing.T) {
 
 	cm.On("UpdateFromEnv", "/var/run/act/workflow/outputcmd.txt", mock.AnythingOfType("*map[string]string")).Return(noopExecutor)
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	cm.On("GetContainerArchive", ctx, "/var/run/act/workflow/pathcmd.txt").Return(io.NopCloser(&bytes.Buffer{}), nil)
 

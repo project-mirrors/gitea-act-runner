@@ -281,7 +281,7 @@ func TestRunEvent(t *testing.T) {
 	requireDocker(t)
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tables := []TestJobFileInfo{
 		// Shells
@@ -384,7 +384,7 @@ func TestRunEventHostEnvironment(t *testing.T) {
 	// nix-specific cases gate on their own tool below so a missing pwsh/nix skips just those.
 	requireHostTools(t, "bash", "node")
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tables := []TestJobFileInfo{}
 
@@ -482,7 +482,7 @@ func TestRunEventHostEnvironment(t *testing.T) {
 func TestDryrunEvent(t *testing.T) {
 	t.Parallel()
 	// Dryrun plans without containers or network (shells and local actions only).
-	ctx := common.WithDryrun(context.Background(), true)
+	ctx := common.WithDryrun(t.Context(), true)
 
 	tables := []TestJobFileInfo{
 		// Shells
@@ -513,7 +513,7 @@ func TestReusableWorkflowCaller(t *testing.T) {
 	requireDocker(t)
 	t.Parallel()
 	table := TestJobFileInfo{workdir, "uses-workflow", "push", "", platforms, map[string]string{"secret": "keep_it_private"}}
-	table.runTest(context.Background(), t, &Config{Secrets: table.secrets})
+	table.runTest(t.Context(), t, &Config{Secrets: table.secrets})
 }
 
 func TestRunEventSecrets(t *testing.T) {
@@ -534,7 +534,7 @@ func TestRunEventSecrets(t *testing.T) {
 	secrets, _ := godotenv.Read(filepath.Join(workdir, workflowPath, ".secrets"))
 	assert.NoError(t, err, "Failed to read .secrets") //nolint:testifylint // pre-existing issue from nektos/act
 
-	tjfi.runTest(context.Background(), t, &Config{Secrets: secrets, Env: env})
+	tjfi.runTest(t.Context(), t, &Config{Secrets: secrets, Env: env})
 }
 
 func TestRunEventPullRequest(t *testing.T) {
@@ -551,5 +551,5 @@ func TestRunEventPullRequest(t *testing.T) {
 		platforms:    platforms,
 	}
 
-	tjfi.runTest(context.Background(), t, &Config{EventPath: filepath.Join(workdir, workflowPath, "event.json")})
+	tjfi.runTest(t.Context(), t, &Config{EventPath: filepath.Join(workdir, workflowPath, "event.json")})
 }

@@ -4,7 +4,6 @@
 package common
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -13,7 +12,7 @@ import (
 )
 
 func TestDryrunContext(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	if Dryrun(ctx) {
 		t.Fatal("plain context should not be dryrun")
 	}
@@ -26,7 +25,7 @@ func TestDryrunContext(t *testing.T) {
 }
 
 func TestJobErrorContainer(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	err := errors.New("job failed")
 
 	SetJobError(ctx, err)
@@ -42,7 +41,7 @@ func TestJobErrorContainer(t *testing.T) {
 }
 
 func TestLoggerAndHandlerContext(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	if Logger(ctx) != logging.Default() {
 		t.Fatal("plain context should use the default logger")
 	}
@@ -64,7 +63,7 @@ func TestLoggerAndHandlerContext(t *testing.T) {
 }
 
 func TestStepIDsContext(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	if got := StepIDs(ctx); len(got) != 0 {
 		t.Fatalf("plain context step IDs = %v, want none", got)
 	}

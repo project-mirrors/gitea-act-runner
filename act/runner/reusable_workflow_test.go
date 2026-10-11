@@ -63,7 +63,7 @@ func TestReusableWorkflowCachedBranchRefRefreshes(t *testing.T) {
 	}
 	cacheDir := t.TempDir()
 
-	require.NoError(t, cloneRemoteReusableWorkflow(rc, remoteDir, "master", cacheDir)(context.Background()))
+	require.NoError(t, cloneRemoteReusableWorkflow(rc, remoteDir, "master", cacheDir)(t.Context()))
 	got, err := os.ReadFile(filepath.Join(cacheDir, workflowPath))
 	require.NoError(t, err)
 	require.Equal(t, tmpl("v1"), string(got))
@@ -73,7 +73,7 @@ func TestReusableWorkflowCachedBranchRefRefreshes(t *testing.T) {
 	gitMust(t, workDir, "commit", "-am", "v2")
 	gitMust(t, workDir, "push", "origin", "master")
 
-	require.NoError(t, cloneRemoteReusableWorkflow(rc, remoteDir, "master", cacheDir)(context.Background()))
+	require.NoError(t, cloneRemoteReusableWorkflow(rc, remoteDir, "master", cacheDir)(t.Context()))
 	got, err = os.ReadFile(filepath.Join(cacheDir, workflowPath))
 	require.NoError(t, err)
 	require.Equal(t, tmpl("v2"), string(got), "cached workflow file must reflect the updated branch tip")

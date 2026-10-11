@@ -46,7 +46,7 @@ func TestRunnerCleanupStaleTaskDirs(t *testing.T) {
 		now: func() time.Time { return now },
 	}
 
-	r.cleanupStaleDirs(context.Background(), workdirRoot, isTaskIDDir)
+	r.cleanupStaleDirs(t.Context(), workdirRoot, isTaskIDDir)
 
 	assert.NoDirExists(t, oldTask)
 	assert.DirExists(t, freshTask)
@@ -85,7 +85,7 @@ func TestRunnerOnIdleCleansStaleHostScratchDirs(t *testing.T) {
 		now: func() time.Time { return now },
 	}
 
-	r.OnIdle(context.Background())
+	r.OnIdle(t.Context())
 
 	assert.NoDirExists(t, staleScratch) // stale scratch reclaimed
 	assert.DirExists(t, freshScratch)   // within cleanup age, kept
@@ -113,7 +113,7 @@ func TestRunnerCleanupStaleTaskDirsMissingRoot(t *testing.T) {
 
 	// Must be a silent no-op rather than a warning or panic when the root
 	// has not yet been created (e.g. the runner has never executed a task).
-	r.cleanupStaleDirs(context.Background(), filepath.Join(t.TempDir(), "missing"), isTaskIDDir)
+	r.cleanupStaleDirs(t.Context(), filepath.Join(t.TempDir(), "missing"), isTaskIDDir)
 }
 
 func TestRunnerCleanupStaleTaskDirsHonorsContext(t *testing.T) {
@@ -127,7 +127,7 @@ func TestRunnerCleanupStaleTaskDirsHonorsContext(t *testing.T) {
 		require.NoError(t, os.Chtimes(dir, now.Add(-3*time.Hour), now.Add(-3*time.Hour)))
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	r := &Runner{
@@ -265,7 +265,7 @@ func TestRunnerOnIdleIntegratesCleanup(t *testing.T) {
 		now: func() time.Time { return now },
 	}
 
-	r.OnIdle(context.Background())
+	r.OnIdle(t.Context())
 
 	assert.NoDirExists(t, stale)
 }
@@ -293,7 +293,7 @@ func TestRunnerOnIdleSkipsWhenAlreadyCancelled(t *testing.T) {
 		now: func() time.Time { return now },
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	r.OnIdle(ctx)
 
@@ -346,7 +346,7 @@ func TestRunnerOnIdleRemovesOrphanNetworks(t *testing.T) {
 
 	r := &Runner{uuid: "runner-1", cfg: cfg, labels: labels.Labels{kubernetesLabel}, now: func() time.Time { return now }}
 	r.isolatedCacheContainer = func() string { return "a1b2c3d4e5f6" }
-	r.OnIdle(context.Background())
+	r.OnIdle(t.Context())
 	assert.Equal(t, []string{"runner-1"}, swept)
 	assert.Equal(t, swept, sweptVolumes)
 	// a network of a job starting during the pass is younger than this and so out of scope
@@ -358,13 +358,13 @@ func TestRunnerOnIdleRemovesOrphanNetworks(t *testing.T) {
 	t.Cleanup(func() { dockerReachable = origDockerReachable })
 	hostOnly := &Runner{uuid: "runner-2", cfg: &config.Config{Runner: cfg.Runner}, now: func() time.Time { return now }}
 	hostOnly.isolatedCacheContainer = func() string { return "" }
-	hostOnly.OnIdle(context.Background())
+	hostOnly.OnIdle(t.Context())
 	assert.Equal(t, []string{"runner-1"}, swept)
 	assert.Equal(t, swept, sweptVolumes)
 
 	dockerReachable = func(context.Context) bool { return true }
 	now = now.Add(time.Minute)
-	hostOnly.OnIdle(context.Background())
+	hostOnly.OnIdle(t.Context())
 	assert.Equal(t, []string{"runner-1", "runner-2"}, sweptVolumes)
 	assert.Equal(t, []string{"a1b2c3d4e5f6", ""}, detached)
 	assert.Equal(t, []string{"runner-1"}, sweptPods)

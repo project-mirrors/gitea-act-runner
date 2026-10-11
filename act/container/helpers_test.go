@@ -4,7 +4,6 @@
 package container
 
 import (
-	"context"
 	"testing"
 
 	mobyclient "github.com/moby/moby/client"
@@ -15,7 +14,7 @@ import (
 // so the daemon has to be pinged explicitly here to decide whether to skip.
 func requireDocker(t *testing.T) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	cli, err := GetDockerClient(ctx)
 	if err != nil {
 		t.Skipf("skipping: docker client unavailable: %v", err)

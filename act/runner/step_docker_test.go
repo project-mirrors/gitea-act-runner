@@ -6,7 +6,6 @@ package runner
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"slices"
 	"strings"
@@ -35,7 +34,7 @@ func TestStepDockerMain(t *testing.T) {
 		ContainerNewContainer = origContainerNewContainer
 	}()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	sd := &stepDocker{
 		RunContext: &RunContext{
@@ -124,7 +123,7 @@ func TestStepDockerNewStepContainerAllocatePTY(t *testing.T) {
 				ContainerNewContainer = origContainerNewContainer
 			}()
 
-			ctx := context.Background()
+			ctx := t.Context()
 			sd := &stepDocker{
 				RunContext: &RunContext{
 					StepResults: map[string]*model.StepResult{},
@@ -197,7 +196,7 @@ func TestStepDockerNewStepContainerNetworkModeAndPath(t *testing.T) {
 				ContainerNewContainer = origContainerNewContainer
 			}()
 
-			ctx := context.Background()
+			ctx := t.Context()
 
 			platform := tc.platform
 			sd := &stepDocker{

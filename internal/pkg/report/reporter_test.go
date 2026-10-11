@@ -244,7 +244,7 @@ func TestReporter_Handle(t *testing.T) {
 			t.Logf("Received UpdateTask: %s", req.Msg.String())
 			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
 		})
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		taskCtx, err := structpb.NewStruct(map[string]any{})
 		require.NoError(t, err)
 		cfg, _ := config.LoadDefault("")
@@ -305,7 +305,7 @@ func TestReporter_LogLevelFiltering(t *testing.T) {
 		return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
 	cfg, _ := config.LoadDefault("")
@@ -374,7 +374,7 @@ func TestReporter_EphemeralRunnerDeletion(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -439,7 +439,7 @@ func TestReporter_RunDaemonClose_Race(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
 	cfg, _ := config.LoadDefault("")
@@ -481,7 +481,7 @@ func TestReporter_MaxLatencyTimer(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -532,7 +532,7 @@ func TestReporter_BatchSizeFlush(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -585,7 +585,7 @@ func TestReporter_StateChangedNotLostDuringReport(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -646,7 +646,7 @@ func TestReporter_StateChangedRestoredOnError(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -691,7 +691,7 @@ func TestReporter_StateNotifyFlush(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -748,7 +748,7 @@ func TestReporter_CloseAlwaysSendsRowsWithNoMore(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -799,7 +799,7 @@ func TestReporter_StateHeartbeat(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -871,7 +871,7 @@ func TestReporter_ServerCancelStillFlushesFinal(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -940,7 +940,7 @@ func TestReporter_CloseReportsCancelledOnCanceledCtx(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
 	cfg, _ := config.LoadDefault("")
@@ -999,7 +999,7 @@ func TestReporter_StopHeartbeats(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -1112,7 +1112,7 @@ func TestReporter_DebugSettingsAreNotMasked(t *testing.T) {
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
 
-	reporter := NewReporter(context.Background(), nil, nil, &runnerv1.Task{
+	reporter := NewReporter(t.Context(), nil, nil, &runnerv1.Task{
 		Context: taskCtx,
 		Secrets: map[string]string{"ACTIONS_STEP_DEBUG": "true", "ACTIONS_RUNNER_DEBUG": "true", "TOKEN": "s3cr3t"},
 	}, &config.Config{})
@@ -1136,7 +1136,7 @@ func TestReporter_OutputsSentOnce(t *testing.T) {
 			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{SentOutputs: slices.Collect(maps.Keys(req.Msg.Outputs))}), nil
 		})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -1210,7 +1210,7 @@ func TestReporter_AckIndexBeyondBuffer(t *testing.T) {
 		return connect_go.NewResponse(&runnerv1.UpdateLogResponse{AckIndex: 1000}), nil
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -1247,7 +1247,7 @@ func TestReporter_CloseWithStuckDaemon(t *testing.T) {
 		return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
 	}).Maybe()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -1294,7 +1294,7 @@ func TestReporter_ServerFailureResultIsReportedAsFailure(t *testing.T) {
 		}), nil
 	}).Maybe()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -1351,7 +1351,7 @@ func TestReporter_CloseMasksLastWords(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	const idToken = "id-token-request-secret"
 	taskCtx, err := structpb.NewStruct(map[string]any{"actions_id_token_request_token": idToken})
@@ -1420,7 +1420,7 @@ func TestReporter_StepRangeCoversAckedRows(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
@@ -1466,7 +1466,7 @@ func TestReporter_StepRangeCoversAckedRows(t *testing.T) {
 // A flush the server took no rows for describes nothing new, so it must not spend an
 // UpdateTask. UpdateTask is never registered on the client, so calling it fails the test.
 func TestReporter_FlushWithoutAckedRowsSkipsState(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)

@@ -45,7 +45,7 @@ func TestIgnoredTrackedfile(t *testing.T) {
 			TarWriter: tw,
 		},
 	}
-	err = filepath.Walk(repoDir, fc.CollectFiles(context.Background(), nil))
+	err = filepath.Walk(repoDir, fc.CollectFiles(t.Context(), nil))
 	assert.NoError(t, err, "successfully collect files")
 	require.NoError(t, tw.Close())
 	tr := tar.NewReader(&archive)
@@ -79,7 +79,7 @@ func TestSymlinks(t *testing.T) {
 			TarWriter: tw,
 		},
 	}
-	err = filepath.Walk(repoDir, fc.CollectFiles(context.Background(), nil))
+	err = filepath.Walk(repoDir, fc.CollectFiles(t.Context(), nil))
 	assert.NoError(t, err, "successfully collect files")
 	require.NoError(t, tw.Close())
 	tr := tar.NewReader(&archive)

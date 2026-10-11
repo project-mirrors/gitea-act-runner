@@ -5,7 +5,6 @@
 package runner
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -82,7 +81,7 @@ func createRunContext(t *testing.T) *RunContext {
 
 func TestEvaluateRunContext(t *testing.T) {
 	rc := createRunContext(t)
-	ee := rc.NewExpressionEvaluator(context.Background())
+	ee := rc.NewExpressionEvaluator(t.Context())
 
 	tables := []struct {
 		in      string
@@ -142,7 +141,7 @@ func TestEvaluateRunContext(t *testing.T) {
 	for _, table := range tables {
 		t.Run(table.in, func(t *testing.T) {
 			assertObject := assert.New(t)
-			out, err := ee.evaluate(context.Background(), table.in, exprparser.DefaultStatusCheckNone)
+			out, err := ee.evaluate(t.Context(), table.in, exprparser.DefaultStatusCheckNone)
 			if table.errMesg == "" {
 				assertObject.NoError(err, table.in) //nolint:testifylint // pre-existing issue from nektos/act
 				assertObject.Equal(table.out, out, table.in)
@@ -162,7 +161,7 @@ func TestEvaluateStep(t *testing.T) {
 		env:        map[string]string{"INPUT_FORGED": "leaked"},
 	}
 
-	ee := rc.NewStepExpressionEvaluator(context.Background(), step)
+	ee := rc.NewStepExpressionEvaluator(t.Context(), step)
 
 	tables := []struct {
 		in      string
@@ -184,7 +183,7 @@ func TestEvaluateStep(t *testing.T) {
 	for _, table := range tables {
 		t.Run(table.in, func(t *testing.T) {
 			assertObject := assert.New(t)
-			out, err := ee.evaluate(context.Background(), table.in, exprparser.DefaultStatusCheckNone)
+			out, err := ee.evaluate(t.Context(), table.in, exprparser.DefaultStatusCheckNone)
 			if table.errMesg == "" {
 				assertObject.NoError(err, table.in) //nolint:testifylint // pre-existing issue from nektos/act
 				assertObject.Equal(table.out, out, table.in)
@@ -224,7 +223,7 @@ func TestInterpolate(t *testing.T) {
 			},
 		},
 	}
-	ee := rc.NewExpressionEvaluator(context.Background())
+	ee := rc.NewExpressionEvaluator(t.Context())
 	tables := []struct {
 		in  string
 		out string
@@ -270,14 +269,14 @@ func TestInterpolate(t *testing.T) {
 
 	for _, table := range tables {
 		t.Run("interpolate", func(t *testing.T) {
-			out, err := ee.Interpolate(context.Background(), table.in)
+			out, err := ee.Interpolate(t.Context(), table.in)
 			require.NoError(t, err, table.in)
 			assert.Equal(t, table.out, out, table.in)
 		})
 	}
 
 	for _, in := range []string{"${{ 1) && (2 }}", "run ${{ 1) && (2 }} now", "${{ 1"} {
-		_, err := ee.Interpolate(context.Background(), in)
+		_, err := ee.Interpolate(t.Context(), in)
 		assert.Error(t, err, in)
 	}
 }

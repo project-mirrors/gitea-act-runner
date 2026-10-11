@@ -4,7 +4,6 @@
 package runner
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"runtime"
@@ -30,7 +29,7 @@ func requireLinuxDocker(t *testing.T) {
 // so the daemon has to be pinged explicitly here to decide whether to skip.
 func requireDocker(t *testing.T) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	cli, err := container.GetDockerClient(ctx)
 	if err != nil {
 		t.Skipf("skipping: docker client unavailable: %v", err)

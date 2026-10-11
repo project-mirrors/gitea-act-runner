@@ -5,7 +5,6 @@
 package container
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -42,7 +41,7 @@ func buildScratchImage(t *testing.T, platform string) string {
 
 func TestImageExistsLocally(t *testing.T) {
 	requireDocker(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// a non-existent image is reported absent
 	missing, err := ImageExistsLocally(ctx, "library/alpine:this-random-tag-will-never-exist", "linux/amd64")

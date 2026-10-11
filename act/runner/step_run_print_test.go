@@ -6,7 +6,6 @@ package runner
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"strings"
 	"testing"
@@ -87,7 +86,7 @@ env:
 	buf := &bytes.Buffer{}
 	logger := logging.New(logging.NewLevelHandler(newJobLogHandler(buf, cyan), logging.LevelInfo))
 	entry := logger.With("job", "j1")
-	ctx := common.WithLogger(context.Background(), entry)
+	ctx := common.WithLogger(t.Context(), entry)
 
 	sr := &stepRun{
 		Step:               &step,
@@ -133,7 +132,7 @@ env:
 	buf := &bytes.Buffer{}
 	logger := logging.New(logging.NewLevelHandler(newJobLogHandler(buf, cyan), logging.LevelInfo))
 	entry := logger.With("job", "j1")
-	ctx := common.WithLogger(context.Background(), entry)
+	ctx := common.WithLogger(t.Context(), entry)
 
 	printRunActionHeader(ctx, &step, map[string]string{"CUSTOM": "value", "GITHUB_TOKEN": "tok"}, &RunContext{})
 

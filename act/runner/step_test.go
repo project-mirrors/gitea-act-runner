@@ -166,8 +166,8 @@ func TestSetupEnv(t *testing.T) {
 	sm.On("getStepModel").Return(step)
 	sm.On("getEnv").Return(&env)
 
-	require.NoError(t, setupEnv(context.Background(), sm))
-	require.NoError(t, setupInputs(context.Background(), sm))
+	require.NoError(t, setupEnv(t.Context(), sm))
+	require.NoError(t, setupInputs(t.Context(), sm))
 
 	// These are commit or system specific
 	delete(env, "GITHUB_REF")
@@ -304,58 +304,58 @@ func TestIsStepEnabled(t *testing.T) {
 
 	// success()
 	step := createTestStep(t, "if: success()")
-	assertObject.True(isStepEnabled(context.Background(), step.getIfExpression(context.Background(), stepStageMain), step, stepStageMain))
+	assertObject.True(isStepEnabled(t.Context(), step.getIfExpression(t.Context(), stepStageMain), step, stepStageMain))
 
 	step = createTestStep(t, "if: success()")
 	step.getRunContext().StepResults["a"] = &model.StepResult{
 		Conclusion: model.StepStatusSuccess,
 	}
-	assertObject.True(isStepEnabled(context.Background(), step.getStepModel().If.Value, step, stepStageMain))
+	assertObject.True(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
 
 	step = createTestStep(t, "if: success()")
 	step.getRunContext().StepResults["a"] = &model.StepResult{
 		Conclusion: model.StepStatusFailure,
 	}
-	assertObject.False(isStepEnabled(context.Background(), step.getStepModel().If.Value, step, stepStageMain))
+	assertObject.False(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
 
 	// failure()
 	step = createTestStep(t, "if: failure()")
-	assertObject.False(isStepEnabled(context.Background(), step.getStepModel().If.Value, step, stepStageMain))
+	assertObject.False(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
 
 	step = createTestStep(t, "if: failure()")
 	step.getRunContext().StepResults["a"] = &model.StepResult{
 		Conclusion: model.StepStatusSuccess,
 	}
-	assertObject.False(isStepEnabled(context.Background(), step.getStepModel().If.Value, step, stepStageMain))
+	assertObject.False(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
 
 	step = createTestStep(t, "if: failure()")
 	step.getRunContext().StepResults["a"] = &model.StepResult{
 		Conclusion: model.StepStatusFailure,
 	}
-	assertObject.True(isStepEnabled(context.Background(), step.getStepModel().If.Value, step, stepStageMain))
+	assertObject.True(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
 
 	// always()
 	step = createTestStep(t, "if: always()")
-	assertObject.True(isStepEnabled(context.Background(), step.getStepModel().If.Value, step, stepStageMain))
+	assertObject.True(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
 
 	step = createTestStep(t, "if: always()")
 	step.getRunContext().StepResults["a"] = &model.StepResult{
 		Conclusion: model.StepStatusSuccess,
 	}
-	assertObject.True(isStepEnabled(context.Background(), step.getStepModel().If.Value, step, stepStageMain))
+	assertObject.True(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
 
 	step = createTestStep(t, "if: always()")
 	step.getRunContext().StepResults["a"] = &model.StepResult{
 		Conclusion: model.StepStatusFailure,
 	}
-	assertObject.True(isStepEnabled(context.Background(), step.getStepModel().If.Value, step, stepStageMain))
+	assertObject.True(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
 
 	// neither env nor the step's own with: values are inputs, at any stage
 	step = createTestStep(t, "if: inputs.forged")
 	step.getRunContext().Env["INPUT_FORGED"] = "leaked"
 	*step.getEnv() = map[string]string{"INPUT_FORGED": "leaked"}
-	assertObject.False(isStepEnabled(context.Background(), step.getStepModel().If.Value, step, stepStageMain))
-	assertObject.False(isStepEnabled(context.Background(), step.getStepModel().If.Value, step, stepStagePost))
+	assertObject.False(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
+	assertObject.False(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStagePost))
 }
 
 func TestIsContinueOnError(t *testing.T) {
@@ -388,44 +388,44 @@ func TestIsContinueOnError(t *testing.T) {
 
 	// absent
 	step := createTestStep(t, "name: test")
-	continueOnError, err := isContinueOnError(context.Background(), step.getStepModel().RawContinueOnError, step, stepStageMain)
+	continueOnError, err := isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
 	assertObject.False(continueOnError)
 	assertObject.NoError(err) //nolint:testifylint // pre-existing issue from nektos/act
 
 	// explcit true
 	step = createTestStep(t, "continue-on-error: true")
-	continueOnError, err = isContinueOnError(context.Background(), step.getStepModel().RawContinueOnError, step, stepStageMain)
+	continueOnError, err = isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
 	assertObject.True(continueOnError)
 	assertObject.NoError(err) //nolint:testifylint // pre-existing issue from nektos/act
 
 	// explicit false
 	step = createTestStep(t, "continue-on-error: false")
-	continueOnError, err = isContinueOnError(context.Background(), step.getStepModel().RawContinueOnError, step, stepStageMain)
+	continueOnError, err = isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
 	assertObject.False(continueOnError)
 	assertObject.NoError(err) //nolint:testifylint // pre-existing issue from nektos/act
 
 	// expression true
 	step = createTestStep(t, "continue-on-error: ${{ 'test' == 'test' }}")
-	continueOnError, err = isContinueOnError(context.Background(), step.getStepModel().RawContinueOnError, step, stepStageMain)
+	continueOnError, err = isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
 	assertObject.True(continueOnError)
 	assertObject.NoError(err) //nolint:testifylint // pre-existing issue from nektos/act
 
 	// expression false
 	step = createTestStep(t, "continue-on-error: ${{ 'test' != 'test' }}")
-	continueOnError, err = isContinueOnError(context.Background(), step.getStepModel().RawContinueOnError, step, stepStageMain)
+	continueOnError, err = isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
 	assertObject.False(continueOnError)
 	assertObject.NoError(err) //nolint:testifylint // pre-existing issue from nektos/act
 
 	// the step's own with: values are not inputs
 	step = createTestStep(t, "continue-on-error: ${{ inputs.forged }}")
 	*step.getEnv() = map[string]string{"INPUT_FORGED": "true"}
-	continueOnError, err = isContinueOnError(context.Background(), step.getStepModel().RawContinueOnError, step, stepStageMain)
+	continueOnError, err = isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
 	assertObject.False(continueOnError)
 	require.NoError(t, err)
 
 	// expression parse error
 	step = createTestStep(t, "continue-on-error: ${{ 'test' != test }}")
-	continueOnError, err = isContinueOnError(context.Background(), step.getStepModel().RawContinueOnError, step, stepStageMain)
+	continueOnError, err = isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
 	assertObject.False(continueOnError)
 	assertObject.Error(err)
 }
@@ -449,9 +449,9 @@ func TestRunStepExecutorDoesNotLeakRefusalToNextStep(t *testing.T) {
 		StepResults:  map[string]*model.StepResult{},
 		JobContainer: cm,
 	}
-	rc.ExprEval = rc.NewExpressionEvaluator(context.Background())
+	rc.ExprEval = rc.NewExpressionEvaluator(t.Context())
 	// Dryrun skips reading the path file back from the (mocked) container.
-	ctx := common.WithDryrun(context.Background(), true)
+	ctx := common.WithDryrun(t.Context(), true)
 
 	// A refusal parsed out of the job container's own output belongs to no step, so the
 	// first step must not be failed by it.
@@ -499,7 +499,7 @@ func TestRunStepExecutorParity(t *testing.T) {
 	newStep := func(t *testing.T, stepModel *model.Step) *stepRun {
 		rc := createRunContext(t)
 		rc.JobContainer = &container.HostEnvironment{ActPath: t.TempDir()}
-		rc.ExprEval = rc.NewExpressionEvaluator(context.Background())
+		rc.ExprEval = rc.NewExpressionEvaluator(t.Context())
 		return &stepRun{RunContext: rc, Step: stepModel, env: map[string]string{}}
 	}
 	badExpression := "${{ 'test' != test }}"
@@ -514,7 +514,7 @@ func TestRunStepExecutorParity(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			step := newStep(t, test.step)
 			logger, hook := logtest.NewLogger()
-			err := runStepExecutor(step, stepStageMain, test.executor)(common.WithLogger(context.Background(), logger))
+			err := runStepExecutor(step, stepStageMain, test.executor)(common.WithLogger(t.Context(), logger))
 
 			require.ErrorContains(t, err, test.wantError)
 			assert.Equal(t, model.StepStatusFailure, step.RunContext.StepResults[test.step.ID].Conclusion)
@@ -530,7 +530,7 @@ func TestRunStepExecutorParity(t *testing.T) {
 			require.NoError(t, os.WriteFile(step.env["GITHUB_OUTPUT"], []byte("kept=value\n"), 0o600))
 			require.NoError(t, os.WriteFile(step.env["GITHUB_STATE"], []byte("saved=value\n"), 0o600))
 			return nil
-		})(common.WithLogger(context.Background(), logger))
+		})(common.WithLogger(t.Context(), logger))
 
 		require.NoError(t, err)
 		result := step.RunContext.StepResults[step.Step.ID]
@@ -577,7 +577,7 @@ func TestRunStepExecutorParity(t *testing.T) {
 			Config: outer.RunContext.Config, Run: outer.RunContext.Run, Env: map[string]string{}, StepResults: map[string]*model.StepResult{},
 			JobContainer: outer.RunContext.JobContainer, Parent: outer.RunContext,
 		}
-		childRC.ExprEval = childRC.NewExpressionEvaluator(context.Background())
+		childRC.ExprEval = childRC.NewExpressionEvaluator(t.Context())
 		child := &stepRun{RunContext: childRC, Step: &model.Step{ID: "child"}, env: map[string]string{}}
 
 		err := runStepExecutor(outer, stepStageMain, func(ctx context.Context) error {
@@ -588,7 +588,7 @@ func TestRunStepExecutorParity(t *testing.T) {
 			})(ctx))
 			outer.RunContext.setOutput(ctx, map[string]string{"name": "declared"}, "outer")
 			return nil
-		})(context.Background())
+		})(t.Context())
 
 		require.NoError(t, err)
 		assert.Equal(t, map[string]string{"declared": "outer"}, outer.RunContext.StepResults[outer.Step.ID].Outputs)
@@ -621,9 +621,9 @@ func TestRunStepExecutorParity(t *testing.T) {
 	})
 
 	t.Run("timeout must be positive", func(t *testing.T) {
-		exprEval := createRunContext(t).NewExpressionEvaluator(context.Background())
+		exprEval := createRunContext(t).NewExpressionEvaluator(t.Context())
 		for timeout, wantDeadline := range map[string]bool{"-1": false, "0": false, "1": true} {
-			ctx, cancel := evaluateStepTimeout(context.Background(), exprEval, &model.Step{TimeoutMinutes: timeout})
+			ctx, cancel := evaluateStepTimeout(t.Context(), exprEval, &model.Step{TimeoutMinutes: timeout})
 			_, hasDeadline := ctx.Deadline()
 			cancel()
 			assert.Equal(t, wantDeadline, hasDeadline, timeout)

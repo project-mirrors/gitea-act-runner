@@ -11,7 +11,7 @@ import (
 )
 
 func TestCheckIfDockerRunningReturnsPingError(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	err := CheckIfDockerRunning(ctx, "unix:///definitely/missing/docker.sock")

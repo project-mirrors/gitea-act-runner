@@ -43,7 +43,7 @@ func TestJobLog_MirrorsUploadedRows(t *testing.T) {
 	require.NoError(t, err)
 	cfg.Log.Job.Dir = t.TempDir()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	task := &runnerv1.Task{Id: 41, Context: &structpb.Struct{}, Secrets: map[string]string{"TOKEN": "s3cret-value"}}
 	reporter := NewReporter(ctx, cancel, client, task, cfg)

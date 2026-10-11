@@ -34,7 +34,7 @@ func TestActionPlatformNames(t *testing.T) {
 
 func TestCopyDir(t *testing.T) {
 	dir := t.TempDir()
-	ctx := context.Background()
+	ctx := t.Context()
 	e := &HostEnvironment{
 		Path:      filepath.Join(dir, "path"),
 		TmpDir:    filepath.Join(dir, "tmp"),
@@ -61,7 +61,7 @@ func TestCopyDirSkipGitDir(t *testing.T) {
 
 			dest := filepath.Join(t.TempDir(), "dest")
 			e := &HostEnvironment{StdOut: os.Stdout}
-			require.NoError(t, e.CopyDir(dest, src+string(filepath.Separator), false, skipGitDir)(context.Background()))
+			require.NoError(t, e.CopyDir(dest, src+string(filepath.Separator), false, skipGitDir)(t.Context()))
 
 			assert.FileExists(t, filepath.Join(dest, "action.yml"))
 			if skipGitDir {
@@ -75,7 +75,7 @@ func TestCopyDirSkipGitDir(t *testing.T) {
 
 func TestGetContainerArchive(t *testing.T) {
 	dir := t.TempDir()
-	ctx := context.Background()
+	ctx := t.Context()
 	e := &HostEnvironment{
 		Path:      filepath.Join(dir, "path"),
 		TmpDir:    filepath.Join(dir, "tmp"),
@@ -110,7 +110,7 @@ func TestHostEnvironmentExecExitCode(t *testing.T) {
 		t.Skip("uses POSIX shell")
 	}
 	dir := t.TempDir()
-	ctx := context.Background()
+	ctx := t.Context()
 	e := &HostEnvironment{
 		Path:      filepath.Join(dir, "path"),
 		TmpDir:    filepath.Join(dir, "tmp"),
@@ -161,7 +161,7 @@ func TestHostEnvironmentAllocatePTY(t *testing.T) {
 			err := e.Exec(
 				[]string{"sh", "-c", "[ -t 1 ] && printf TTY || printf NOTTY"},
 				map[string]string{"PATH": os.Getenv("PATH")}, "", "",
-			)(context.Background())
+			)(t.Context())
 			require.NoError(t, err)
 			got := strings.TrimSpace(strings.ReplaceAll(buf.String(), "\r", ""))
 			assert.Equal(t, tc.expect, got)
@@ -170,7 +170,7 @@ func TestHostEnvironmentAllocatePTY(t *testing.T) {
 }
 
 func TestHostEnvironmentRemovePreservesWorkdirByDefault(t *testing.T) {
-	ctx := common.WithLogger(context.Background(), logging.Default())
+	ctx := common.WithLogger(t.Context(), logging.Default())
 	base := t.TempDir()
 	miscRoot := filepath.Join(base, "misc")
 	path := filepath.Join(miscRoot, "hostexecutor")
@@ -192,7 +192,7 @@ func TestHostEnvironmentRemovePreservesWorkdirByDefault(t *testing.T) {
 }
 
 func TestHostEnvironmentRemoveCleansWorkdirWhenOwned(t *testing.T) {
-	ctx := common.WithLogger(context.Background(), logging.Default())
+	ctx := common.WithLogger(t.Context(), logging.Default())
 	base := t.TempDir()
 	miscRoot := filepath.Join(base, "misc")
 	path := filepath.Join(miscRoot, "hostexecutor")
@@ -233,7 +233,7 @@ func TestRemoveAllWithContextDoesNotHangOnStuckDelete(t *testing.T) {
 		removeAll = orig
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 
 	err := removeAllWithContext(ctx, t.TempDir())
@@ -250,7 +250,7 @@ func TestHostEnvironmentRemoveDoesNotHangOnStuckCleanUp(t *testing.T) {
 	hostCleanupTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { hostCleanupTimeout = orig })
 
-	ctx := common.WithLogger(context.Background(), logging.Default())
+	ctx := common.WithLogger(t.Context(), logging.Default())
 	base := t.TempDir()
 	path := filepath.Join(base, "misc", "hostexecutor")
 	require.NoError(t, os.MkdirAll(path, 0o700))
@@ -303,7 +303,7 @@ func TestHostEnvironmentRemoveDoesNotHangOnStuckPathRemoval(t *testing.T) {
 		removeAll = origRemoveAll
 	})
 
-	ctx := common.WithLogger(context.Background(), logging.Default())
+	ctx := common.WithLogger(t.Context(), logging.Default())
 	base := t.TempDir()
 	path := filepath.Join(base, "misc", "hostexecutor")
 	require.NoError(t, os.MkdirAll(path, 0o700))

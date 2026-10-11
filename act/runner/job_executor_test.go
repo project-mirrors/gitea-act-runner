@@ -44,7 +44,7 @@ func TestJobExecutor(t *testing.T) {
 		{workdir, "job-nil-step", "push", "invalid Step 0: missing run or uses key", platforms, secrets},
 	}
 	// These tests are sufficient to only check syntax.
-	ctx := common.WithDryrun(context.Background(), true)
+	ctx := common.WithDryrun(t.Context(), true)
 	for _, table := range tables {
 		t.Run(table.workflowPath, func(t *testing.T) {
 			t.Parallel()
@@ -137,7 +137,7 @@ func (apm *actionPreparerMock) actionDownloadInfo() (string, string, bool) {
 func TestPrintPrepareActionsGolden(t *testing.T) {
 	buf := &bytes.Buffer{}
 	logger := logging.New(logging.NewLevelHandler(newJobLogHandler(buf, cyan), logging.LevelInfo))
-	ctx := common.WithLogger(context.Background(), logger.With("job", "j1"))
+	ctx := common.WithLogger(t.Context(), logger.With("job", "j1"))
 
 	preparers := []actionPreparer{
 		&actionPreparerMock{reference: "actions/checkout@v7", sha: "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0", ok: true},
@@ -160,7 +160,7 @@ func TestPrintPrepareActionsGolden(t *testing.T) {
 func TestPrintPrepareActionsSkipsWithoutActions(t *testing.T) {
 	buf := &bytes.Buffer{}
 	logger := logging.New(logging.NewLevelHandler(newJobLogHandler(buf, cyan), logging.LevelInfo))
-	ctx := common.WithLogger(context.Background(), logger.With("job", "j1"))
+	ctx := common.WithLogger(t.Context(), logger.With("job", "j1"))
 
 	require.NoError(t, printPrepareActions(&RunContext{}, nil)(ctx))
 
@@ -169,7 +169,7 @@ func TestPrintPrepareActionsSkipsWithoutActions(t *testing.T) {
 
 func TestPrintPrepareActionsFailsJobOnDownloadError(t *testing.T) {
 	logger := logging.New(logtest.New())
-	ctx := common.WithJobErrorContainer(common.WithLogger(context.Background(), logger.With("job", "j1")))
+	ctx := common.WithJobErrorContainer(common.WithLogger(t.Context(), logger.With("job", "j1")))
 
 	downloadErr := errors.New("failed to fetch \"actions/checkout\"")
 	rc := &RunContext{}
@@ -199,7 +199,7 @@ func TestPrintCompleteJobName(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			buf := &bytes.Buffer{}
 			logger := logging.New(logging.NewLevelHandler(newJobLogHandler(buf, cyan), logging.LevelInfo))
-			ctx := common.WithLogger(context.Background(), logger.With("job", "j1"))
+			ctx := common.WithLogger(t.Context(), logger.With("job", "j1"))
 
 			require.NoError(t, printCompleteJobName(tt.rc)(ctx))
 
@@ -218,7 +218,7 @@ type actionStepMock struct {
 // every action is downloaded before any step runs, and the job name closes the section. A pre
 // step that downloaded its own action would leave the log interleaved with the downloads.
 func TestNewJobExecutorDownloadsAllActionsBeforeTheFirstStep(t *testing.T) {
-	ctx := common.WithJobErrorContainer(context.Background())
+	ctx := common.WithJobErrorContainer(t.Context())
 	jim := &jobInfoMock{}
 	sfm := &stepFactoryMock{}
 	rc := &RunContext{
@@ -455,7 +455,7 @@ func TestNewJobExecutor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fmt.Printf("::group::%s\n", tt.name) //nolint:forbidigo // pre-existing issue from nektos/act
 
-			ctx, cancel := context.WithCancel(common.WithJobErrorContainer(context.Background()))
+			ctx, cancel := context.WithCancel(common.WithJobErrorContainer(t.Context()))
 			defer cancel()
 			jim := &jobInfoMock{}
 			sfm := &stepFactoryMock{}
@@ -603,7 +603,7 @@ func (ctx *controllableDeadlineContext) expire() {
 // still run against a fresh, non-expired context, and the job must still be
 // reported as failed.
 func TestNewJobExecutorRunsPostStepsAfterTimeout(t *testing.T) {
-	ctx := newControllableDeadlineContext(common.WithJobErrorContainer(context.Background()))
+	ctx := newControllableDeadlineContext(common.WithJobErrorContainer(t.Context()))
 
 	jim := &jobInfoMock{}
 	sfm := &stepFactoryMock{}
@@ -684,7 +684,7 @@ func TestSetJobResultMatrixContinueOnError(t *testing.T) {
 		return &model.Plan{Stages: []*model.Stage{{Runs: []*model.Run{{Workflow: wf, JobID: "job1"}}}}}
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// fail drives a single matrix combination through the failure path; each
 	// RunContext is its own jobInfo (rc implements jobInfo) and shares the job.
@@ -779,7 +779,7 @@ func TestTryUploadJobSummaryRetriesTransientFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	cm := &containerMock{}
 	cm.On("GetContainerArchive", mock.Anything, "/var/run/act/workflow/step-summary-0.md").Return(
 		io.NopCloser(bytes.NewReader(tarArchive(t, tarEntry{name: "step-summary-0.md", body: "# summary"}))),
@@ -823,7 +823,7 @@ func TestTryUploadJobSummaryStopsAtPhaseTimeout(t *testing.T) {
 	defer server.Close()
 	defer close(release)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	cm := &containerMock{}
 	cm.On("GetContainerArchive", mock.Anything, "/var/run/act/workflow/step-summary-0.md").Return(
 		io.NopCloser(bytes.NewReader(tarArchive(t, tarEntry{name: "step-summary-0.md", body: "# summary"}))),
@@ -867,7 +867,7 @@ func TestTryUploadJobSummaryUploadsEachStepIndependentlyWithInstanceTransport(t 
 	}))
 	defer server.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	cm := &containerMock{}
 	// Three steps: 0 has content, 1 has empty content (skipped), 2 has content.
 	cm.On("GetContainerArchive", mock.Anything, "/var/run/act/workflow/step-summary-0.md").Return(
@@ -915,7 +915,7 @@ func TestTryUploadJobSummaryRequiresExactCapability(t *testing.T) {
 		"GITEA_RUN_ID":               "12",
 	}, &containerMock{}, 1)
 
-	tryUploadJobSummary(context.Background(), rc)
+	tryUploadJobSummary(t.Context(), rc)
 
 	assert.Equal(t, 0, requests)
 }
@@ -935,7 +935,7 @@ func TestTryUploadJobSummarySkipsWhenJobIDMissingFromToken(t *testing.T) {
 		"GITEA_RUN_ID":               "12",
 	}, &containerMock{}, 1)
 
-	tryUploadJobSummary(context.Background(), rc)
+	tryUploadJobSummary(t.Context(), rc)
 
 	assert.Equal(t, 0, requests)
 }
@@ -948,7 +948,7 @@ func TestExtractJobIDFromRuntimeToken(t *testing.T) {
 }
 
 func TestReadSingleFileFromContainerArchiveFindsMatchingRegularFile(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cm := &containerMock{}
 	cm.On("GetContainerArchive", ctx, "/var/run/act/workflow/SUMMARY.md").Return(
 		io.NopCloser(bytes.NewReader(tarArchive(t,
@@ -968,7 +968,7 @@ func TestReadSingleFileFromContainerArchiveFindsMatchingRegularFile(t *testing.T
 
 func TestReadSingleFileFromContainerArchiveTruncatesWhenTooLarge(t *testing.T) {
 	logger, hook := logtest.NewLogger()
-	ctx := common.WithLogger(context.Background(), logger)
+	ctx := common.WithLogger(t.Context(), logger)
 	cm := &containerMock{}
 	content := strings.Repeat("a", 300)
 	cm.On("GetContainerArchive", ctx, "/var/run/act/workflow/SUMMARY.md").Return(
@@ -993,7 +993,7 @@ func TestReadSingleFileFromContainerArchiveTruncatesWhenTooLarge(t *testing.T) {
 
 func TestReadSingleFileFromContainerArchiveKeepsExactLimitWithoutWarning(t *testing.T) {
 	logger, hook := logtest.NewLogger()
-	ctx := common.WithLogger(context.Background(), logger)
+	ctx := common.WithLogger(t.Context(), logger)
 	cm := &containerMock{}
 	cm.On("GetContainerArchive", ctx, "/var/run/act/workflow/SUMMARY.md").Return(
 		io.NopCloser(bytes.NewReader(tarArchive(t, tarEntry{name: "SUMMARY.md", body: "abc"}))),
@@ -1063,7 +1063,7 @@ func makeTestRC(t *testing.T, jobYAML string) *RunContext {
 		Name: "workflow1",
 		Jobs: map[string]*model.Job{"job1": job},
 	}, nil)
-	rc.ExprEval = rc.NewExpressionEvaluator(context.Background())
+	rc.ExprEval = rc.NewExpressionEvaluator(t.Context())
 	return rc
 }
 
@@ -1081,7 +1081,7 @@ func TestApplyJobTimeout(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rc := makeTestRC(t, tc.yaml)
-			ctx := context.Background()
+			ctx := t.Context()
 			newCtx, cancel := applyJobTimeout(ctx, rc, rc.Run.Job())
 			defer cancel()
 			_, hasDeadline := newCtx.Deadline()
@@ -1105,7 +1105,7 @@ func TestEvaluateJobContinueOnError(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rc := makeTestRC(t, tc.yaml)
-			got := evaluateJobContinueOnError(context.Background(), rc, rc.Run.Job())
+			got := evaluateJobContinueOnError(t.Context(), rc, rc.Run.Job())
 			assert.Equal(t, tc.want, got)
 		})
 	}
@@ -1170,7 +1170,7 @@ func TestTryUploadJobSummaryMasksSecrets(t *testing.T) {
 	rc.Config.ExtraMasks = []string{"pr0xypw"}
 	rc.Masks = []string{"runtime-added"}
 
-	tryUploadJobSummary(context.Background(), rc)
+	tryUploadJobSummary(t.Context(), rc)
 
 	assert.Equal(t, "deployed true with *** and *** via ***", got)
 	cm.AssertExpectations(t)
