@@ -27,9 +27,6 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/process"
 
 	"github.com/creack/pty"
-	"github.com/go-git/go-billy/v5/helper/polyfill"
-	"github.com/go-git/go-billy/v5/osfs"
-	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"golang.org/x/term"
 )
 
@@ -100,25 +97,16 @@ func (e *HostEnvironment) CopyDir(destPath, srcPath string, useGitIgnore, skipGi
 			srcPrefix += string(filepath.Separator)
 		}
 		logger.Debugf("Stripping prefix:%s src:%s", srcPrefix, srcPath)
-		var ignorer gitignore.Matcher
-		if useGitIgnore {
-			ps, err := gitignore.ReadPatterns(polyfill.New(osfs.New(srcPath)), nil)
-			if err != nil {
-				logger.Debugf("Error loading .gitignore: %v", err)
-			}
-
-			ignorer = gitignore.NewMatcher(ps)
-		}
 		fc := &filecollector.FileCollector{
-			Ignorer:    ignorer,
-			SrcPath:    srcPath,
-			SrcPrefix:  srcPrefix,
-			SkipGitDir: skipGitDir,
+			SrcPath:      srcPath,
+			SrcPrefix:    srcPrefix,
+			SkipGitDir:   skipGitDir,
+			UseGitIgnore: useGitIgnore,
 			Handler: &filecollector.CopyCollector{
 				DstDir: destPath,
 			},
 		}
-		return filepath.Walk(srcPath, fc.CollectFiles(ctx, []string{}))
+		return filepath.Walk(srcPath, fc.CollectFiles(ctx))
 	}
 }
 
@@ -152,7 +140,7 @@ func (e *HostEnvironment) GetContainerArchive(ctx context.Context, srcPath strin
 			SrcPrefix: srcPrefix,
 			Handler:   tc,
 		}
-		err = filepath.Walk(srcPath, fc.CollectFiles(ctx, []string{}))
+		err = filepath.Walk(srcPath, fc.CollectFiles(ctx))
 		if err != nil {
 			return nil, err
 		}

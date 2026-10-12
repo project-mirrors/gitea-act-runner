@@ -386,6 +386,44 @@ func ConfigEnv(config ...string) map[string]string {
 	return env
 }
 
+func ListFiles(ctx context.Context, dir string) ([]string, error) {
+	listed, err := runGit(ctx, dir, nil, "ls-files", "-z", "-t", "--stage", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, err
+	}
+	var files, repos []string
+	for entry := range strings.SplitSeq(string(listed), "\x00") {
+		tag, file, ok := strings.Cut(entry, " ")
+		if tag != "?" {
+			var meta string
+			meta, file, ok = strings.Cut(file, "\t")
+			if strings.HasPrefix(meta, "160000 ") {
+				file += "/"
+			}
+		}
+		if repo, isRepo := strings.CutSuffix(file, "/"); isRepo {
+			repos = append(repos, repo)
+		} else if ok {
+			files = append(files, file)
+		}
+	}
+	slices.Sort(repos)
+	for _, repo := range slices.Compact(repos) {
+		files = append(files, repo)
+		if _, err := os.Lstat(filepath.Join(dir, repo, ".git")); err != nil {
+			continue // git lists an uninitialized submodule as "./" from inside it
+		}
+		nested, err := ListFiles(ctx, filepath.Join(dir, repo))
+		if err != nil {
+			return nil, err
+		}
+		for _, file := range nested {
+			files = append(files, repo+"/"+file)
+		}
+	}
+	return files, nil
+}
+
 func runGit(ctx context.Context, dir string, input *NewGitCloneExecutorInput, args ...string) ([]byte, error) {
 	config := []string{"core.autocrlf=false", "core.eol=lf"} // keep action files LF
 	if input != nil {
