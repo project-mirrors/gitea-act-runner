@@ -31,6 +31,23 @@ depending on the prefix:
 - Command *properties* also escape `%3A` and `%2C`, which the UI never decodes, so the reporter
   decodes exactly those two when folding a location into an annotation.
 
+## Logging
+
+Log through `act/common/logging`; the linter rejects importing `log/slog` or logrus elsewhere.
+A job's logger comes from `common.Logger(ctx)`; code with no job uses the package functions
+(`logging.Infof`, `logging.With`). Both take printf-style messages, and `With("key", value)` adds
+fields.
+
+- The process-wide logger masks the secrets of every live task, the job logger masks its own.
+  Going around either leaks them.
+- Libraries that log through logrus's global logger are forwarded to the process-wide one, so they
+  follow its level and masking too.
+- That forwarding only works while logrus's global logger is left as `logging` configures it. A
+  dependency that calls `logrus.SetOutput` or `SetLevel` breaks it, so check
+  `logging.LogrusBridgeIntact()` when adding or upgrading one.
+- Tests read what was logged with `logtest.NewLogger()`, or `logtest.SetDefault(t)` for the
+  package functions.
+
 ## Built-in actions
 
 Each lives in `internal/pkg/action/<name>` and is registered in `builtinActions` in
