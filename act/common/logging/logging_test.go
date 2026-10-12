@@ -5,17 +5,15 @@ package logging_test
 
 import (
 	"errors"
-	"io"
+	"log/slog"
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/common/logging/logtest"
 
 	"github.com/sirupsen/logrus"
-	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -95,60 +93,17 @@ func TestCallerPC(t *testing.T) {
 	l, h := logtest.NewLogger()
 	l.Infof("method")
 	l.Info("method")
-	for _, r := range h.AllRecords() {
-		assert.True(t, strings.HasSuffix(frameOf(t, r.PC).Function, "TestCallerPC"), r.Message)
-	}
 
-	std := logrus.StandardLogger()
-	prevOut, prevCaller, prevHooks := logging.Output(), std.ReportCaller, std.ReplaceHooks(logrus.LevelHooks{})
-	t.Cleanup(func() {
-		logging.SetOutput(prevOut)
-		std.SetReportCaller(prevCaller)
-		std.ReplaceHooks(prevHooks)
-	})
-	logging.SetOutput(io.Discard)
-	std.SetReportCaller(true)
-	hook := logrustest.NewGlobal()
+	prev := logging.Default()
+	t.Cleanup(func() { logging.SetDefault(prev) })
+	logging.SetDefault(l)
 	logging.Infof("global")
 	logging.Error("global")
 
-	require.Len(t, hook.AllEntries(), 2)
-	for _, e := range hook.AllEntries() {
-		require.NotNil(t, e.Caller, e.Message)
-		assert.True(t, strings.HasSuffix(e.Caller.Function, "TestCallerPC"), e.Caller.Function)
+	require.Len(t, h.AllRecords(), 4)
+	for _, r := range h.AllRecords() {
+		assert.True(t, strings.HasSuffix(frameOf(t, r.PC).Function, "TestCallerPC"), r.Message)
 	}
-}
-
-func TestLogrusHandler(t *testing.T) {
-	logger, hook := logrustest.NewNullLogger()
-	logger.SetLevel(logrus.DebugLevel)
-	logger.SetReportCaller(true)
-	l := logging.New(logging.NewLogrusHandler(logger)).With("job", "j1")
-
-	when := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	h := logging.NewLogrusHandler(logger).WithAttrs([]logging.Attr{{Key: "base", Value: true}})
-	require.NoError(t, h.Handle(t.Context(), logging.Record{Time: when, Level: logging.LevelWarn, Message: "timed"}))
-
-	l.Tracef("dropped")
-	assert.False(t, l.Enabled(logging.LevelTrace))
-	l.WithError(errors.New("boom")).Errorf("fail %s", "x")
-	l.Debugf("dbg")
-
-	entries := hook.AllEntries()
-	require.Len(t, entries, 3)
-	assert.Equal(t, when, entries[0].Time)
-	assert.Equal(t, logrus.WarnLevel, entries[0].Level)
-	assert.Equal(t, true, entries[0].Data["base"])
-
-	assert.Equal(t, logrus.ErrorLevel, entries[1].Level)
-	assert.Equal(t, "fail x", entries[1].Message)
-	assert.Equal(t, "j1", entries[1].Data["job"])
-	require.EqualError(t, entries[1].Data[logrus.ErrorKey].(error), "boom")
-	assert.Equal(t, logrus.DebugLevel, entries[2].Level)
-
-	require.NotNil(t, entries[1].Caller)
-	assert.True(t, strings.HasSuffix(entries[1].Caller.Function, "TestLogrusHandler"), entries[1].Caller.Function)
-	assert.Contains(t, entries[1].Caller.File, "logging_test.go")
 }
 
 func TestDefaultLevel(t *testing.T) {
@@ -159,4 +114,73 @@ func TestDefaultLevel(t *testing.T) {
 	assert.Equal(t, logging.LevelWarn, logging.GetLevel())
 	assert.True(t, logging.Enabled(logging.LevelError))
 	assert.False(t, logging.Enabled(logging.LevelInfo))
+}
+
+func TestSlogHandler(t *testing.T) {
+	var buf strings.Builder
+	slogger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	l := logging.New(logging.NewSlogHandler(slogger.Handler())).With("job", "j1")
+
+	l.Tracef("dropped")
+	assert.False(t, l.Enabled(logging.LevelTrace))
+	l.WithError(errors.New("boom")).Errorf("fail %s", "x")
+
+	out := buf.String()
+	assert.Contains(t, out, "level=ERROR")
+	assert.Contains(t, out, `msg="fail x"`)
+	assert.Contains(t, out, "job=j1")
+	assert.Contains(t, out, "error=boom")
+}
+
+func TestLogrusBridge(t *testing.T) {
+	prevLevel, prevDefault := logging.GetLevel(), logging.Default()
+	t.Cleanup(func() {
+		logging.SetLevel(prevLevel)
+		logging.SetReportCaller(false)
+		logging.SetDefault(prevDefault)
+	})
+	logging.SetLevel(logging.LevelInfo)
+	assert.False(t, logrus.IsLevelEnabled(logrus.DebugLevel))
+	logging.SetLevel(logging.LevelTrace)
+	logging.SetReportCaller(true)
+	h := logtest.NewWithLevel(logging.LevelTrace)
+	logging.SetDefault(logging.New(h))
+
+	logrus.WithField("lib", "docker").Warnf("from a library %d", 1)
+	_, _, line, _ := runtime.Caller(0)
+	logrus.Debug("below")
+	logrus.Trace("lowest")
+
+	recs := h.AllRecords()
+	require.Len(t, recs, 3)
+	assert.Equal(t, "from a library 1", recs[0].Message)
+	assert.Equal(t, logging.LevelWarn, recs[0].Level)
+	v, _ := recs[0].Attr("lib")
+	assert.Equal(t, "docker", v)
+	assert.Equal(t, logging.LevelDebug, recs[1].Level)
+	f := frameOf(t, recs[1].PC)
+	assert.True(t, strings.HasSuffix(f.Function, "TestLogrusBridge"), f.Function)
+	assert.Equal(t, line+1, f.Line)
+	assert.Equal(t, logging.LevelTrace, recs[2].Level)
+
+	h = logtest.New() // logrus passes Debug, the Logger does not
+	logging.SetDefault(logging.New(h))
+	logrus.Debug("dropped")
+	assert.Empty(t, h.AllRecords())
+}
+
+func TestLogrusBridgeIntact(t *testing.T) {
+	assert.True(t, logging.LogrusBridgeIntact())
+
+	prev := logrus.StandardLogger().Out
+	t.Cleanup(func() { logrus.SetOutput(prev) })
+	logrus.SetOutput(&strings.Builder{}) // what a dependency doing this would do
+	assert.False(t, logging.LogrusBridgeIntact())
+	logrus.SetOutput(prev)
+	assert.True(t, logging.LogrusBridgeIntact())
+
+	prevLevel := logrus.GetLevel()
+	t.Cleanup(func() { logrus.SetLevel(prevLevel) })
+	logrus.SetLevel(logrus.PanicLevel)
+	assert.False(t, logging.LogrusBridgeIntact())
 }
