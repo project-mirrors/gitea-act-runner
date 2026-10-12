@@ -166,7 +166,7 @@ func (m *mockConn) Close() (err error) {
 }
 
 func TestDockerExecAbort(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	reader := &interruptReader{started: make(chan struct{}), interrupted: make(chan struct{}), stopped: make(chan struct{})}
 	conn := &mockConn{}
@@ -207,7 +207,7 @@ func TestDockerExecAbort(t *testing.T) {
 }
 
 func TestDockerExecFailure(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	conn := &mockConn{}
 
@@ -254,7 +254,7 @@ func stdcopyFrame(stream stdcopy.StdType, payload string) []byte {
 // attach() streaming goroutine has drained and flushed the container's output,
 // so a final line without a trailing newline is not lost.
 func TestDockerAttachFlushesTrailingLine(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	framed := bytes.NewBuffer(stdcopyFrame(stdcopy.Stdout, "line one\nlast line without newline"))
 
@@ -303,7 +303,7 @@ func TestDockerAttachFlushesTrailingLine(t *testing.T) {
 }
 
 func TestDockerWaitFailure(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	statusCh := make(chan container.WaitResponse, 1)
 	statusCh <- container.WaitResponse{StatusCode: 2}
@@ -355,7 +355,7 @@ func TestRemoveIgnoresAutoRemoveRace(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logger, hook := logtest.NewLogger()
-			ctx := common.WithLogger(context.Background(), logger)
+			ctx := common.WithLogger(t.Context(), logger)
 			client := &mockDockerClient{}
 			client.On("ContainerKill", ctx, "abc", killOpts).Return(mobyclient.ContainerKillResult{}, nil)
 			client.On("ContainerRemove", ctx, "abc", removeOpts).Return(mobyclient.ContainerRemoveResult{}, tc.err)
@@ -388,7 +388,7 @@ func TestRemoveIgnoresAutoRemoveRace(t *testing.T) {
 // create() lost its reply, must still be removed rather than leaking with its network. It
 // was never started here, so it is not worth a kill of its own.
 func TestRemoveWithoutIDUsesName(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	client := &mockDockerClient{}
 	client.On("ContainerRemove", ctx, "job-1", mobyclient.ContainerRemoveOptions{RemoveVolumes: true, Force: true}).
 		Return(mobyclient.ContainerRemoveResult{}, nil)
@@ -401,7 +401,7 @@ func TestRemoveWithoutIDUsesName(t *testing.T) {
 // find() must drop a stale cached id so later Copy/Exec don't hit the
 // daemon with a torn-down container.
 func TestFindRevalidatesStaleID(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	notFound := cerrdefs.ErrNotFound.WithMessage("No such container")
 	boom := errors.New("daemon unreachable")
 	newCR := func(id string) (*containerReference, *mockDockerClient) {
@@ -459,7 +459,7 @@ func TestFindRevalidatesStaleID(t *testing.T) {
 // Every daemon entry point fails fast with a clear, container-named
 // error when no live cr.id is known.
 func TestRejectsMissingContainer(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	client := &mockDockerClient{}
 	client.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true}).Return(mobyclient.ContainerListResult{}, nil)
 	cr := &containerReference{cli: client, input: &NewContainerInput{Name: "job-1"}}
@@ -616,7 +616,7 @@ func TestCheckVolumes(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
 			logger, hook := logtest.NewLogger()
-			ctx := common.WithLogger(context.Background(), logger)
+			ctx := common.WithLogger(t.Context(), logger)
 			cr := &containerReference{
 				input: &NewContainerInput{
 					ValidVolumes: tc.validVolumes,
@@ -656,12 +656,12 @@ func TestMergeContainerConfigsKeepsTheRunnersFilesAndEnvToItself(t *testing.T) {
 		logger := logging.New(logtest.New())
 		cr := &containerReference{input: &NewContainerInput{NetworkMode: "bridge", WorkflowOptions: option}}
 
-		_, _, err := cr.mergeContainerConfigs(common.WithLogger(context.Background(), logger), &container.Config{}, &container.HostConfig{})
+		_, _, err := cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{})
 		require.ErrorContains(t, err, "not allowed in a workflow")
 
 		// the runner reading its own files is what those options are for
 		cr = &containerReference{input: &NewContainerInput{NetworkMode: "bridge", RunnerOptions: option}}
-		_, _, err = cr.mergeContainerConfigs(common.WithLogger(context.Background(), logger), &container.Config{}, &container.HostConfig{})
+		_, _, err = cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{})
 		require.NoError(t, err)
 	}
 
@@ -673,7 +673,7 @@ func TestMergeContainerConfigsKeepsTheRunnersFilesAndEnvToItself(t *testing.T) {
 		WorkflowOptions: "--env RUNNER_SECRET --env GIVEN=value",
 	}}
 
-	config, _, err := cr.mergeContainerConfigs(common.WithLogger(context.Background(), logger), &container.Config{}, &container.HostConfig{})
+	config, _, err := cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"RUNNER_SECRET", "RUNNER_SECRET", "GIVEN=value"}, config.Env)
 }
@@ -723,7 +723,7 @@ func mergeOptions(t *testing.T, runnerOptions, workflowOptions string, privilege
 		ValidVolumes:    []string{"**"},
 	}}
 
-	_, hostConfig, err := cr.mergeContainerConfigs(common.WithLogger(context.Background(), logger), &container.Config{}, &container.HostConfig{
+	_, hostConfig, err := cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{
 		Privileged:  privileged,
 		UsernsMode:  container.UsernsMode("private"),
 		NetworkMode: container.NetworkMode("bridge"),
@@ -767,7 +767,7 @@ func TestMergeContainerConfigsStripsDangerousOptionsWhenUnprivileged(t *testing.
 
 func TestCheckVolumesRejectsEscapingHostPaths(t *testing.T) {
 	logger := logging.New(logtest.New())
-	ctx := common.WithLogger(context.Background(), logger)
+	ctx := common.WithLogger(t.Context(), logger)
 
 	base := t.TempDir()
 	allowed := filepath.Join(base, "allowed")
@@ -808,7 +808,7 @@ func TestSanitizeConfigKeepsTmpfsMounts(t *testing.T) {
 
 	for _, validVolumes := range [][]string{nil, {"data"}, {"**:ro"}} {
 		logger, hook := logtest.NewLogger()
-		_, sanitized := (&containerReference{input: &NewContainerInput{ValidVolumes: validVolumes}}).sanitizeConfig(common.WithLogger(context.Background(), logger), &container.Config{}, &container.HostConfig{Mounts: []mount.Mount{
+		_, sanitized := (&containerReference{input: &NewContainerInput{ValidVolumes: validVolumes}}).sanitizeConfig(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{Mounts: []mount.Mount{
 			hostConfig.Mounts[0],
 			{Type: mount.TypeVolume, Target: "/anonymous"},
 			{Type: mount.TypeTmpfs, Source: "/etc", Target: "/etc-copy"},
@@ -898,7 +898,7 @@ func TestContainerInfoFromInspect(t *testing.T) {
 
 func TestMergeContainerConfigsVolumesReplaceRunnerMounts(t *testing.T) {
 	logger := logging.New(logtest.New())
-	ctx := common.WithLogger(context.Background(), logger)
+	ctx := common.WithLogger(t.Context(), logger)
 	cr := &containerReference{
 		input: &NewContainerInput{
 			NetworkMode:     "bridge",

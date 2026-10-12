@@ -5,7 +5,6 @@ package cmd
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -217,7 +216,7 @@ func TestPrintListReportsDuplicateJobIDs(t *testing.T) {
 }
 
 func TestLoadExecCmdDefinesExpectedFlags(t *testing.T) {
-	cmd := loadExecCmd(context.Background())
+	cmd := loadExecCmd(t.Context())
 
 	for _, name := range []string{
 		"list",

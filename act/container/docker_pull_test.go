@@ -5,7 +5,6 @@
 package container
 
 import (
-	"context"
 	"io"
 	"strings"
 	"testing"
@@ -37,13 +36,13 @@ func TestCleanImage(t *testing.T) {
 	}
 
 	for _, table := range tables {
-		imageOut := cleanImage(context.Background(), table.imageIn)
+		imageOut := cleanImage(t.Context(), table.imageIn)
 		assert.Equal(t, table.imageOut, imageOut)
 	}
 }
 
 func TestGetImagePullOptions(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	orig := config.Dir()
 	t.Cleanup(func() { config.SetDir(orig) })

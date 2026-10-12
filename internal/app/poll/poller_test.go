@@ -38,7 +38,7 @@ func TestPoller_WorkerStateCounters(t *testing.T) {
 	require.NoError(t, err)
 	p := &Poller{client: client, cfg: cfg}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	s1 := &workerState{}
 	s2 := &workerState{}
 
@@ -69,7 +69,7 @@ func TestPoller_FetchErrorIncrementsErrorsOnly(t *testing.T) {
 	p := &Poller{client: client, cfg: cfg}
 
 	s := &workerState{}
-	_, ok := p.fetchTask(context.Background(), s)
+	_, ok := p.fetchTask(t.Context(), s)
 	require.False(t, ok)
 	assert.Equal(t, int64(1), s.consecutiveErrors)
 	assert.Equal(t, int64(0), s.consecutiveEmpty)
@@ -90,14 +90,14 @@ func TestPoller_FetchTimeoutIsNoSignal(t *testing.T) {
 	hook := logtest.SetDefault(t)
 
 	s := &workerState{consecutiveErrors: 2}
-	_, ok := p.fetchTask(context.Background(), s)
+	_, ok := p.fetchTask(t.Context(), s)
 	require.False(t, ok)
 	assert.Equal(t, int64(2), s.consecutiveErrors)
 	assert.Equal(t, int64(1), s.consecutiveEmpty)
 	assert.True(t, p.lastPollFailed.Load(), "a timeout must not clear a known failure")
 
 	// An idle runner against a server holding the request open must not flood.
-	_, _ = p.fetchTask(context.Background(), s)
+	_, _ = p.fetchTask(t.Context(), s)
 	assert.Len(t, hook.AllRecords(), 1)
 }
 
@@ -120,7 +120,7 @@ func TestPoller_FetchUnauthenticatedStopsPolling(t *testing.T) {
 			require.NoError(t, err)
 			p := New(cfg, client, nil)
 			s := &workerState{}
-			_, ok := p.fetchTask(context.Background(), s)
+			_, ok := p.fetchTask(t.Context(), s)
 			require.False(t, ok)
 
 			assert.True(t, p.Unregistered(), "runner should be marked unregistered")
@@ -261,7 +261,7 @@ func TestPollerPausesAndResumesForLocalAvailability(t *testing.T) {
 		return fetches.Load() > 0
 	}, time.Second, 10*time.Millisecond, "polling should resume after local recovery")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	shutdownCtx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	require.NoError(t, poller.Shutdown(shutdownCtx))
 	wg.Wait()
@@ -280,7 +280,7 @@ func (m *mockRunner) Run(ctx context.Context, _ *runnerv1.Task) error {
 
 func TestPollerRunIdleMaintenance(t *testing.T) {
 	runner := &idleAwareRunner{}
-	p := &Poller{runner: runner, jobsCtx: context.Background()}
+	p := &Poller{runner: runner, jobsCtx: t.Context()}
 
 	p.runIdleMaintenance()
 
@@ -315,7 +315,7 @@ func TestPollerPollCallsOnIdle(t *testing.T) {
 		return runner.idleCalls.Load() > 0
 	}, time.Second, 10*time.Millisecond)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	require.NoError(t, poller.Shutdown(ctx))
 	wg.Wait()
@@ -344,7 +344,7 @@ func TestPollerPollOnceCallsOnIdle(t *testing.T) {
 		return runner.idleCalls.Load() > 0
 	}, time.Second, 10*time.Millisecond)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	require.NoError(t, poller.Shutdown(ctx))
 	wg.Wait()
@@ -411,7 +411,7 @@ func TestPoller_ConcurrencyLimitedByCapacity(t *testing.T) {
 		return runner.totalCompleted.Load() >= totalTasks
 	}, 2*time.Second, 10*time.Millisecond, "all tasks should complete")
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	err = poller.Shutdown(ctx)
 	require.NoError(t, err)
@@ -467,7 +467,7 @@ func TestPoller_ShutdownForcesJobsOnTimeout(t *testing.T) {
 		return runner.running.Load() == 1
 	}, time.Second, 10*time.Millisecond, "task should start running")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 	err = poller.Shutdown(ctx)

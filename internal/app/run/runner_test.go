@@ -47,7 +47,7 @@ func TestRunnerCapabilitiesAndDeclare(t *testing.T) {
 	})).Return(connect.NewResponse(&runnerv1.DeclareResponse{}), nil)
 
 	r := &Runner{client: cli}
-	_, err := r.Declare(context.Background(), []string{"ubuntu"})
+	_, err := r.Declare(t.Context(), []string{"ubuntu"})
 	require.NoError(t, err)
 }
 

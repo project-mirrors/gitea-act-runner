@@ -99,21 +99,21 @@ func TestFindGitMetadataOfSHA256RepositoryUsesOrigin(t *testing.T) {
 	require.NoError(t, gitCmd("-C", basedir, "remote", "add", "origin", remoteURL))
 	require.NoError(t, gitCmd("-C", basedir, "config", "--add", "remote.origin.url", "https://github.com/other/repo.git"))
 
-	shortSHA, sha, err := FindGitRevision(context.Background(), basedir)
+	shortSHA, sha, err := FindGitRevision(t.Context(), basedir)
 	require.NoError(t, err)
 	require.Equal(t, gitRevParse(t, basedir, "HEAD"), sha)
 	require.Len(t, sha, 64)
 	require.Equal(t, sha[:7], shortSHA)
 
-	ref, err := FindGitRef(context.Background(), basedir)
+	ref, err := FindGitRef(t.Context(), basedir)
 	require.NoError(t, err)
 	require.Equal(t, "refs/heads/main", ref)
 
-	url, err := findGitRemoteURL(context.Background(), basedir)
+	url, err := findGitRemoteURL(t.Context(), basedir)
 	require.NoError(t, err)
 	require.Equal(t, remoteURL, url)
 
-	slug, err := FindGithubRepo(context.Background(), basedir)
+	slug, err := FindGithubRepo(t.Context(), basedir)
 	require.NoError(t, err)
 	require.Equal(t, "owner/repo", slug)
 }
@@ -190,7 +190,7 @@ func TestGitFindRef(t *testing.T) {
 			require.NoError(t, gitCmd("-C", dir, "init", "--initial-branch=master"))
 			require.NoError(t, cleanGitHooks(dir))
 			tt.Prepare(t, dir)
-			ref, err := FindGitRef(context.Background(), dir)
+			ref, err := FindGitRef(t.Context(), dir)
 			tt.Assert(t, ref, err)
 		})
 	}
@@ -264,17 +264,17 @@ func TestGitCloneExecutor(t *testing.T) {
 				Dir: dir,
 			})
 
-			err := clone(context.Background())
+			err := clone(t.Context())
 			if tt.Err != nil {
 				assert.Error(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 				assert.Equal(t, tt.Err, err)
-				assert.Equal(t, tt.Err, clone(context.Background()), "a retry on the cache keeps the error")
+				assert.Equal(t, tt.Err, clone(t.Context()), "a retry on the cache keeps the error")
 				return
 			}
 			assert.Empty(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 			marker := filepath.Join(dir, "marker")
 			require.NoError(t, os.WriteFile(marker, nil, 0o644))
-			require.NoError(t, clone(context.Background()))
+			require.NoError(t, clone(t.Context()))
 			assert.FileExists(t, marker, "an insteadOf rewrite must not evict the cache")
 			script, err := os.ReadFile(filepath.Join(dir, "action.sh"))
 			require.NoError(t, err)
@@ -353,19 +353,19 @@ func TestGitCloneExecutorFollowsRemoteRefChanges(t *testing.T) {
 
 	dir := t.TempDir()
 	clone := NewGitCloneExecutor(NewGitCloneExecutorInput{URL: remoteDir, Ref: "main", Dir: dir})
-	require.NoError(t, clone(context.Background()))
+	require.NoError(t, clone(t.Context()))
 
 	require.NoError(t, gitCmd("-C", workDir, "reset", "--hard", "HEAD~1"))
 	require.NoError(t, gitCmd("-C", workDir, "commit", "--allow-empty", "-m", "feature-rewritten"))
 	require.NoError(t, gitCmd("-C", workDir, "push", "--force", "origin", "main"))
-	require.NoError(t, clone(context.Background()), "a non-fast-forward ref must update")
+	require.NoError(t, clone(t.Context()), "a non-fast-forward ref must update")
 	assert.Equal(t, "feature-rewritten", gitHeadSubject(t, dir))
 
 	tagClone := NewGitCloneExecutor(NewGitCloneExecutorInput{URL: remoteDir, Ref: "v9", Dir: t.TempDir()})
-	require.Error(t, tagClone(context.Background()))
+	require.Error(t, tagClone(t.Context()))
 	require.NoError(t, gitCmd("-C", workDir, "tag", "v9"))
 	require.NoError(t, gitCmd("-C", workDir, "push", "origin", "v9"))
-	require.NoError(t, tagClone(context.Background()), "a tag published after a failed lookup must be fetched")
+	require.NoError(t, tagClone(t.Context()), "a tag published after a failed lookup must be fetched")
 }
 
 func TestGitCloneExecutorOfflineMode(t *testing.T) {
@@ -385,7 +385,7 @@ func TestGitCloneExecutorOfflineMode(t *testing.T) {
 		URL: remoteDir,
 		Ref: "main",
 		Dir: cacheDir,
-	})(context.Background()))
+	})(t.Context()))
 
 	t.Run("cached branch resolves without fetching", func(t *testing.T) {
 		// Offline reuse of a cached branch must succeed even though ResolveRevision(input.Ref)
@@ -395,7 +395,7 @@ func TestGitCloneExecutorOfflineMode(t *testing.T) {
 			Ref:         "main",
 			Dir:         cacheDir,
 			OfflineMode: true,
-		})(context.Background())
+		})(t.Context())
 		require.NoError(t, err)
 
 		out, err := exec.Command("git", "-C", cacheDir, "log", "--oneline", "-1", "--format=%s").Output()
@@ -410,7 +410,7 @@ func TestGitCloneExecutorOfflineMode(t *testing.T) {
 			Ref:         "never-fetched",
 			Dir:         cacheDir,
 			OfflineMode: true,
-		})(context.Background())
+		})(t.Context())
 		require.Error(t, err)
 	})
 }
@@ -430,7 +430,7 @@ func TestGitCloneExecutorQuietDemotesCloneLine(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			hook := logtest.New()
 			logger := logging.New(logging.NewLevelHandler(hook, logging.LevelInfo))
-			ctx := common.WithLogger(context.Background(), logger.With("job", "j1"))
+			ctx := common.WithLogger(t.Context(), logger.With("job", "j1"))
 
 			require.NoError(t, NewGitCloneExecutor(NewGitCloneExecutorInput{
 				URL:   remoteDir,

@@ -175,7 +175,7 @@ func TestStepActionRemote(t *testing.T) {
 
 	for _, tt := range table {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 
 			cm := &containerMock{}
 			sarm := &stepActionRemoteMocks{}
@@ -438,7 +438,7 @@ func TestStepActionRemotePost(t *testing.T) {
 
 	for _, tt := range table {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 
 			cm := &containerMock{}
 
@@ -772,7 +772,7 @@ func TestStepActionRemotePreResolvesDownloadedCommit(t *testing.T) {
 		readAction: readActionImpl,
 	}
 
-	require.NoError(t, sar.prepareActionExecutor()(context.Background()))
+	require.NoError(t, sar.prepareActionExecutor()(t.Context()))
 
 	reference, sha, ok := sar.actionDownloadInfo()
 	assert.True(t, ok)
@@ -853,7 +853,7 @@ func TestStepActionRemoteCloneTokenSurvivesNilSecrets(t *testing.T) {
 
 	for _, tt := range table {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 
 			var capturedToken string
 			setCloneExecutor(t, func(input git.NewGitCloneExecutorInput) common.Executor {

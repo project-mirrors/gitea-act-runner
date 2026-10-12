@@ -4,7 +4,6 @@
 package process
 
 import (
-	"context"
 	"os/exec"
 	"testing"
 
@@ -12,7 +11,7 @@ import (
 )
 
 func TestNewTreeKillConfiguresCommand(t *testing.T) {
-	cmd := exec.CommandContext(context.Background(), "sleep", "1")
+	cmd := exec.CommandContext(t.Context(), "sleep", "1")
 	tk := NewTreeKill(cmd)
 
 	require.NotNil(t, tk)
@@ -22,7 +21,7 @@ func TestNewTreeKillConfiguresCommand(t *testing.T) {
 }
 
 func TestTreeKillCaptureStoresKiller(t *testing.T) {
-	cmd := exec.CommandContext(context.Background(), "sleep", "10")
+	cmd := exec.CommandContext(t.Context(), "sleep", "10")
 	cmd.SysProcAttr = SysProcAttr("", false)
 	tk := NewTreeKill(cmd)
 	require.NoError(t, cmd.Start())

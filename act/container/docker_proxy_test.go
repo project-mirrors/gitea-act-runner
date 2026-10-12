@@ -285,7 +285,7 @@ func TestRemoveLabelledRemovesContainersNetworksAndVolumes(t *testing.T) {
 	containerFailure := errors.New("container removal failed")
 	listFailure := errors.New("listing failed")
 	volumeFailure := errors.New("volume removal failed")
-	ctx := context.Background()
+	ctx := t.Context()
 	filters := make(mobyclient.Filters).Add("label", jobLabel+"=job-1")
 	cli := &mockDockerClient{}
 	cli.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true, Filters: filters}).
@@ -312,7 +312,7 @@ func TestRemoveLabelledRemovesContainersNetworksAndVolumes(t *testing.T) {
 
 func TestDockerProxyWithDaemon(t *testing.T) {
 	requireDocker(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	require.NoError(t, NewDockerPullExecutor(NewDockerPullExecutorInput{Image: "alpine"})(ctx))
 	direct, err := GetDockerClient(ctx)
 	require.NoError(t, err)

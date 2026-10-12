@@ -20,7 +20,7 @@ import (
 func TestNewWorkflow(t *testing.T) {
 	assert := assert.New(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// empty
 	emptyWorkflow := NewPipelineExecutor()
@@ -72,7 +72,7 @@ func concurrencyProbe(wantActive int32) (exec Executor, count, maxActive *atomic
 }
 
 func TestNewParallelExecutor(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	exec, count, maxActive := concurrencyProbe(2)
 	require.NoError(t, NewParallelExecutor(2, exec, exec, exec)(ctx))
@@ -89,10 +89,10 @@ func TestNewParallelExecutor(t *testing.T) {
 func TestNewParallelExecutorEmpty(t *testing.T) {
 	assert := assert.New(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	require.NoError(t, NewParallelExecutor(2)(ctx))
 
-	canceledCtx, cancel := context.WithCancel(context.Background())
+	canceledCtx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	err := NewParallelExecutor(2)(canceledCtx)
@@ -102,7 +102,7 @@ func TestNewParallelExecutorEmpty(t *testing.T) {
 func TestNewParallelExecutorFailed(t *testing.T) {
 	assert := assert.New(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	count := 0
@@ -118,7 +118,7 @@ func TestNewParallelExecutorFailed(t *testing.T) {
 func TestNewParallelExecutorCanceled(t *testing.T) {
 	assert := assert.New(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	errExpected := errors.New("fake error")
@@ -150,12 +150,12 @@ func TestNewParallelExecutorRunsRemainingAfterFailure(t *testing.T) {
 		}
 	}
 
-	require.Error(t, NewParallelExecutor(2, executors...)(context.Background()))
+	require.Error(t, NewParallelExecutor(2, executors...)(t.Context()))
 	assert.Equal(t, int32(4), successCount.Load(), "a failing executor must not stop the others")
 }
 
 func TestExecutorConditionalsAndFinally(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	var calls []string
 	record := func(name string) Executor {
 		return func(ctx context.Context) error {
@@ -180,7 +180,7 @@ func TestExecutorFinallyReturnsFinallyErrorWithOriginal(t *testing.T) {
 	mainErr := errors.New("main failed")
 	finalErr := errors.New("cleanup failed")
 
-	err := NewErrorExecutor(mainErr).Finally(NewErrorExecutor(finalErr))(context.Background())
+	err := NewErrorExecutor(mainErr).Finally(NewErrorExecutor(finalErr))(t.Context())
 	require.Error(t, err)
 	if !strings.Contains(err.Error(), "cleanup failed") || !strings.Contains(err.Error(), "main failed") {
 		t.Fatalf("finally error = %q, want both cleanup and original error", err)

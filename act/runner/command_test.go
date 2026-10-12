@@ -6,7 +6,6 @@ package runner
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"os"
 	"testing"
@@ -27,7 +26,7 @@ func unsecureRC() *RunContext {
 func TestSetEnv(t *testing.T) {
 	a := assert.New(t)
 	logger, hook := logtest.NewLogger()
-	ctx := common.WithLogger(context.Background(), logger)
+	ctx := common.WithLogger(t.Context(), logger)
 	rc := unsecureRC()
 	handler := rc.commandHandler(ctx)
 
@@ -45,7 +44,7 @@ func TestSetEnv(t *testing.T) {
 
 func TestStopCommandsKeepsSuppressedLinesInLog(t *testing.T) {
 	a := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	rc := unsecureRC()
 	handler := rc.commandHandler(ctx)
 
@@ -68,7 +67,7 @@ func TestStopCommandsKeepsSuppressedLinesInLog(t *testing.T) {
 
 func TestSetOutput(t *testing.T) {
 	a := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	rc := new(RunContext)
 	rc.StepResults = make(map[string]*model.StepResult)
 	handler := rc.commandHandler(ctx)
@@ -108,7 +107,7 @@ func TestSetOutput(t *testing.T) {
 
 func TestAddpath(t *testing.T) {
 	a := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	rc := unsecureRC()
 	handler := rc.commandHandler(ctx)
 
@@ -123,7 +122,7 @@ func TestStopCommands(t *testing.T) {
 	logger, hook := logtest.NewLogger()
 
 	a := assert.New(t)
-	ctx := common.WithLogger(context.Background(), logger)
+	ctx := common.WithLogger(t.Context(), logger)
 	rc := unsecureRC()
 	handler := rc.commandHandler(ctx)
 
@@ -149,7 +148,7 @@ func TestStopCommands(t *testing.T) {
 func TestStopCommandsResumesOnCommandNamedToken(t *testing.T) {
 	a := assert.New(t)
 	rc := unsecureRC()
-	handler := rc.commandHandler(context.Background())
+	handler := rc.commandHandler(t.Context())
 
 	handler("::stop-commands::add-mask\n")
 	handler("::set-env name=x::suppressed\n")
@@ -162,7 +161,7 @@ func TestStopCommandsResumesOnCommandNamedToken(t *testing.T) {
 
 func TestAddpathADO(t *testing.T) {
 	a := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	rc := unsecureRC()
 	handler := rc.commandHandler(ctx)
 
@@ -177,7 +176,7 @@ func TestAddmask(t *testing.T) {
 	logger, hook := logtest.NewLogger()
 
 	a := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	loggerCtx := common.WithLogger(ctx, logger)
 
 	rc := new(RunContext)
@@ -231,7 +230,7 @@ func TestAddmaskUsemask(t *testing.T) {
 	}
 
 	re := captureOutput(t, func() {
-		ctx := context.Background()
+		ctx := t.Context()
 		ctx = WithJobLogger(ctx, "0", "testjob", config, &rc.Masks, map[string]any{})
 
 		handler := rc.commandHandler(ctx)
@@ -248,7 +247,7 @@ func TestSaveState(t *testing.T) {
 		StepResults: map[string]*model.StepResult{},
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	handler := rc.commandHandler(ctx)
 	handler("::save-state name=state-name::state-value\n")
@@ -281,7 +280,7 @@ func TestUnsecureCommands(t *testing.T) {
 			a := assert.New(t)
 			rc := &RunContext{Env: tt.jobEnv}
 			rc.setCurrentStepEnv(tt.stepEnv)
-			handler := rc.commandHandler(context.Background())
+			handler := rc.commandHandler(t.Context())
 
 			handler("::set-env name=x::valz\n")
 			handler("::add-path::/opt/bin\n")

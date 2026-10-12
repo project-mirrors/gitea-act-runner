@@ -132,7 +132,7 @@ runs:
 				return nil
 			}
 
-			action, err := readActionImpl(context.Background(), tt.step, "actionDir", "actionPath", readFile, writeFile)
+			action, err := readActionImpl(t.Context(), tt.step, "actionDir", "actionPath", readFile, writeFile)
 
 			assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 			assert.Equal(t, tt.expected, action)
@@ -225,7 +225,7 @@ func TestActionRunner(t *testing.T) {
 
 	for _, tt := range table {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 
 			cm := &containerMock{}
 			cm.On("CopyDir", "/var/run/act/actions/dir/", "dir/", false, true).Return(func(ctx context.Context) error { return nil })
@@ -290,7 +290,7 @@ func TestNewStepContainerDoesNotUseDockerSecrets(t *testing.T) {
 		ContainerNewContainer = origContainerNewContainer
 	}()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	rc := &RunContext{
 		Name: "job",
 		Config: &Config{
@@ -327,7 +327,7 @@ func TestNewStepContainerDoesNotUseDockerSecrets(t *testing.T) {
 }
 
 func TestMaybeCopyToActionDirHoldsCloneLock(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	actionDir := t.TempDir()
 
@@ -447,7 +447,7 @@ func TestExecAsDockerHoldsCloneLockForRemoteUncached(t *testing.T) {
 		env:    map[string]string{},
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	done := make(chan error, 1)
@@ -619,7 +619,7 @@ func TestExecAsDockerStageEntrypoint(t *testing.T) {
 			cm.On("Start", true).Return(func(context.Context) error { return nil })
 			cm.On("Close").Return(func(context.Context) error { return nil })
 
-			require.NoError(t, execAsDocker(context.Background(), step, "action", t.TempDir(), t.TempDir(), false, tc.stage))
+			require.NoError(t, execAsDocker(t.Context(), step, "action", t.TempDir(), t.TempDir(), false, tc.stage))
 			require.NotNil(t, input)
 			assert.Equal(t, tc.wantCmd, input.Cmd)
 			assert.Equal(t, tc.wantEntrypoint, input.Entrypoint)
@@ -634,7 +634,7 @@ func TestDockerActionHasPreAndPostStep(t *testing.T) {
 	newStep := func(runs model.ActionRuns) actionStep {
 		return &stepActionRemote{action: &model.Action{Runs: runs}}
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	assert.False(t, hasPreStep(newStep(model.ActionRuns{Using: "docker", Image: "Dockerfile"}))(ctx))
 	assert.False(t, hasPostStep(newStep(model.ActionRuns{Using: "docker", Image: "Dockerfile"}))(ctx))

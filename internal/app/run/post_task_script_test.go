@@ -25,7 +25,7 @@ func TestRunPostTaskScriptSkippedWhenEmpty(t *testing.T) {
 	r := &Runner{
 		cfg: &config.Config{},
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	taskCtx, err := structpb.NewStruct(map[string]any{})
@@ -48,7 +48,7 @@ func TestRunPostTaskScriptNonZeroExitDoesNotPanic(t *testing.T) {
 	cfg.Runner.PostTaskScript = scriptPath
 
 	r := &Runner{cfg: cfg}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	taskCtx, err := structpb.NewStruct(map[string]any{})
@@ -66,7 +66,7 @@ func TestPostTaskScriptContextUsesFullTimeout(t *testing.T) {
 
 	// A task context that finished close to its own deadline must not truncate the
 	// script's budget: the script should still get its full configured timeout.
-	near, cancelNear := context.WithTimeout(context.Background(), time.Second)
+	near, cancelNear := context.WithTimeout(t.Context(), time.Second)
 	defer cancelNear()
 	scriptCtx, cancel := postTaskScriptContext(near, timeout)
 	defer cancel()
@@ -75,7 +75,7 @@ func TestPostTaskScriptContextUsesFullTimeout(t *testing.T) {
 	assert.Greater(t, time.Until(deadline), time.Minute, "script timeout truncated to task deadline")
 
 	// An already-cancelled task context must not cancel the script either.
-	cancelledCtx, cancelIt := context.WithCancel(context.Background())
+	cancelledCtx, cancelIt := context.WithCancel(t.Context())
 	cancelIt()
 	scriptCtx2, cancel2 := postTaskScriptContext(cancelledCtx, timeout)
 	defer cancel2()
@@ -91,7 +91,7 @@ func TestPostTaskScriptEnv(t *testing.T) {
 		envs: map[string]string{"BASE": "1"},
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	taskCtx, err := structpb.NewStruct(map[string]any{
@@ -128,7 +128,7 @@ func TestRunPostTaskScriptIntegration(t *testing.T) {
 		envs: map[string]string{"CUSTOM": "runner-env"},
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	taskCtx, err := structpb.NewStruct(map[string]any{})

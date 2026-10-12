@@ -19,7 +19,7 @@ import (
 )
 
 func TestIsolatedCacheContainer(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cache, lan := netip.MustParseAddr("172.18.0.3"), netip.MustParseAddr("192.168.1.20")
 	client := &mockDockerClient{}
 	client.On("ContainerList", ctx, mobyclient.ContainerListOptions{}).Return(mobyclient.ContainerListResult{Items: []container.Summary{{}, {
@@ -58,7 +58,7 @@ func TestIsAddressPoolExhausted(t *testing.T) {
 }
 
 func TestCreateDockerNetworkInheritsDaemonMTU(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	for _, tc := range []struct {
 		bridgeOptions, want map[string]string
 	}{
@@ -87,7 +87,7 @@ func (m *mockDockerClient) NetworkDisconnect(ctx context.Context, id string, opt
 }
 
 func TestConnectAndDisconnectNetwork(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	connect := func(answer error) error {
 		client := &mockDockerClient{}
 		client.On("NetworkConnect", ctx, "jobs", mobyclient.NetworkConnectOptions{
@@ -117,7 +117,7 @@ func TestConnectAndDisconnectNetwork(t *testing.T) {
 // and old enough to predate any job now starting are the runner's to reclaim. An unexpected
 // NetworkRemove fails the test on its own, since testify has no expectation to match it against.
 func TestRemoveOrphanNetworks(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cutoff := time.Date(2026, time.April, 29, 20, 0, 0, 0, time.UTC)
 	client := &mockDockerClient{}
 	client.On("NetworkList", ctx, mobyclient.NetworkListOptions{

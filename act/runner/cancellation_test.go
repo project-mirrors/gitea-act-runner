@@ -62,7 +62,7 @@ func TestCancelledJobStatusEnablesAlwaysAndCancelledSteps(t *testing.T) {
 	enabled, err := interp.Evaluate("always()", exprparser.DefaultStatusCheckSuccess)
 	require.NoError(t, err)
 	assert.Equal(t, true, enabled, "`if: always()` step must run on a cancelled job")
-	setJobResult(context.Background(), rc, rc, true)
+	setJobResult(t.Context(), rc, rc, true)
 	assert.Equal(t, "cancelled", rc.Run.Job().Result)
 }
 
@@ -76,7 +76,7 @@ func TestMainStepsExecutorRunsAlwaysStepsAfterCancel(t *testing.T) {
 		"job1": createJob(t, `runs-on: ubuntu-latest`, ""),
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	var ran []string
@@ -110,7 +110,7 @@ func TestMainStepsExecutorMarksFailedOnTimeoutBetweenSteps(t *testing.T) {
 		"job1": createJob(t, `runs-on: ubuntu-latest`, ""),
 	})
 
-	ctx := newControllableDeadlineContext(context.Background())
+	ctx := newControllableDeadlineContext(t.Context())
 
 	var ran []string
 	var laterStepCtxErr error
@@ -149,7 +149,7 @@ func TestStepsExecutorRunsMainStepsAfterPreCancel(t *testing.T) {
 		"job1": createJob(t, `runs-on: ubuntu-latest`, ""),
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	var ran []string
@@ -200,7 +200,7 @@ func TestStepsExecutorRunsMainStepsAfterPreFailure(t *testing.T) {
 		},
 	}
 
-	err := newStepsExecutor(rc, preSteps, steps)(context.Background())
+	err := newStepsExecutor(rc, preSteps, steps)(t.Context())
 
 	require.ErrorIs(t, err, assert.AnError, "the pre-step error is propagated")
 	assert.Equal(t, []string{"pre1", "always-step"}, ran, "the main always() step runs after a pre-step failure")
@@ -215,7 +215,7 @@ func TestPreStepFailureAffectsMainStepIfStatus(t *testing.T) {
 	rc := createIfTestRunContext(map[string]*model.Job{
 		"job1": createJob(t, `runs-on: ubuntu-latest`, ""),
 	})
-	ctx := common.WithJobErrorContainer(context.Background())
+	ctx := common.WithJobErrorContainer(t.Context())
 
 	reportStepError(ctx, rc, assert.AnError)
 
@@ -251,7 +251,7 @@ func TestPreStepFailureAffectsMainStepIfStatus(t *testing.T) {
 // from cancellation (so the steps run) yet still carry a usable error container.
 func TestPostStepsContextCancelledIsUsableForFailingStep(t *testing.T) {
 	jobSpan := trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{1}, SpanID: trace.SpanID{1}})
-	cancelled, cancel := context.WithCancel(trace.ContextWithSpanContext(common.WithJobErrorContainer(context.Background()), jobSpan))
+	cancelled, cancel := context.WithCancel(trace.ContextWithSpanContext(common.WithJobErrorContainer(t.Context()), jobSpan))
 	cancel()
 	require.ErrorIs(t, cancelled.Err(), context.Canceled)
 
@@ -273,7 +273,7 @@ func TestPostStepsContextCancelledIsUsableForFailingStep(t *testing.T) {
 // job-error container (via context.WithoutCancel), so the timeout failure and any post-step error
 // survive into the post phase and the job is still reported as failed.
 func TestPostStepsContextDeadlinePreservesJobError(t *testing.T) {
-	base := common.WithJobErrorContainer(context.Background())
+	base := common.WithJobErrorContainer(t.Context())
 	common.SetJobError(base, assert.AnError)
 	expired, cancel := context.WithDeadline(base, time.Now().Add(-time.Hour))
 	defer cancel()
@@ -292,14 +292,14 @@ func TestReportStepErrorTreatsCancelAsInterruption(t *testing.T) {
 	rc := &RunContext{}
 
 	// stray read cancellation while the job context is live: ignored, not a failure
-	live := common.WithJobErrorContainer(context.Background())
+	live := common.WithJobErrorContainer(t.Context())
 	reportStepError(live, rc, context.Canceled)
 	require.NoError(t, common.JobError(live))
 	assert.False(t, rc.jobFailed)
 	assert.False(t, rc.jobCancelled)
 
 	// genuine job cancellation: recorded as cancelled, still not a failure
-	cancelled, cancel := context.WithCancel(common.WithJobErrorContainer(context.Background()))
+	cancelled, cancel := context.WithCancel(common.WithJobErrorContainer(t.Context()))
 	cancel()
 	reportStepError(cancelled, rc, context.Canceled)
 	require.NoError(t, common.JobError(cancelled))
@@ -307,7 +307,7 @@ func TestReportStepErrorTreatsCancelAsInterruption(t *testing.T) {
 	assert.True(t, rc.jobCancelled)
 
 	// a real error still fails the job
-	failed := common.WithJobErrorContainer(context.Background())
+	failed := common.WithJobErrorContainer(t.Context())
 	reportStepError(failed, rc, assert.AnError)
 	require.ErrorIs(t, common.JobError(failed), assert.AnError)
 	assert.True(t, rc.jobFailed)

@@ -96,7 +96,7 @@ func TestRegisterRunningJobsFuncZeroCapacity(t *testing.T) {
 }
 
 func TestStartServerCanBeCancelled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	StartServer(ctx, "127.0.0.1:0", nil)
 	cancel()
 }

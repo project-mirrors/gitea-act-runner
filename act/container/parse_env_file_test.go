@@ -5,7 +5,6 @@ package container
 
 import (
 	"bufio"
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,7 +27,7 @@ func TestParseEnvFileSingleLine(t *testing.T) {
 	require.NoError(t, os.WriteFile(envPath, []byte("FOO=bar\nBAZ=qux\n"), 0o600))
 
 	env := map[string]string{}
-	require.NoError(t, parseEnvFile(e, envPath, &env)(context.Background()))
+	require.NoError(t, parseEnvFile(e, envPath, &env)(t.Context()))
 	assert.Equal(t, "bar", env["FOO"])
 	assert.Equal(t, "qux", env["BAZ"])
 }
@@ -39,7 +38,7 @@ func TestParseEnvFileMultiLine(t *testing.T) {
 	require.NoError(t, os.WriteFile(envPath, []byte(content), 0o600))
 
 	env := map[string]string{}
-	require.NoError(t, parseEnvFile(e, envPath, &env)(context.Background()))
+	require.NoError(t, parseEnvFile(e, envPath, &env)(t.Context()))
 	assert.Equal(t, "line1\nline2", env["FOO"])
 }
 
@@ -50,7 +49,7 @@ func TestParseEnvFileLargeValueWithinLimit(t *testing.T) {
 	require.NoError(t, os.WriteFile(envPath, []byte(content), 0o600))
 
 	env := map[string]string{}
-	require.NoError(t, parseEnvFile(e, envPath, &env)(context.Background()))
+	require.NoError(t, parseEnvFile(e, envPath, &env)(t.Context()))
 	assert.Equal(t, big, env["FOO"])
 }
 
@@ -61,7 +60,7 @@ func TestParseEnvFileLineExceedsBufferReportsScannerError(t *testing.T) {
 	require.NoError(t, os.WriteFile(envPath, []byte(content), 0o600))
 
 	env := map[string]string{}
-	err := parseEnvFile(e, envPath, &env)(context.Background())
+	err := parseEnvFile(e, envPath, &env)(t.Context())
 	require.ErrorIs(t, err, bufio.ErrTooLong)
 	assert.Contains(t, err.Error(), "reading env file")
 }
@@ -73,7 +72,7 @@ func TestParseEnvFileBlankLines(t *testing.T) {
 	require.NoError(t, os.WriteFile(envPath, []byte("\nFOO=bar\n\n   \nBAZ=qux\n\n"), 0o600))
 
 	env := map[string]string{}
-	require.NoError(t, parseEnvFile(e, envPath, &env)(context.Background()))
+	require.NoError(t, parseEnvFile(e, envPath, &env)(t.Context()))
 	assert.Equal(t, "bar", env["FOO"])
 	assert.Equal(t, "qux", env["BAZ"])
 }
@@ -84,12 +83,12 @@ func TestParseEnvFileMultiLineKeepsBlankLines(t *testing.T) {
 	require.NoError(t, os.WriteFile(envPath, []byte("FOO<<EOF\nline1\n\nline2\nEOF\n"), 0o600))
 
 	env := map[string]string{}
-	require.NoError(t, parseEnvFile(e, envPath, &env)(context.Background()))
+	require.NoError(t, parseEnvFile(e, envPath, &env)(t.Context()))
 	assert.Equal(t, "line1\n\nline2", env["FOO"])
 
 	require.NoError(t, os.WriteFile(envPath, []byte("FOO<<EOF\n\nline2\nEOF\n"), 0o600))
 	env = map[string]string{}
-	require.NoError(t, parseEnvFile(e, envPath, &env)(context.Background()))
+	require.NoError(t, parseEnvFile(e, envPath, &env)(t.Context()))
 	assert.Equal(t, "\nline2", env["FOO"])
 }
 
@@ -99,7 +98,7 @@ func TestParseEnvFileUTF8BOM(t *testing.T) {
 	require.NoError(t, os.WriteFile(envPath, content, 0o600))
 
 	env := map[string]string{}
-	require.NoError(t, parseEnvFile(e, envPath, &env)(context.Background()))
+	require.NoError(t, parseEnvFile(e, envPath, &env)(t.Context()))
 	assert.Equal(t, "bar", env["FOO"])
 }
 
@@ -121,7 +120,7 @@ func TestParseEnvFileUTF16(t *testing.T) {
 			require.NoError(t, os.WriteFile(envPath, content, 0o600))
 
 			env := map[string]string{}
-			require.NoError(t, parseEnvFile(e, envPath, &env)(context.Background()))
+			require.NoError(t, parseEnvFile(e, envPath, &env)(t.Context()))
 			assert.Equal(t, "bar", env["FOO"])
 			assert.Equal(t, "line1", env["MULTI"])
 		})
@@ -133,7 +132,7 @@ func TestParseEnvFileMissingDelimiter(t *testing.T) {
 	require.NoError(t, os.WriteFile(envPath, []byte("FOO<<EOF\nline1\nline2\n"), 0o600))
 
 	env := map[string]string{}
-	err := parseEnvFile(e, envPath, &env)(context.Background())
+	err := parseEnvFile(e, envPath, &env)(t.Context())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delimiter")
 }

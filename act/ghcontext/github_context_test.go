@@ -105,7 +105,7 @@ func TestSetRef(t *testing.T) {
 				Event:     table.event,
 			}
 
-			SetRef(context.Background(), ghc, "/some/dir")
+			SetRef(t.Context(), ghc, "/some/dir")
 			ghc.SetRefTypeAndName()
 
 			assert.Equal(t, table.ref, ghc.Ref)
@@ -123,7 +123,7 @@ func TestSetRef(t *testing.T) {
 			Event:     map[string]any{},
 		}
 
-		SetRef(context.Background(), ghc, "/some/dir")
+		SetRef(t.Context(), ghc, "/some/dir")
 
 		assert.Equal(t, "refs/heads/master", ghc.Ref)
 	})
@@ -210,14 +210,14 @@ func TestSetSha(t *testing.T) {
 				Event:     table.event,
 			}
 
-			SetSha(context.Background(), ghc, "/some/dir")
+			SetSha(t.Context(), ghc, "/some/dir")
 
 			assert.Equal(t, table.sha, ghc.Sha)
 		})
 	}
 
 	t.Run("pinned checkout keeps the first sha and ref", func(t *testing.T) {
-		ctx := WithPinnedCheckout(context.Background())
+		ctx := WithPinnedCheckout(t.Context())
 		for _, head := range []string{"first", "moved"} {
 			findGitRevision = func(context.Context, string) (string, string, error) { return "", head, nil }
 			findGitRef = func(context.Context, string) (string, error) { return "refs/heads/" + head, nil }
