@@ -16,10 +16,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	git "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/filemode"
-	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
-	"github.com/go-git/go-git/v5/plumbing/format/index"
+	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/git"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 type Handler interface {
@@ -94,73 +94,62 @@ func (cc *CopyCollector) WriteFile(fpath string, fi fs.FileInfo, linkName string
 }
 
 type FileCollector struct {
-	Ignorer    gitignore.Matcher
-	SrcPath    string
-	SrcPrefix  string
-	SkipGitDir bool
-	Handler    Handler
+	SrcPath      string
+	SrcPrefix    string
+	SkipGitDir   bool
+	UseGitIgnore bool
+	Handler      Handler
 }
 
-func openGitIndex(path string) (*index.Index, error) {
-	repo, err := git.PlainOpen(path)
-	if err != nil {
-		return nil, err
+// foldPath compares git's spelling of a path with the filesystem's, which may differ in case or Unicode normalization.
+func foldPath(name string) string {
+	return strings.ToLower(norm.NFC.String(name))
+}
+
+func (fc *FileCollector) gitFiles(ctx context.Context) map[string]bool {
+	if !fc.UseGitIgnore {
+		return nil
 	}
-	return repo.Storer.Index()
+	files, err := git.ListFiles(ctx, fc.SrcPath)
+	if err != nil {
+		common.Logger(ctx).Debugf("Copying %s without applying .gitignore: %v", fc.SrcPath, err)
+		return nil
+	}
+	keep := map[string]bool{".": true}
+	for _, file := range files {
+		for file = foldPath(file); !keep[file]; file = path.Dir(file) {
+			keep[file] = true
+		}
+	}
+	return keep
 }
 
-func (fc *FileCollector) CollectFiles(ctx context.Context, submodulePath []string) filepath.WalkFunc {
-	i, _ := openGitIndex(path.Join(fc.SrcPath, path.Join(submodulePath...)))
+func (fc *FileCollector) CollectFiles(ctx context.Context) filepath.WalkFunc {
+	keep := fc.gitFiles(ctx)
 	return func(file string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if ctx != nil && ctx.Err() != nil {
+		if ctx.Err() != nil {
 			return errors.New("copy cancelled")
 		}
-
-		sansPrefix := strings.TrimPrefix(file, fc.SrcPrefix)
-		split := strings.Split(sansPrefix, string(filepath.Separator))
-		// The root folders should be skipped, submodules only have the last path component set to "." by filepath.Walk
-		if fi.IsDir() && len(split) > 0 && split[len(split)-1] == "." {
-			return nil
-		}
-		if fc.SkipGitDir && split[len(split)-1] == ".git" {
+		if fc.SkipGitDir && fi.Name() == ".git" {
 			if fi.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		var entry *index.Entry
-		if i != nil {
-			entry, err = i.Entry(strings.Join(split[len(submodulePath):], "/"))
-		} else {
-			err = index.ErrEntryNotFound
-		}
-		if err != nil && fc.Ignorer != nil && fc.Ignorer.Match(split, fi.IsDir()) {
-			if fi.IsDir() {
-				if i != nil {
-					ms, err := i.Glob(strings.Join(append(split[len(submodulePath):], "**"), "/"))
-					if err != nil || len(ms) == 0 {
-						return filepath.SkipDir
-					}
-				} else {
+		if keep != nil {
+			rel, _ := filepath.Rel(fc.SrcPath, file)
+			if rel = filepath.ToSlash(rel); !keep[foldPath(rel)] && !strings.Contains("/"+rel+"/", "/.git/") {
+				if fi.IsDir() {
 					return filepath.SkipDir
 				}
-			} else {
 				return nil
 			}
 		}
-		if err == nil && entry.Mode == filemode.Submodule {
-			err = filepath.Walk(file, fc.CollectFiles(ctx, split))
-			if err != nil {
-				return err
-			}
-			return filepath.SkipDir
-		}
-		path := filepath.ToSlash(sansPrefix)
+		path := filepath.ToSlash(strings.TrimPrefix(file, fc.SrcPrefix))
 
-		// return on non-regular files (thanks to [kumo](https://medium.com/@komuw/just-like-you-did-fbdd7df829d3) for this suggested update)
 		if fi.Mode()&os.ModeSymlink == os.ModeSymlink {
 			linkName, err := os.Readlink(file)
 			if err != nil {
@@ -171,17 +160,12 @@ func (fc *FileCollector) CollectFiles(ctx context.Context, submodulePath []strin
 			return nil
 		}
 
-		// open file
 		f, err := os.Open(file)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-
-		if ctx != nil {
-			stop := context.AfterFunc(ctx, func() { _ = f.Close() })
-			defer stop()
-		}
+		defer context.AfterFunc(ctx, func() { _ = f.Close() })()
 
 		return fc.Handler.WriteFile(path, fi, "", f)
 	}

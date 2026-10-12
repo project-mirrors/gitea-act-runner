@@ -13,10 +13,6 @@ import (
 
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/filecollector"
-
-	"github.com/go-git/go-billy/v5/helper/polyfill"
-	"github.com/go-git/go-billy/v5/osfs"
-	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 )
 
 func writeFilesTar(ctx context.Context, w io.Writer, uid, gid int, files ...*FileEntry) error {
@@ -46,23 +42,13 @@ func writeDirTar(ctx context.Context, w io.Writer, dstPath, srcPath string, useG
 	srcPrefix := strings.TrimSuffix(filepath.Dir(srcPath), string(filepath.Separator)) + string(filepath.Separator)
 	logger.Debugf("Stripping prefix:%s src:%s", srcPrefix, srcPath)
 
-	var ignorer gitignore.Matcher
-	if useGitIgnore {
-		ps, err := gitignore.ReadPatterns(polyfill.New(osfs.New(srcPath)), nil)
-		if err != nil {
-			logger.Debugf("Error loading .gitignore: %v", err)
-		}
-
-		ignorer = gitignore.NewMatcher(ps)
-	}
-
 	if err := filepath.Walk(srcPath, (&filecollector.FileCollector{
-		Ignorer:    ignorer,
-		SrcPath:    srcPath,
-		SrcPrefix:  srcPrefix,
-		SkipGitDir: skipGitDir,
-		Handler:    &filecollector.TarCollector{TarWriter: tw, UID: uid, GID: gid, DstDir: dstPath[1:]},
-	}).CollectFiles(ctx, []string{})); err != nil {
+		SrcPath:      srcPath,
+		SrcPrefix:    srcPrefix,
+		SkipGitDir:   skipGitDir,
+		UseGitIgnore: useGitIgnore,
+		Handler:      &filecollector.TarCollector{TarWriter: tw, UID: uid, GID: gid, DstDir: dstPath[1:]},
+	}).CollectFiles(ctx)); err != nil {
 		return err
 	}
 	return tw.Close()

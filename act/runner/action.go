@@ -156,10 +156,6 @@ func maybeCopyToActionDir(ctx context.Context, step actionStep, actionDir, actio
 		defer patchActions(ctx, actionScriptPaths(filepath.Join(actionDir, actionPath), step.getActionModel()))()
 	}
 
-	if err := removeGitIgnore(ctx, actionDir); err != nil {
-		return err
-	}
-
 	return rc.JobContainer.CopyDir(containerActionDirCopy, actionDir+"/", rc.Config.UseGitIgnore, true)(ctx)
 }
 
@@ -243,23 +239,6 @@ func runActionImpl(step actionStep, actionDir string, remoteAction *remoteAction
 // /var/run is a symlink, so without the flag node's import.meta.url differs from argv[1], which ESM actions compare.
 func nodeActionCommand(script string) []string {
 	return []string{"node", "--preserve-symlinks-main", script}
-}
-
-// https://github.com/nektos/act/issues/228#issuecomment-629709055
-// files in .gitignore are not copied in a Docker container
-// this causes issues with actions that ignore other important resources
-// such as `node_modules` for example
-func removeGitIgnore(ctx context.Context, directory string) error {
-	gitIgnorePath := path.Join(directory, ".gitignore")
-	if _, err := os.Stat(gitIgnorePath); err == nil {
-		// .gitignore exists
-		common.Logger(ctx).Debugf("Removing %s before docker cp", gitIgnorePath)
-		err := os.Remove(gitIgnorePath)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // dockerActionImageTag derives the local docker image tag used when an action

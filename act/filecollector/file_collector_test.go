@@ -9,106 +9,78 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
-	git "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestIgnoredTrackedfile(t *testing.T) {
+func gitCmd(t *testing.T, args ...string) {
+	t.Helper()
+	out, err := exec.Command("git", args...).CombinedOutput()
+	require.NoError(t, err, string(out))
+}
+
+func TestCollectFilesKeepsWhatGitTracksOrDoesNotIgnore(t *testing.T) {
 	repoDir := filepath.Join(t.TempDir(), "mygitrepo")
-	repo, err := git.PlainInit(repoDir, false)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte(".*\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(repoDir, ".env"), []byte("test=val1\n"), 0o644))
-	worktree, err := repo.Worktree()
-	require.NoError(t, err)
-	_, err = worktree.Add(".gitignore")
-	require.NoError(t, err)
+	for _, dir := range []string{repoDir, filepath.Join(repoDir, "sub"), filepath.Join(repoDir, "nested")} {
+		gitCmd(t, "init", "-q", dir)
+	}
+	for name, body := range map[string]string{
+		".gitignore":     ".*\nign/\n",
+		".env":           "",
+		"Renamed":        "",
+		"ign/tracked":    "",
+		"ign/untracked":  "",
+		"sub/.gitignore": "dropped\n",
+		"sub/dropped":    "",
+		"sub/kept":       "",
+		"nested/kept":    "",
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(repoDir, name)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(repoDir, name), []byte(body), 0o644))
+	}
+	require.NoError(t, os.Mkdir(filepath.Join(repoDir, "uninitialized"), 0o755))
+	gitCmd(t, "-C", repoDir, "add", "-f", ".gitignore", "Renamed", "ign/tracked")
+	require.NoError(t, os.Rename(filepath.Join(repoDir, "Renamed"), filepath.Join(repoDir, "renamed")))
+	for _, gitlink := range []string{"sub", "uninitialized"} {
+		gitCmd(t, "-C", repoDir, "update-index", "--add", "--cacheinfo", "160000,4b825dc642cb6eb9a060e54bf8d69288fbee4904,"+gitlink)
+	}
+	expected := map[string]string{".gitignore": "", "ign/tracked": "", "nested/kept": "", "renamed": "", "sub/.gitignore": "", "sub/kept": ""}
+	if runtime.GOOS != "windows" {
+		require.NoError(t, os.Symlink(".env", filepath.Join(repoDir, "test.env")))
+		expected["test.env"] = ".env"
+	}
 
 	var archive bytes.Buffer
 	tw := tar.NewWriter(&archive)
-	patterns, err := gitignore.ReadPatterns(worktree.Filesystem, nil)
-	require.NoError(t, err)
-	ignorer := gitignore.NewMatcher(patterns)
-	fc := &FileCollector{
-		Ignorer:   ignorer,
-		SrcPath:   repoDir,
-		SrcPrefix: repoDir + string(filepath.Separator),
-		Handler: &TarCollector{
-			TarWriter: tw,
-		},
-	}
-	err = filepath.Walk(repoDir, fc.CollectFiles(context.Background(), nil))
-	assert.NoError(t, err, "successfully collect files")
+	fc := &FileCollector{SrcPath: repoDir, SrcPrefix: repoDir + string(filepath.Separator), UseGitIgnore: true, Handler: &TarCollector{TarWriter: tw}}
+	require.NoError(t, filepath.Walk(repoDir, fc.CollectFiles(t.Context())))
 	require.NoError(t, tw.Close())
+
+	files := map[string]string{}
 	tr := tar.NewReader(&archive)
-	h, err := tr.Next()
-	assert.NoError(t, err, "tar must not be empty") //nolint:testifylint // pre-existing issue from nektos/act
-	assert.Equal(t, ".gitignore", h.Name)
-	_, err = tr.Next()
-	assert.ErrorIs(t, err, io.EOF, "tar must only contain one element")
+	for header, err := tr.Next(); err != io.EOF; header, err = tr.Next() {
+		require.NoError(t, err)
+		files[header.Name] = header.Linkname
+	}
+	assert.Contains(t, files, ".git/HEAD")
+	maps.DeleteFunc(files, func(name, _ string) bool { return strings.Contains("/"+name, "/.git/") })
+	assert.Equal(t, expected, files)
 }
 
-func TestSymlinks(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks requires elevated privileges on Windows")
-	}
-	repoDir := filepath.Join(t.TempDir(), "mygitrepo")
-	repo, err := git.PlainInit(repoDir, false)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(repoDir, ".env"), []byte("test=val1\n"), 0o644))
-	require.NoError(t, os.Symlink(".env", filepath.Join(repoDir, "test.env")))
-	worktree, err := repo.Worktree()
-	require.NoError(t, err)
-	_, err = worktree.Add("test.env")
-	require.NoError(t, err)
-
-	var archive bytes.Buffer
-	tw := tar.NewWriter(&archive)
-	fc := &FileCollector{
-		SrcPath:   repoDir,
-		SrcPrefix: repoDir + string(filepath.Separator),
-		Handler: &TarCollector{
-			TarWriter: tw,
-		},
-	}
-	err = filepath.Walk(repoDir, fc.CollectFiles(context.Background(), nil))
-	assert.NoError(t, err, "successfully collect files")
-	require.NoError(t, tw.Close())
-	tr := tar.NewReader(&archive)
-	h, err := tr.Next()
-	files := map[string]tar.Header{}
-	for err == nil {
-		files[h.Name] = *h
-		h, err = tr.Next()
-	}
-
-	assert.Equal(t, ".env", files[".env"].Name)
-	assert.Equal(t, "test.env", files["test.env"].Name)
-	assert.Equal(t, ".env", files["test.env"].Linkname)
-	assert.ErrorIs(t, err, io.EOF, "tar must be read cleanly to EOF")
-}
-
-// Regression for https://gitea.com/gitea/runner/issues/876 and /941:
-// re-copying an action directory must overwrite a pre-existing read-only
-// file (e.g. a git pack .idx at mode 0444) instead of failing with EACCES
-// on macOS or "Access is denied" on Windows.
 func TestCopyCollectorWriteFileOverwritesReadOnlyFile(t *testing.T) {
 	dst := t.TempDir()
 	target := filepath.Join(dst, "sub", "pack.idx")
 	require.NoError(t, os.MkdirAll(filepath.Dir(target), 0o755))
 	require.NoError(t, os.WriteFile(target, []byte("old"), 0o444))
-
-	src := filepath.Join(t.TempDir(), "pack.idx")
-	require.NoError(t, os.WriteFile(src, []byte("new"), 0o444))
-	fi, err := os.Stat(src)
+	fi, err := os.Stat(target)
 	require.NoError(t, err)
 
 	cc := &CopyCollector{DstDir: dst}
@@ -119,8 +91,6 @@ func TestCopyCollectorWriteFileOverwritesReadOnlyFile(t *testing.T) {
 	assert.Equal(t, "new", string(got))
 }
 
-// Without the destination removal, os.Symlink fails with EEXIST when the
-// path already holds a regular file from an earlier copy of the action.
 func TestCopyCollectorWriteFileOverwritesFileWithSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating symlinks requires elevated privileges on Windows")
@@ -129,11 +99,8 @@ func TestCopyCollectorWriteFileOverwritesFileWithSymlink(t *testing.T) {
 	target := filepath.Join(dst, "link")
 	require.NoError(t, os.WriteFile(target, []byte("stale"), 0o644))
 
-	fi, err := os.Lstat(target)
-	require.NoError(t, err)
-
 	cc := &CopyCollector{DstDir: dst}
-	require.NoError(t, cc.WriteFile("link", fi, "target", nil))
+	require.NoError(t, cc.WriteFile("link", nil, "target", nil))
 
 	resolved, err := os.Readlink(target)
 	require.NoError(t, err)
@@ -143,7 +110,7 @@ func TestCopyCollectorWriteFileOverwritesFileWithSymlink(t *testing.T) {
 func TestFileCollectorCancellationAndWalkError(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	walk := (&FileCollector{}).CollectFiles(ctx, nil)
+	walk := (&FileCollector{}).CollectFiles(ctx)
 
 	err := walk("file", nil, nil)
 	require.EqualError(t, err, "copy cancelled")
