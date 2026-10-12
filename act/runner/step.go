@@ -47,11 +47,11 @@ const maxSymlinkDepth = 10
 func (s stepStage) String() string {
 	switch s {
 	case stepStagePre:
-		return "Pre"
+		return StagePre
 	case stepStageMain:
-		return "Main"
+		return StageMain
 	case stepStagePost:
-		return "Post"
+		return StagePost
 	}
 	return "Unknown"
 }
@@ -112,12 +112,13 @@ func runStepExecutor(step step, stage stepStage, executor common.Executor) commo
 		if strings.Contains(stepString, "::add-mask::") {
 			stepString = "add-mask command"
 		}
+		startLogger := logger.With(StepStartedField, true)
 		if stage == stepStageMain {
 			// Main steps print their own raw "Run <title>" header, so this line is redundant and
 			// only leaks into the "Set up job" section for the first step; keep it as a debug trace.
-			logger.Debugf("Run %s %s", stage, stepString)
+			startLogger.Debugf("Run %s %s", stage, stepString)
 		} else {
-			logger.Infof("Run %s %s", stage, stepString)
+			startLogger.Infof("Run %s %s", stage, stepString)
 		}
 
 		// Prepare and clean Runner File Commands

@@ -255,7 +255,7 @@ func TestReporter_Handle(t *testing.T) {
 		defer func() {
 			require.NoError(t, reporter.Close(""))
 		}()
-		reporter.ResetSteps(5)
+		reporter.ResetSteps(newTestSteps(5))
 
 		dataStep0 := map[string]any{
 			"stage":      "Main",
@@ -314,7 +314,7 @@ func TestReporter_LogLevelFiltering(t *testing.T) {
 	defer func() {
 		require.NoError(t, reporter.Close(""))
 	}()
-	reporter.ResetSteps(2)
+	reporter.ResetSteps(newTestSteps(2))
 
 	dataStep0 := map[string]any{"stage": "Main", "stepNumber": 0, "raw_output": true}
 	dataStep0Internal := map[string]any{"stage": "Main", "stepNumber": 0}
@@ -380,7 +380,7 @@ func TestReporter_EphemeralRunnerDeletion(t *testing.T) {
 	require.NoError(t, err)
 	cfg, _ := config.LoadDefault("")
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 
 	// Fire a log entry to create pending data
 	require.NoError(t, fire(reporter, logEntry{
@@ -446,7 +446,7 @@ func TestReporter_RunDaemonClose_Race(t *testing.T) {
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{
 		Context: taskCtx,
 	}, cfg)
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 
 	// Start the daemon loop — RunDaemon spawns a goroutine internally.
 	reporter.RunDaemon()
@@ -493,7 +493,7 @@ func TestReporter_MaxLatencyTimer(t *testing.T) {
 	cfg.Runner.LogReportBatchSize = 1000 // won't trigger batch flush
 
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 	reporter.RunDaemon()
 	defer func() {
 		_ = reporter.Close("")
@@ -544,7 +544,7 @@ func TestReporter_BatchSizeFlush(t *testing.T) {
 	cfg.Runner.LogReportBatchSize = 5
 
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 	reporter.RunDaemon()
 	defer func() {
 		_ = reporter.Close("")
@@ -591,7 +591,7 @@ func TestReporter_StateChangedNotLostDuringReport(t *testing.T) {
 	require.NoError(t, err)
 	cfg, _ := config.LoadDefault("")
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
-	reporter.ResetSteps(2)
+	reporter.ResetSteps(newTestSteps(2))
 
 	// Mark stateChanged=true so the first ReportState proceeds to UpdateTask.
 	reporter.stateMu.Lock()
@@ -652,7 +652,7 @@ func TestReporter_StateChangedRestoredOnError(t *testing.T) {
 	require.NoError(t, err)
 	cfg, _ := config.LoadDefault("")
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 
 	reporter.stateMu.Lock()
 	reporter.stateChanged = true
@@ -702,7 +702,7 @@ func TestReporter_StateNotifyFlush(t *testing.T) {
 	cfg.Runner.LogReportInterval = 10 * time.Second
 
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 	reporter.RunDaemon()
 	defer func() {
 		_ = reporter.Close("")
@@ -761,7 +761,7 @@ func TestReporter_CloseAlwaysSendsRowsWithNoMore(t *testing.T) {
 	cfg.Runner.LogReportBatchSize = 1000
 
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 	reporter.RunDaemon()
 
 	// Simulate a successful job whose log buffer was already drained by the
@@ -806,7 +806,7 @@ func TestReporter_StateHeartbeat(t *testing.T) {
 	cfg, _ := config.LoadDefault("")
 	cfg.Runner.StateReportInterval = 50 * time.Millisecond
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 
 	// First call has no prior report — sends to seed lastReportedAt.
 	reporter.stateMu.Lock()
@@ -877,7 +877,7 @@ func TestReporter_ServerCancelStillFlushesFinal(t *testing.T) {
 	require.NoError(t, err)
 	cfg, _ := config.LoadDefault("")
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 
 	// Force the first ReportState to actually call UpdateTask.
 	reporter.stateMu.Lock()
@@ -945,7 +945,7 @@ func TestReporter_CloseReportsCancelledOnCanceledCtx(t *testing.T) {
 	require.NoError(t, err)
 	cfg, _ := config.LoadDefault("")
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 
 	// Simulate the cancellation path: r.ctx is cancelled before Close() runs.
 	cancel()
@@ -1010,7 +1010,7 @@ func TestReporter_StopHeartbeats(t *testing.T) {
 	cfg.Runner.LogReportInterval = time.Hour
 
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 	reporter.RunDaemon()
 
 	reporter.stateMu.Lock()
@@ -1216,7 +1216,7 @@ func TestReporter_AckIndexBeyondBuffer(t *testing.T) {
 	require.NoError(t, err)
 	cfg, _ := config.LoadDefault("")
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 
 	require.NoError(t, fire(reporter, logEntry{
 		Message: "hello",
@@ -1256,7 +1256,7 @@ func TestReporter_CloseWithStuckDaemon(t *testing.T) {
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
 	reporter.daemonWait = time.Millisecond
 	reporter.RunDaemon()
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 
 	require.NoError(t, fire(reporter, logEntry{
 		Message: "hello",
@@ -1434,7 +1434,7 @@ func TestReporter_StepRangeCoversAckedRows(t *testing.T) {
 	cfg.Runner.LogReportBatchSize = 5
 
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 	reporter.RunDaemon()
 	defer func() {
 		_ = reporter.Close("")
@@ -1487,6 +1487,214 @@ func TestReporter_FlushWithoutAckedRowsSkipsState(t *testing.T) {
 	// A row the server declines to take: an UpdateLog, but still no step range to report.
 	reporter.Logf("row")
 	reporter.reportLogWithState()
+}
+
+func newTestSteps(n int) []*model.Step {
+	steps := make([]*model.Step, n)
+	for i := range steps {
+		steps[i] = &model.Step{Run: fmt.Sprintf("echo %d", i)}
+	}
+	return steps
+}
+
+func TestReporter_ReportedSteps(t *testing.T) {
+	newReporter := func(t *testing.T, steps []*model.Step) (*Reporter, context.CancelFunc) {
+		client := mocks.NewClient(t)
+		client.On("UpdateLog", mock.Anything, mock.Anything).Maybe().Return(func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
+			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{AckIndex: req.Msg.Index + int64(len(req.Msg.Rows))}), nil
+		})
+		client.On("UpdateTask", mock.Anything, mock.Anything).Maybe().Return(connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil)
+		taskCtx, err := structpb.NewStruct(map[string]any{})
+		require.NoError(t, err)
+		cfg, _ := config.LoadDefault("")
+		ctx, cancel := context.WithCancel(t.Context())
+		reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx, Secrets: map[string]string{"TOKEN": "s3cr3t"}}, cfg)
+		reporter.RunDaemon()
+		reporter.Logf("runner version")
+		reporter.ResetSteps(steps)
+		return reporter, cancel
+	}
+	send := func(t *testing.T, reporter *Reporter, level logging.Level, msg string, data map[string]any) {
+		t.Helper()
+		require.NoError(t, fire(reporter, logEntry{Message: msg, Data: data, Level: level}))
+	}
+	type reported struct {
+		stage            runnerv1.StepStage
+		number           int64
+		name             string
+		result           runnerv1.Result
+		logIndex, logLen int64
+	}
+	reportedOf := func(t *testing.T, reporter *Reporter) []reported {
+		reporter.stateMu.RLock()
+		defer reporter.stateMu.RUnlock()
+		var ret []reported
+		for i, v := range reporter.state.ReportedSteps {
+			assert.EqualValues(t, i, v.Id)
+			ret = append(ret, reported{v.Stage, v.Number, v.Name, v.Result, v.LogIndex, v.LogLength})
+		}
+		return ret
+	}
+	const (
+		setup   = runnerv1.StepStage_STEP_STAGE_SETUP
+		pre     = runnerv1.StepStage_STEP_STAGE_PRE
+		main    = runnerv1.StepStage_STEP_STAGE_MAIN
+		post    = runnerv1.StepStage_STEP_STAGE_POST
+		cleanup = runnerv1.StepStage_STEP_STAGE_CLEANUP
+
+		unspecified = runnerv1.Result_RESULT_UNSPECIFIED
+		success     = runnerv1.Result_RESULT_SUCCESS
+		failure     = runnerv1.Result_RESULT_FAILURE
+		cancelled   = runnerv1.Result_RESULT_CANCELLED
+		skipped     = runnerv1.Result_RESULT_SKIPPED
+	)
+
+	t.Run("steps as run", func(t *testing.T) {
+		steps := newTestSteps(2)
+		steps[0].Name = "Echo ${{ matrix.n }}"
+		reporter, _ := newReporter(t, steps)
+		reporter.Logf("workflow prepared")
+		send(t, reporter, logging.LevelInfo, "Complete job name: test", map[string]any{"raw_output": true})
+		send(t, reporter, logging.LevelDebug, "evaluating expression 'success()'", map[string]any{"stage": runner.StagePre, "stepNumber": 0})
+		send(t, reporter, logging.LevelInfo, "Run Pre echo 0", map[string]any{"stage": runner.StagePre, "stepNumber": 0, "step": "Echo 1", runner.StepStartedField: true})
+		send(t, reporter, logging.LevelInfo, "pre output", map[string]any{"stage": runner.StagePre, "stepNumber": 0, "raw_output": true})
+		send(t, reporter, logging.LevelInfo, "Success - Pre echo 0", map[string]any{"stage": runner.StagePre, "stepNumber": 0, "stepResult": model.StepStatusSuccess})
+		send(t, reporter, logging.LevelDebug, "evaluating expression 'false'", map[string]any{"stage": runner.StagePre, "stepNumber": 1})
+		send(t, reporter, logging.LevelDebug, "Skipping step", map[string]any{"stage": runner.StagePre, "stepNumber": 1, "stepResult": model.StepStatusSkipped})
+		send(t, reporter, logging.LevelInfo, "main output", map[string]any{"stage": runner.StageMain, "stepNumber": 0, "raw_output": true})
+		send(t, reporter, logging.LevelInfo, "main output", map[string]any{"stage": runner.StageMain, "stepNumber": 0, "raw_output": true})
+		send(t, reporter, logging.LevelInfo, "Success - Main echo 0", map[string]any{"stage": runner.StageMain, "stepNumber": 0, "stepResult": model.StepStatusSuccess})
+		send(t, reporter, logging.LevelDebug, "Skipping step", map[string]any{"stage": runner.StageMain, "stepNumber": 1, "stepResult": model.StepStatusSkipped})
+		send(t, reporter, logging.LevelInfo, "Run Post echo 0", map[string]any{"stage": runner.StagePost, "stepNumber": 0, runner.StepStartedField: true})
+		send(t, reporter, logging.LevelInfo, "post output", map[string]any{"stage": runner.StagePost, "stepNumber": 0, "raw_output": true})
+		send(t, reporter, logging.LevelInfo, "Success - Post echo 0", map[string]any{"stage": runner.StagePost, "stepNumber": 0, "stepResult": model.StepStatusSuccess})
+		send(t, reporter, logging.LevelInfo, "Cleaning up container", map[string]any{"stage": runner.StageComplete})
+		send(t, reporter, logging.LevelInfo, "Job succeeded", map[string]any{"stage": runner.StageComplete, "jobResult": model.StepStatusSuccess})
+
+		want := []reported{
+			{setup, 0, "Set up job", success, 0, 3},
+			{pre, 0, "Pre Echo 1", success, 3, 3},
+			{main, 0, "Echo 1", success, 6, 2},
+			{main, 1, "Run echo 1", skipped, 0, 0},
+			{post, 0, "Post Echo 1", success, 8, 3},
+			{cleanup, 0, "Complete job", unspecified, 11, 2}, // still logging after the job result
+		}
+		assert.Equal(t, want, reportedOf(t, reporter))
+
+		send(t, reporter, logging.LevelInfo, "Removing images", map[string]any{"stage": runner.StageComplete})
+		require.NoError(t, reporter.Close(""))
+		want[5].result, want[5].logLen = success, 3
+		assert.Equal(t, want, reportedOf(t, reporter))
+
+		// the workflow steps keep what Gitea versions deriving them from the workflow file expect
+		require.Len(t, reporter.state.Steps, 2)
+		assert.EqualValues(t, 6, reporter.state.Steps[0].LogIndex)
+		assert.EqualValues(t, 2, reporter.state.Steps[0].LogLength)
+		assert.Equal(t, success, reporter.state.Steps[0].Result)
+		assert.Equal(t, skipped, reporter.state.Steps[1].Result)
+	})
+
+	t.Run("failures and cancellation", func(t *testing.T) {
+		reporter, cancel := newReporter(t, newTestSteps(3))
+		started := func(stage string, n int) map[string]any {
+			return map[string]any{"stage": stage, "stepNumber": n, runner.StepStartedField: true}
+		}
+		result := func(stage string, n int, result model.StepStatus, stepID ...string) map[string]any {
+			fields := map[string]any{"stage": stage, "stepNumber": n, "stepResult": result}
+			if len(stepID) > 0 {
+				fields["stepID"] = stepID
+			}
+			return fields
+		}
+		send(t, reporter, logging.LevelInfo, "Run Pre echo 0", started(runner.StagePre, 0))
+		send(t, reporter, logging.LevelInfo, "Success - Pre echo 0", result(runner.StagePre, 0, model.StepStatusSuccess))
+		send(t, reporter, logging.LevelDebug, "Skipping step", result(runner.StagePre, 1, model.StepStatusSkipped))
+		send(t, reporter, logging.LevelInfo, "Run Pre echo 2", started(runner.StagePre, 2))
+		send(t, reporter, logging.LevelInfo, "Success - Pre echo 2", result(runner.StagePre, 2, model.StepStatusSuccess))
+		send(t, reporter, logging.LevelInfo, "composite step", result(runner.StageMain, 0, model.StepStatusSuccess, "0", "inner"))
+		send(t, reporter, logging.LevelInfo, "Failure - Main echo 0", result(runner.StageMain, 0, model.StepStatusFailure))
+		send(t, reporter, logging.LevelInfo, "main output", map[string]any{"stage": runner.StageMain, "stepNumber": 1, "raw_output": true})
+		send(t, reporter, logging.LevelInfo, "Run Post echo 0", started(runner.StagePost, 0))
+		send(t, reporter, logging.LevelInfo, "Failure - Post echo 0", result(runner.StagePost, 0, model.StepStatusFailure))
+		cancel()
+		require.NoError(t, reporter.Close(""))
+
+		results := make(map[string]runnerv1.Result)
+		for _, v := range reportedOf(t, reporter) {
+			results[v.name] = v.result
+		}
+		assert.Equal(t, map[string]runnerv1.Result{
+			"Set up job":      success,
+			"Pre Run echo 0":  success,
+			"Pre Run echo 2":  success,
+			"Run echo 0":      failure, // not the result of its composite step
+			"Run echo 1":      cancelled,
+			"Run echo 2":      cancelled,
+			"Post Run echo 0": failure,
+			"Complete job":    cancelled,
+		}, results)
+		names := make([]string, 0, len(results))
+		for _, v := range reportedOf(t, reporter) {
+			names = append(names, v.name)
+		}
+		assert.Equal(t, []string{"Set up job", "Pre Run echo 0", "Pre Run echo 2", "Run echo 0", "Run echo 1", "Run echo 2", "Post Run echo 0", "Complete job"}, names)
+	})
+
+	t.Run("job failing during setup", func(t *testing.T) {
+		reporter, _ := newReporter(t, newTestSteps(1))
+		reporter.Logf("workflow prepared")
+		send(t, reporter, logging.LevelInfo, "Job failed", map[string]any{"jobResult": model.StepStatusFailure})
+		require.NoError(t, reporter.Close(""))
+
+		assert.Equal(t, []reported{
+			{setup, 0, "Set up job", failure, 0, 3},
+			{main, 0, "Run echo 0", skipped, 0, 0},
+			{cleanup, 0, "Complete job", skipped, 0, 0},
+		}, reportedOf(t, reporter))
+	})
+
+	t.Run("action failing to download", func(t *testing.T) {
+		reporter, _ := newReporter(t, newTestSteps(1))
+		send(t, reporter, logging.LevelInfo, "Prepare all required actions", map[string]any{"raw_output": true})
+		send(t, reporter, logging.LevelError, "##[error]unable to clone 'invalid-owner/invalid-action'", nil)
+		send(t, reporter, logging.LevelInfo, "Cleaning up container", map[string]any{"stage": runner.StageComplete})
+		send(t, reporter, logging.LevelInfo, "Job failed", map[string]any{"stage": runner.StageComplete, "jobResult": model.StepStatusFailure})
+		require.NoError(t, reporter.Close(""))
+
+		got := reportedOf(t, reporter)
+		assert.Equal(t, []runnerv1.Result{failure, skipped, success}, []runnerv1.Result{got[0].result, got[1].result, got[2].result})
+	})
+
+	t.Run("step not reached in a succeeding job", func(t *testing.T) {
+		reporter, _ := newReporter(t, newTestSteps(1))
+		send(t, reporter, logging.LevelInfo, "Job succeeded", map[string]any{"stage": runner.StageComplete, "jobResult": model.StepStatusSuccess})
+		require.NoError(t, reporter.Close(""))
+		assert.Equal(t, skipped, reportedOf(t, reporter)[1].result)
+	})
+
+	t.Run("evaluated and masked names", func(t *testing.T) {
+		steps := newTestSteps(2)
+		steps[0].Run = "echo ${{ matrix.os }}\necho more"
+		steps[1].Name = "Deploy with ${{ secrets.TOKEN }}"
+		reporter, _ := newReporter(t, steps)
+		send(t, reporter, logging.LevelDebug, "Run Main", map[string]any{"stage": runner.StageMain, "stepNumber": 0, "step": "echo linux\necho more"})
+		send(t, reporter, logging.LevelDebug, "Run Main", map[string]any{"stage": runner.StageMain, "stepNumber": 1, "step": "Deploy with s3cr3t"})
+		require.NoError(t, reporter.Close(""))
+
+		names := []string{}
+		for _, v := range reportedOf(t, reporter) {
+			names = append(names, v.name)
+		}
+		assert.Equal(t, []string{"Set up job", "Run echo linux", "Deploy with ***", "Complete job"}, names)
+	})
+
+	t.Run("reusable workflow caller", func(t *testing.T) {
+		reporter, _ := newReporter(t, nil)
+		send(t, reporter, logging.LevelInfo, "Cleaning up container", map[string]any{"stage": runner.StageComplete})
+		send(t, reporter, logging.LevelInfo, "Job succeeded", map[string]any{"stage": runner.StageComplete, "jobResult": model.StepStatusSuccess})
+		require.NoError(t, reporter.Close(""))
+		assert.Empty(t, reportedOf(t, reporter))
+	})
 }
 
 // logEntry is the record a job logger hands the Reporter, with the fields it accumulated as Data.

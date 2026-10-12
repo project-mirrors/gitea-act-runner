@@ -471,7 +471,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		return err
 	}
 	job := workflow.GetJob(jobID)
-	reporter.ResetSteps(len(job.Steps))
+	reporter.ResetSteps(job.Steps)
 	telemetry.SetJobName(ctx, cmp.Or(job.Name, jobID))
 
 	taskContext := task.Context.Fields

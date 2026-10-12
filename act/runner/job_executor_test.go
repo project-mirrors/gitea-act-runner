@@ -187,6 +187,27 @@ func TestPrintPrepareActionsFailsJobOnDownloadError(t *testing.T) {
 	assert.Zero(t, remaining.prepared)
 }
 
+func TestNewStepsExecutorSkipsStepsAfterSetupFailure(t *testing.T) {
+	for name, tt := range map[string]struct {
+		preErr  error
+		mainRan bool
+	}{
+		"setup failure":    {preErr: setupError{assert.AnError}},
+		"pre step failure": {preErr: assert.AnError, mainRan: true}, // always() steps still run, as on GitHub
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := common.WithJobErrorContainer(common.WithLogger(context.Background(), logging.New(logtest.New())))
+			mainRan := false
+			err := newStepsExecutor(&RunContext{},
+				[]common.Executor{func(context.Context) error { return tt.preErr }},
+				[]common.Executor{func(context.Context) error { mainRan = true; return nil }},
+			)(ctx)
+			require.ErrorIs(t, err, assert.AnError)
+			assert.Equal(t, tt.mainRan, mainRan)
+		})
+	}
+}
+
 func TestPrintCompleteJobName(t *testing.T) {
 	for name, tt := range map[string]struct {
 		rc   *RunContext
@@ -249,8 +270,9 @@ func TestNewJobExecutorDownloadsAllActionsBeforeTheFirstStep(t *testing.T) {
 		apm := &actionPreparerMock{reference: "actions/checkout@v" + stepModel.ID, ok: true}
 		sfm.On("newStep", stepModel, rc).Return(&actionStepMock{stepMock: sm, actionPreparerMock: apm}, nil)
 
-		sm.On("pre").Return(func(context.Context) error {
+		sm.On("pre").Return(func(ctx context.Context) error {
 			executorOrder = append(executorOrder, "pre"+stepModel.ID)
+			common.Logger(ctx).Infof("Run Pre %s", stepModel.ID)
 			return nil
 		})
 		sm.On("main").Return(func(context.Context) error {
@@ -268,11 +290,16 @@ func TestNewJobExecutorDownloadsAllActionsBeforeTheFirstStep(t *testing.T) {
 
 	assert.Equal(t, []string{"pre1", "pre2", "step1", "step2"}, executorOrder)
 
+	// the setup is logged ahead of the pre steps and the cleanup is tagged, so the reporter can show both as steps of their own
 	setup := make([]string, 0)
 	for _, entry := range hook.AllRecords() {
 		if strings.HasPrefix(entry.Message, "Prepare all required actions") || strings.HasPrefix(entry.Message, "Download action") ||
-			strings.HasPrefix(entry.Message, "Complete job name") {
+			strings.HasPrefix(entry.Message, "Complete job name") || strings.HasPrefix(entry.Message, "Run Pre") {
 			setup = append(setup, entry.Message)
+		}
+		if _, ok := entry.Attr("jobResult"); ok || strings.HasPrefix(entry.Message, "Cleaning up container") {
+			stage, _ := entry.Attr("stage")
+			assert.Equal(t, StageComplete, stage, entry.Message)
 		}
 	}
 	assert.Equal(t, []string{
@@ -280,6 +307,8 @@ func TestNewJobExecutorDownloadsAllActionsBeforeTheFirstStep(t *testing.T) {
 		"Download action repository 'actions/checkout@v1'",
 		"Download action repository 'actions/checkout@v2'",
 		"Complete job name: test",
+		"Run Pre 1",
+		"Run Pre 2",
 	}, setup)
 }
 

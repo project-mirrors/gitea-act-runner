@@ -36,6 +36,16 @@ const (
 )
 
 const (
+	// The "stage" of the log entries of a step, and of the job level entries that finalize the job after its steps.
+	StagePre      = "Pre"
+	StageMain     = "Main"
+	StagePost     = "Post"
+	StageComplete = "Complete"
+	// StepStartedField marks the log entry of a step that is about to run, unlike one that is skipped.
+	StepStartedField = "stepStarted"
+)
+
+const (
 	rawOutputField      = "raw_output"
 	scriptLineCyanField = "script_line_cyan"
 )

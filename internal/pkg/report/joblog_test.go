@@ -49,7 +49,7 @@ func TestJobLog_MirrorsUploadedRows(t *testing.T) {
 	reporter := NewReporter(ctx, cancel, client, task, cfg)
 	require.NotNil(t, reporter.jobLog)
 	reporter.RunDaemon()
-	reporter.ResetSteps(1)
+	reporter.ResetSteps(newTestSteps(1))
 
 	fire := func(message string) {
 		require.NoError(t, fire(reporter, logEntry{

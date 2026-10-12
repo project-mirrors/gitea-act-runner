@@ -522,6 +522,24 @@ func TestRunStepExecutorParity(t *testing.T) {
 		})
 	}
 
+	t.Run("only a step that runs is marked started", func(t *testing.T) {
+		for _, test := range []struct {
+			condition string
+			started   int
+		}{{"true", 1}, {"false", 0}} {
+			logger, hook := logtest.NewLogger()
+			step := newStep(t, &model.Step{ID: "pre", If: yaml.Node{Value: test.condition}})
+			require.NoError(t, runStepExecutor(step, stepStagePre, noopExecutor)(common.WithLogger(context.Background(), logger)))
+			started := 0
+			for _, entry := range hook.AllRecords() {
+				if v, _ := entry.Attr(StepStartedField); v == true {
+					started++
+				}
+			}
+			assert.Equal(t, test.started, started, test.condition)
+		}
+	})
+
 	t.Run("file command error honors continue-on-error", func(t *testing.T) {
 		step := newStep(t, &model.Step{ID: "commands", RawContinueOnError: "true"})
 		logger, hook := logtest.NewLogger()
