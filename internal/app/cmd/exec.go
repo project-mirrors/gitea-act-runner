@@ -31,7 +31,6 @@ import (
 	"gitea.dev/actionslib/pkg/model"
 	"github.com/joho/godotenv"
 	"github.com/moby/moby/api/types/container"
-	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -106,7 +105,7 @@ func (i *executeArgs) LoadSecrets() map[string]string {
 		secretPairParts := strings.SplitN(secretPair, "=", 2)
 		secretPairParts[0] = strings.ToUpper(secretPairParts[0])
 		if strings.EqualFold(s[secretPairParts[0]], secretPairParts[0]) {
-			log.Errorf("Secret %s is already defined (secrets are case insensitive)", secretPairParts[0])
+			logging.Errorf("Secret %s is already defined (secrets are case insensitive)", secretPairParts[0])
 		}
 		if len(secretPairParts) == 2 {
 			s[secretPairParts[0]] = secretPairParts[1]
@@ -117,7 +116,7 @@ func (i *executeArgs) LoadSecrets() map[string]string {
 			val, err := term.ReadPassword(int(os.Stdin.Fd()))
 			fmt.Println()
 			if err != nil {
-				log.Errorf("failed to read input: %v", err)
+				logging.Errorf("failed to read input: %v", err)
 				os.Exit(1)
 			}
 			s[secretPairParts[0]] = string(val)
@@ -130,7 +129,8 @@ func readEnvs(path string, envs map[string]string) bool {
 	if _, err := os.Stat(path); err == nil {
 		env, err := godotenv.Read(path)
 		if err != nil {
-			log.Fatalf("Error loading from %s: %v", path, err)
+			logging.Errorf("Error loading from %s: %v", path, err)
+			os.Exit(1)
 		}
 		maps.Copy(envs, env)
 		return true
@@ -221,7 +221,8 @@ func (i *executeArgs) Workdir() string {
 func (i *executeArgs) resolve(path string) string {
 	basedir, err := filepath.Abs(i.workdir)
 	if err != nil {
-		log.Fatal(err)
+		logging.Error(err)
+		os.Exit(1)
 	}
 	if path == "" {
 		return path
@@ -337,7 +338,7 @@ func runExecList(planner model.WorkflowPlanner, execArgs *executeArgs) error {
 	var filterEventName string
 
 	if len(execArgs.event) > 0 {
-		log.Infof("Using chosed event for filtering: %s", execArgs.event)
+		logging.Infof("Using chosed event for filtering: %s", execArgs.event)
 		filterEventName = execArgs.event
 	} else if execArgs.autodetectEvent {
 		// collect all events from loaded workflows
@@ -345,7 +346,7 @@ func runExecList(planner model.WorkflowPlanner, execArgs *executeArgs) error {
 
 		// set default event type to first event from many available
 		// this way user dont have to specify the event.
-		log.Infof("Using first detected workflow event for filtering: %s", events[0])
+		logging.Infof("Using first detected workflow event for filtering: %s", events[0])
 
 		filterEventName = events[0]
 	}
@@ -353,19 +354,19 @@ func runExecList(planner model.WorkflowPlanner, execArgs *executeArgs) error {
 	var err error
 	switch {
 	case execArgs.job != "":
-		log.Infof("Preparing plan with a job: %s", execArgs.job)
+		logging.Infof("Preparing plan with a job: %s", execArgs.job)
 		filterPlan, err = planner.PlanJob(execArgs.job)
 		if err != nil {
 			return err
 		}
 	case filterEventName != "":
-		log.Infof("Preparing plan for a event: %s", filterEventName)
+		logging.Infof("Preparing plan for a event: %s", filterEventName)
 		filterPlan, err = planner.PlanEvent(filterEventName)
 		if err != nil {
 			return err
 		}
 	default:
-		log.Infof("Preparing plan with all jobs")
+		logging.Infof("Preparing plan with all jobs")
 		filterPlan, err = planner.PlanAll()
 		if err != nil {
 			return err
@@ -445,30 +446,30 @@ func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command
 
 		switch {
 		case len(execArgs.event) > 0:
-			log.Infof("Using chosed event for filtering: %s", execArgs.event)
+			logging.Infof("Using chosed event for filtering: %s", execArgs.event)
 			eventName = execArgs.event
 		case len(events) == 1 && len(events[0]) > 0:
-			log.Infof("Using the only detected workflow event: %s", events[0])
+			logging.Infof("Using the only detected workflow event: %s", events[0])
 			eventName = events[0]
 		case execArgs.autodetectEvent && len(events) > 0 && len(events[0]) > 0:
 			// set default event type to first event from many available
 			// this way user dont have to specify the event.
-			log.Infof("Using first detected workflow event: %s", events[0])
+			logging.Infof("Using first detected workflow event: %s", events[0])
 			eventName = events[0]
 		default:
-			log.Infof("Using default workflow event: push")
+			logging.Infof("Using default workflow event: push")
 			eventName = "push"
 		}
 
 		// build the plan for this run
 		if execArgs.job != "" {
-			log.Infof("Planning job: %s", execArgs.job)
+			logging.Infof("Planning job: %s", execArgs.job)
 			plan, err = planner.PlanJob(execArgs.job)
 			if err != nil {
 				return err
 			}
 		} else {
-			log.Infof("Planning jobs for event: %s", eventName)
+			logging.Infof("Planning jobs for event: %s", eventName)
 			plan, err = planner.PlanEvent(eventName)
 			if err != nil {
 				return err
@@ -488,7 +489,7 @@ func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command
 		if err != nil {
 			return err
 		}
-		log.Infof("cache handler listens on: %v", handler.ExternalURL())
+		logging.Infof("cache handler listens on: %v", handler.ExternalURL())
 		execArgs.cacheHandler = handler
 
 		if len(execArgs.artifactServerAddr) == 0 {
@@ -564,7 +565,7 @@ func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command
 		}
 
 		artifactCancel := artifacts.Serve(ctx, execArgs.artifactServerPath, execArgs.artifactServerAddr, execArgs.artifactServerPort)
-		log.Debugf("artifacts server started at %s:%s", execArgs.artifactServerPath, execArgs.artifactServerPort)
+		logging.Debugf("artifacts server started at %s:%s", execArgs.artifactServerPath, execArgs.artifactServerPort)
 
 		ctx = common.WithDryrun(ctx, execArgs.dryrun)
 		executor := r.NewPlanExecutor(plan).Finally(func(ctx context.Context) error {

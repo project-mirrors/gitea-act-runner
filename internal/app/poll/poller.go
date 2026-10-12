@@ -12,13 +12,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/client"
 	"gitea.com/gitea/runner/internal/pkg/config"
 	"gitea.com/gitea/runner/internal/pkg/metrics"
 
 	"connectrpc.com/connect"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
-	log "github.com/sirupsen/logrus"
 )
 
 // TaskRunner abstracts task execution so the poller can be tested
@@ -236,9 +236,9 @@ func (p *Poller) reportAvailability(ready bool, reason string) {
 	defer p.availabilityMu.Unlock()
 	switch {
 	case !ready && p.availabilityReady:
-		log.Warnf("runner temporarily unavailable: %s", reason)
+		logging.Warnf("runner temporarily unavailable: %s", reason)
 	case ready && !p.availabilityReady:
-		log.Info("runner local health recovered, resuming task polling")
+		logging.Info("runner local health recovered, resuming task polling")
 	}
 	p.availabilityReady = ready
 	p.availabilityReason = reason
@@ -339,12 +339,12 @@ func (p *Poller) runTaskWithRecover(ctx context.Context, task *runnerv1.Task) {
 	defer func() {
 		if r := recover(); r != nil {
 			err := fmt.Errorf("panic: %v", r)
-			log.WithError(err).Error("panic in runTaskWithRecover")
+			logging.WithError(err).Error("panic in runTaskWithRecover")
 		}
 	}()
 
 	if err := p.runner.Run(ctx, task); err != nil {
-		log.WithError(err).Error("failed to run task")
+		logging.WithError(err).Error("failed to run task")
 	}
 }
 
@@ -366,7 +366,7 @@ func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task,
 	if errors.Is(err, context.DeadlineExceeded) {
 		if !s.fetchTimedOut {
 			s.fetchTimedOut = true
-			log.Warnf("fetching a task timed out after %s, raise runner.fetch_timeout if this persists", p.cfg.Runner.FetchTimeout)
+			logging.Warnf("fetching a task timed out after %s, raise runner.fetch_timeout if this persists", p.cfg.Runner.FetchTimeout)
 		}
 		s.consecutiveEmpty++
 		metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultEmpty).Inc()
@@ -381,7 +381,7 @@ func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task,
 		// polling and let the daemon exit with an error instead of spinning.
 		rejected := client.IsRegistrationRejected(err)
 		if rejected || connect.CodeOf(err) == connect.CodeUnauthenticated {
-			log.WithError(err).Error("server rejected the runner as unregistered, stopping poller")
+			logging.WithError(err).Error("server rejected the runner as unregistered, stopping poller")
 			p.unregistered.Store(true)
 			p.registrationRejected.Store(rejected)
 			p.shutdownPolling()
@@ -390,9 +390,9 @@ func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task,
 		// Not a long poll, so a deadline can mean the server assigned a task
 		// this runner never received.
 		if errors.Is(err, context.DeadlineExceeded) {
-			log.WithError(err).Errorf("fetching a task timed out after %s", p.cfg.Runner.FetchTimeout)
+			logging.WithError(err).Errorf("fetching a task timed out after %s", p.cfg.Runner.FetchTimeout)
 		} else {
-			log.WithError(err).Error("failed to fetch task")
+			logging.WithError(err).Error("failed to fetch task")
 		}
 		p.lastPollFailed.Store(true)
 		s.consecutiveErrors++

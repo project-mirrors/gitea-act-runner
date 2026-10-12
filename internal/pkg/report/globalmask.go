@@ -9,8 +9,6 @@ import (
 	"sync/atomic"
 
 	"gitea.com/gitea/runner/act/runner"
-
-	log "github.com/sirupsen/logrus"
 )
 
 // A job's plan runs before its job logger exists and logs through the process-wide one, which
@@ -47,21 +45,12 @@ func rebuildGlobalReplacer() { // caller holds globalMu
 	globalReplacer.Store(runner.NewSecretReplacer(oldnew))
 }
 
-// MaskingFormatter wraps f so a registered value cannot reach the process-wide log, fields included.
-func MaskingFormatter(f log.Formatter) log.Formatter {
-	return &maskingFormatter{inner: f}
-}
-
-type maskingFormatter struct{ inner log.Formatter }
-
-func (m *maskingFormatter) Format(entry *log.Entry) ([]byte, error) {
-	line, err := m.inner.Format(entry)
-	if err != nil {
-		return nil, err
-	}
+// MaskGlobal hides every registered value in a formatted line of the process-wide log, fields
+// included. It is meant for logging.TextOptions.Filter.
+func MaskGlobal(line []byte) []byte {
 	replacer := globalReplacer.Load()
 	if replacer == nil { // nothing to hide, so an idle daemon pays no copy
-		return line, nil
+		return line
 	}
-	return []byte(replacer.Replace(string(line))), nil
+	return []byte(replacer.Replace(string(line)))
 }

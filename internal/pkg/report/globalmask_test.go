@@ -4,19 +4,27 @@
 package report
 
 import (
+	"strings"
 	"testing"
 
-	log "github.com/sirupsen/logrus"
+	"gitea.com/gitea/runner/act/common/logging"
+
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestGlobalMasks(t *testing.T) {
-	formatter := MaskingFormatter(&log.TextFormatter{DisableTimestamp: true})
+	prevOut := logging.Output()
+	t.Cleanup(func() {
+		logging.SetOutput(prevOut)
+		logging.SetTextFormat(logging.TextOptions{})
+	})
+	var out strings.Builder
+	logging.SetOutput(&out)
+	logging.SetTextFormat(logging.TextOptions{DisableTimestamp: true, Filter: MaskGlobal})
 	format := func(job string) string {
-		line, err := formatter.Format(log.WithField("job", job))
-		require.NoError(t, err)
-		return string(line)
+		out.Reset()
+		logging.With("job", job).Info("line")
+		return out.String()
 	}
 	register := func(oldnew ...string) *Reporter {
 		r := &Reporter{oldnew: oldnew}

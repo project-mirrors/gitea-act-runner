@@ -28,7 +28,6 @@ import (
 	"connectrpc.com/connect"
 	"gitea.dev/actionslib/pkg/model"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
-	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -418,13 +417,12 @@ func TestRestoreCalledWorkflowContext(t *testing.T) {
 }
 
 func TestTaskLogFields(t *testing.T) {
-	fields := func(token string) log.Fields {
+	fields := func(token string) []any {
 		taskContext, err := structpb.NewStruct(map[string]any{"repository": "owner/repo", "run_id": "159", "run_number": "14", "gitea_runtime_token": token})
 		require.NoError(t, err)
 		return taskLogFields(&runnerv1.Task{Id: 72, Context: taskContext}, "build")
 	}
-	want := log.Fields{"task_id": int64(72), "job": "build", "repository": "owner/repo", "run_id": "159", "run_number": "14"}
+	want := []any{"task_id", int64(72), "job", "build", "repository", "owner/repo", "run_id", "159", "run_number", "14"}
 	assert.Equal(t, want, fields("malformed"))
-	want["job_id"] = int64(221)
-	assert.Equal(t, want, fields("header."+base64.RawURLEncoding.EncodeToString([]byte(`{"TaskID":72,"JobID":221}`))+".signature"))
+	assert.Equal(t, append(want, "job_id", int64(221)), fields("header."+base64.RawURLEncoding.EncodeToString([]byte(`{"TaskID":72,"JobID":221}`))+".signature"))
 }

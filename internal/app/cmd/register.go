@@ -13,6 +13,7 @@ import (
 	goruntime "runtime"
 	"strings"
 
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/app/run"
 	"gitea.com/gitea/runner/internal/pkg/client"
 	"gitea.com/gitea/runner/internal/pkg/config"
@@ -24,28 +25,27 @@ import (
 	pingv1 "gitea.dev/actionslib/ping/v1"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"github.com/mattn/go-isatty"
-	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 // runRegister registers a runner to the server
 func runRegister(ctx context.Context, regArgs *registerArgs, configFile *string) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		log.SetReportCaller(false)
+		logging.SetReportCaller(false)
 		isTerm := isatty.IsTerminal(os.Stdout.Fd())
-		log.SetFormatter(&log.TextFormatter{
+		logging.SetTextFormat(logging.TextOptions{
 			DisableColors:    !isTerm,
 			DisableTimestamp: true,
 		})
-		log.SetLevel(log.DebugLevel)
+		logging.SetLevel(logging.LevelDebug)
 
-		log.Infof("Registering runner, arch=%s, os=%s, version=%s.",
+		logging.Infof("Registering runner, arch=%s, os=%s, version=%s.",
 			goruntime.GOARCH, goruntime.GOOS, ver.Version())
 
 		// runner always needs root permission
 		if os.Getuid() != 0 {
 			// TODO: use a better way to check root permission
-			log.Warnf("Runner in user-mode.")
+			logging.Warnf("Runner in user-mode.")
 		}
 
 		if regArgs.NoInteractive {
@@ -55,7 +55,8 @@ func runRegister(ctx context.Context, regArgs *registerArgs, configFile *string)
 		} else {
 			go func() {
 				if err := registerInteractive(ctx, *configFile, regArgs); err != nil {
-					log.Fatal(err)
+					logging.Error(err)
+					os.Exit(1)
 					return
 				}
 				os.Exit(0)
@@ -182,13 +183,13 @@ func (r *registerInputs) assignToNext(stage registerStage, value string, cfg *co
 			for _, l := range cfg.Runner.Labels {
 				_, err := labels.Parse(l)
 				if err != nil {
-					log.WithError(err).Warnf("ignored invalid label %q", l)
+					logging.WithError(err).Warnf("ignored invalid label %q", l)
 					continue
 				}
 				ls = append(ls, l)
 			}
 			if len(ls) == 0 {
-				log.Warn("no valid labels configured in config file, runner may not be able to pick up jobs")
+				logging.Warn("no valid labels configured in config file, runner may not be able to pick up jobs")
 			}
 			r.Labels = ls
 			return StageWaitingForRegistration
@@ -201,7 +202,7 @@ func (r *registerInputs) assignToNext(stage registerStage, value string, cfg *co
 		}
 
 		if validateLabels(r.Labels) != nil {
-			log.Infoln("Invalid labels, please input again, leave blank to use the default labels (for example, ubuntu-latest:docker://docker.gitea.com/runner-images:ubuntu-latest)")
+			logging.Info("Invalid labels, please input again, leave blank to use the default labels (for example, ubuntu-latest:docker://docker.gitea.com/runner-images:ubuntu-latest)")
 			r.Labels = nil
 			return StageInputLabels
 		}
@@ -273,11 +274,11 @@ func registerInteractive(ctx context.Context, configFile string, regArgs *regist
 		stage = inputs.assignToNext(stage, strings.TrimSpace(cmdString), cfg)
 
 		if stage == StageWaitingForRegistration {
-			log.Infof("Registering runner, name=%s, instance=%s, labels=%v.", inputs.RunnerName, inputs.InstanceAddr, inputs.Labels)
+			logging.Infof("Registering runner, name=%s, instance=%s, labels=%v.", inputs.RunnerName, inputs.InstanceAddr, inputs.Labels)
 			if err := doRegister(ctx, cfg, inputs); err != nil {
 				return fmt.Errorf("failed to register runner: %w", err)
 			}
-			log.Infof("Runner registered successfully.")
+			logging.Infof("Runner registered successfully.")
 			return nil
 		}
 
@@ -286,7 +287,7 @@ func registerInteractive(ctx context.Context, configFile string, regArgs *regist
 		}
 
 		if stage <= StageUnknown {
-			log.Errorf("Invalid input, please re-run act command.")
+			logging.Errorf("Invalid input, please re-run act command.")
 			return nil
 		}
 	}
@@ -295,18 +296,18 @@ func registerInteractive(ctx context.Context, configFile string, regArgs *regist
 func printStageHelp(stage registerStage) {
 	switch stage {
 	case StageOverwriteLocalConfig:
-		log.Infoln("Runner is already registered, overwrite local config? [y/N]")
+		logging.Info("Runner is already registered, overwrite local config? [y/N]")
 	case StageInputInstance:
-		log.Infoln("Enter the Gitea instance URL (for example, https://gitea.com/):")
+		logging.Info("Enter the Gitea instance URL (for example, https://gitea.com/):")
 	case StageInputToken:
-		log.Infoln("Enter the runner token:")
+		logging.Info("Enter the runner token:")
 	case StageInputRunnerName:
 		hostname, _ := os.Hostname()
-		log.Infof("Enter the runner name (if set empty, use hostname: %s):\n", hostname)
+		logging.Infof("Enter the runner name (if set empty, use hostname: %s):\n", hostname)
 	case StageInputLabels:
-		log.Infoln("Enter the runner labels, leave blank to use the default labels (comma-separated, for example, ubuntu-latest:docker://docker.gitea.com/runner-images:ubuntu-latest):")
+		logging.Info("Enter the runner labels, leave blank to use the default labels (comma-separated, for example, ubuntu-latest:docker://docker.gitea.com/runner-images:ubuntu-latest):")
 	case StageWaitingForRegistration:
-		log.Infoln("Waiting for registration...")
+		logging.Info("Waiting for registration...")
 	}
 }
 
@@ -322,7 +323,7 @@ func registerNoInteractive(ctx context.Context, configFile string, regArgs *regi
 	// specify labels in config file.
 	if len(cfg.Runner.Labels) > 0 {
 		if regArgs.Labels != "" {
-			log.Warn("Labels from command will be ignored, use labels defined in config file.")
+			logging.Warn("Labels from command will be ignored, use labels defined in config file.")
 		}
 		inputs.Labels = cfg.Runner.Labels
 	}
@@ -332,16 +333,16 @@ func registerNoInteractive(ctx context.Context, configFile string, regArgs *regi
 
 	if inputs.RunnerName == "" {
 		inputs.RunnerName, _ = os.Hostname()
-		log.Infof("Runner name is empty, use hostname '%s'.", inputs.RunnerName)
+		logging.Infof("Runner name is empty, use hostname '%s'.", inputs.RunnerName)
 	}
 	if err := inputs.validate(); err != nil {
-		log.WithError(err).Errorf("Invalid input, please re-run act command.")
+		logging.WithError(err).Errorf("Invalid input, please re-run act command.")
 		return err
 	}
 	if err := doRegister(ctx, cfg, inputs); err != nil {
 		return fmt.Errorf("failed to register runner: %w", err)
 	}
-	log.Infof("Runner registered successfully.")
+	logging.Infof("Runner registered successfully.")
 	return nil
 }
 
@@ -355,7 +356,7 @@ func doRegister(ctx context.Context, cfg *config.Config, inputs *registerInputs)
 		// Best-effort guard: if the lock file can't be created, warn and
 		// register anyway; writing the runner file will surface any real
 		// permission problem with a clearer error.
-		log.Warnf("could not lock runner file %q, continuing without the single-process guard: %v", cfg.Runner.File, err)
+		logging.Warnf("could not lock runner file %q, continuing without the single-process guard: %v", cfg.Runner.File, err)
 	default:
 		defer func() { _ = releaseLock() }()
 	}
@@ -375,7 +376,7 @@ func doRegister(ctx context.Context, cfg *config.Config, inputs *registerInputs)
 	})); err != nil {
 		return fmt.Errorf("cannot ping the Gitea instance server: %w", err)
 	}
-	log.Debugln("Successfully pinged the Gitea instance server")
+	logging.Debug("Successfully pinged the Gitea instance server")
 
 	reg := &config.Registration{
 		Name:      inputs.RunnerName,
@@ -403,7 +404,7 @@ func doRegister(ctx context.Context, cfg *config.Config, inputs *registerInputs)
 		Capabilities: run.RunnerCapabilities(),
 	}))
 	if err != nil {
-		log.WithError(err).Error("poller: cannot register new runner")
+		logging.WithError(err).Error("poller: cannot register new runner")
 		return err
 	}
 
@@ -414,7 +415,7 @@ func doRegister(ctx context.Context, cfg *config.Config, inputs *registerInputs)
 
 	if inputs.Ephemeral != resp.Msg.Runner.Ephemeral {
 		// TODO we cannot remove the configuration via runner api, if we return an error here we just fill the database
-		log.Error("poller: cannot register new runner as ephemeral upgrade Gitea to gain security, run-once will be used automatically")
+		logging.Error("poller: cannot register new runner as ephemeral upgrade Gitea to gain security, run-once will be used automatically")
 	}
 
 	if err := config.SaveRegistration(cfg.Runner.File, reg); err != nil {

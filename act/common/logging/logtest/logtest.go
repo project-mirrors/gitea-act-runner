@@ -8,6 +8,7 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"testing"
 
 	"gitea.com/gitea/runner/act/common/logging"
 )
@@ -75,4 +76,14 @@ func (h *Handler) Reset() {
 	h.store.mu.Lock()
 	defer h.store.mu.Unlock()
 	h.store.records = nil
+}
+
+// SetDefault makes the process-wide Logger record into a new Handler until the test ends.
+func SetDefault(t testing.TB) *Handler {
+	t.Helper()
+	prev := logging.Default()
+	logger, h := NewLogger()
+	logging.SetDefault(logger)
+	t.Cleanup(func() { logging.SetDefault(prev) })
+	return h
 }

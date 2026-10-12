@@ -45,7 +45,6 @@ import (
 	"gitea.dev/actionslib/pkg/model"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	docker_container "github.com/moby/moby/api/types/container"
-	log "github.com/sirupsen/logrus"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -113,7 +112,7 @@ func NewRunner(cfg *config.Config, reg *config.Registration, cli client.Client) 
 			Logger:     logging.Default().With("module", "cache_request"),
 		})
 		if err != nil {
-			log.Errorf("cannot init cache server, it will be disabled: %v", err)
+			logging.Errorf("cannot init cache server, it will be disabled: %v", err)
 			// go on
 		} else {
 			cacheHandler = handler
@@ -184,7 +183,7 @@ func (r *Runner) OnIdle(ctx context.Context) {
 		ctx, cancel := context.WithTimeout(ctx, time.Minute)
 		defer cancel()
 		if err := removeOrphanKubernetesResources(ctx, r.kubernetesOptions(nil), r.now().Add(-r.cfg.Runner.WorkdirCleanupAge)); err != nil {
-			log.Warnf("failed to clean up job pods left behind by earlier jobs: %v", err)
+			logging.Warnf("failed to clean up job pods left behind by earlier jobs: %v", err)
 		}
 	}
 }
@@ -195,10 +194,10 @@ func (r *Runner) cleanupOrphanDockerResources(ctx context.Context) {
 	}
 	cutoff := r.now().Add(-r.cfg.Runner.WorkdirCleanupAge)
 	if err := removeOrphanNetworks(ctx, r.uuid, r.isolatedCacheContainer(), cutoff); err != nil {
-		log.Warnf("failed to clean up networks left behind by earlier jobs: %v", err)
+		logging.Warnf("failed to clean up networks left behind by earlier jobs: %v", err)
 	}
 	if err := removeOrphanJobVolumes(ctx, r.uuid, cutoff); err != nil {
-		log.Warnf("failed to clean up volumes left behind by earlier jobs: %v", err)
+		logging.Warnf("failed to clean up volumes left behind by earlier jobs: %v", err)
 	}
 }
 
@@ -255,7 +254,7 @@ func (r *Runner) cleanupStaleDirs(ctx context.Context, root string, match func(n
 		if errors.Is(err, os.ErrNotExist) {
 			return
 		}
-		log.Warnf("failed to list directory %s for stale cleanup: %v", root, err)
+		logging.Warnf("failed to list directory %s for stale cleanup: %v", root, err)
 		return
 	}
 
@@ -275,7 +274,7 @@ func (r *Runner) cleanupStaleDirs(ctx context.Context, root string, match func(n
 		}
 		info, err := entry.Info()
 		if err != nil {
-			log.Warnf("failed to stat %s: %v", filepath.Join(root, entry.Name()), err)
+			logging.Warnf("failed to stat %s: %v", filepath.Join(root, entry.Name()), err)
 			continue
 		}
 		if info.ModTime().After(cutoff) {
@@ -283,10 +282,10 @@ func (r *Runner) cleanupStaleDirs(ctx context.Context, root string, match func(n
 		}
 		dir := filepath.Join(root, entry.Name())
 		if err := os.RemoveAll(dir); err != nil {
-			log.Warnf("failed to clean stale directory %s: %v", dir, err)
+			logging.Warnf("failed to clean stale directory %s: %v", dir, err)
 			continue
 		}
-		log.Infof("cleaned stale directory %s", dir)
+		logging.Infof("cleaned stale directory %s", dir)
 	}
 }
 
@@ -331,7 +330,7 @@ func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) error {
 		}
 		_ = reporter.Close(lastWords)
 		if err := cleanupJobVolumes(ctx, volumeCleanup); err != nil {
-			log.Warnf("task %d volume cleanup after reporting: %v", task.Id, err)
+			logging.Warnf("task %d volume cleanup after reporting: %v", task.Id, err)
 		}
 
 		metrics.JobDuration.Observe(time.Since(start).Seconds())
@@ -463,9 +462,8 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	if err != nil {
 		return err
 	}
-	log.WithFields(taskLogFields(task, jobID)).
-		WithField("actions_url", r.getDefaultActionsURL(task)).
-		WithField("address", r.client.Address()).
+	logging.With(taskLogFields(task, jobID)...).
+		With("actions_url", r.getDefaultActionsURL(task), "address", r.client.Address()).
 		Info("task started")
 
 	plan, err := model.CombineWorkflowPlanner(workflow).PlanJob(jobID)
@@ -648,7 +646,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	// add logger recorders
 	ctx = common.WithLoggerHandler(ctx, reporter)
 
-	if !log.IsLevelEnabled(log.DebugLevel) {
+	if !logging.Enabled(logging.LevelDebug) {
 		ctx = runner.WithJobLoggerFactory(ctx, NullLogger{})
 	}
 
@@ -659,7 +657,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		// Remove the entire task-specific directory (e.g. /workspace/<task_id>).
 		taskDir := filepath.FromSlash("/" + workdirParent)
 		if err := os.RemoveAll(taskDir); err != nil {
-			log.Warnf("failed to clean up workspace %s: %v", taskDir, err)
+			logging.Warnf("failed to clean up workspace %s: %v", taskDir, err)
 		}
 	}
 
@@ -741,7 +739,7 @@ func (r *Runner) registerExternalCacheJob(token, repo, publicURL string, reporte
 	if err := postInternalCache(base+"/_internal/register", r.cfg.Cache.ExternalSecret, map[string]any{
 		"token": token, "repo": repo, "public_url": publicURL,
 	}); err != nil {
-		log.Warnf("cache external_server register failed (%s): %v", base, err)
+		logging.Warnf("cache external_server register failed (%s): %v", base, err)
 		if reporter != nil {
 			reporter.Logf("::warning::%s", runner.EscapeCommandData(fmt.Sprintf(
 				"cache external_server register failed (%s): %v — cache requests from this job will be unauthenticated and likely return 401", base, err)))
@@ -750,7 +748,7 @@ func (r *Runner) registerExternalCacheJob(token, repo, publicURL string, reporte
 	return func() {
 		if err := postInternalCache(base+"/_internal/revoke", r.cfg.Cache.ExternalSecret,
 			map[string]any{"token": token}); err != nil {
-			log.Warnf("cache external_server revoke failed (%s): %v", base, err)
+			logging.Warnf("cache external_server revoke failed (%s): %v", base, err)
 			if reporter != nil {
 				reporter.Logf("::warning::%s", runner.EscapeCommandData(fmt.Sprintf(
 					"cache external_server revoke failed (%s): %v", base, err)))
@@ -893,9 +891,9 @@ func warnIgnoredCachePolicy(cfg *config.Config) {
 		cfg.Cache.SizeLimit != defaults.SizeLimit
 	switch {
 	case cfg.Cache.ExternalServer != "" && (limits || cfg.Cache.SweepInterval != defaults.SweepInterval):
-		log.Warn("cache eviction settings are ignored when cache.external_server is set; configure them on that server instead")
+		logging.Warn("cache eviction settings are ignored when cache.external_server is set; configure them on that server instead")
 	case cfg.Cache.S3 != nil && limits:
-		log.Warn("cache eviction settings are ignored when cache.s3 is set; use lifecycle rules on the bucket instead")
+		logging.Warn("cache eviction settings are ignored when cache.s3 is set; use lifecycle rules on the bucket instead")
 	}
 }
 
@@ -913,7 +911,7 @@ func warnIgnoredCacheSecret(cfg *config.Config) {
 	if cfg.Cache.ExternalSecretFile != "" {
 		key = "cache.external_secret_file"
 	}
-	log.Warnf("%s is set but cache.external_server is not; the built-in cache server does not use a shared secret, so the value is ignored", key)
+	logging.Warnf("%s is set but cache.external_server is not; the built-in cache server does not use a shared secret, so the value is ignored", key)
 }
 
 // cacheForJob returns the cache address for the job, and the container to attach to its network to reach it there.
@@ -943,25 +941,26 @@ func (r *Runner) detectIsolatedCacheContainer() string {
 	defer cancel()
 	cacheContainer, err := container.IsolatedCacheContainer(ctx, addr, r.cfg.Container.Network)
 	if err != nil {
-		log.Warnf("cannot check whether jobs reach the cache server: %v", err)
+		logging.Warnf("cannot check whether jobs reach the cache server: %v", err)
 	}
 	return cacheContainer
 }
 
-func taskLogFields(task *runnerv1.Task, job string) log.Fields {
+// taskLogFields returns key/value pairs for logging.With.
+func taskLogFields(task *runnerv1.Task, job string) []any {
 	taskContext := task.GetContext().GetFields()
-	fields := log.Fields{
-		"task_id":    task.Id,
-		"job":        job,
-		"repository": taskContext["repository"].GetStringValue(),
-		"run_id":     taskContext["run_id"].GetStringValue(),
-		"run_number": taskContext["run_number"].GetStringValue(),
+	fields := []any{
+		"task_id", task.Id,
+		"job", job,
+		"repository", taskContext["repository"].GetStringValue(),
+		"run_id", taskContext["run_id"].GetStringValue(),
+		"run_number", taskContext["run_number"].GetStringValue(),
 	}
 	if parts := strings.Split(taskContext["gitea_runtime_token"].GetStringValue(), "."); len(parts) == 3 {
 		var claims struct{ JobID int64 } // Gitea's actionsClaims fields are untagged, so the claim key is "JobID"
 		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 		if err == nil && json.Unmarshal(payload, &claims) == nil && claims.JobID > 0 {
-			fields["job_id"] = claims.JobID
+			fields = append(fields, "job_id", claims.JobID)
 		}
 	}
 	return fields

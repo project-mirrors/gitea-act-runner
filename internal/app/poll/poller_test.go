@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"gitea.com/gitea/runner/act/common/logging/logtest"
 	"gitea.com/gitea/runner/internal/pkg/client/mocks"
 	"gitea.com/gitea/runner/internal/pkg/config"
 
 	connect_go "connectrpc.com/connect"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
-	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -87,8 +87,7 @@ func TestPoller_FetchTimeoutIsNoSignal(t *testing.T) {
 	p := &Poller{client: client, cfg: cfg}
 	p.lastPollFailed.Store(true)
 
-	hook := test.NewGlobal()
-	defer hook.Reset()
+	hook := logtest.SetDefault(t)
 
 	s := &workerState{consecutiveErrors: 2}
 	_, ok := p.fetchTask(context.Background(), s)
@@ -99,7 +98,7 @@ func TestPoller_FetchTimeoutIsNoSignal(t *testing.T) {
 
 	// An idle runner against a server holding the request open must not flood.
 	_, _ = p.fetchTask(context.Background(), s)
-	assert.Len(t, hook.AllEntries(), 1)
+	assert.Len(t, hook.AllRecords(), 1)
 }
 
 // TestPoller_FetchUnauthenticatedStopsPolling verifies that an Unauthenticated

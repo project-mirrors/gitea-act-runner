@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/ver"
 
 	"gitea.dev/actionslib/pkg/model"
@@ -28,7 +29,6 @@ import (
 	"github.com/avast/retry-go/v5"
 	"github.com/docker/go-connections/tlsconfig"
 	"github.com/prometheus/client_golang/prometheus"
-	log "github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
@@ -90,7 +90,7 @@ func Setup(ctx context.Context, uuid, name string, gatherer prometheus.Gatherer)
 		compressionKey := otlpKey(signal, "COMPRESSION")
 		compression := os.Getenv(compressionKey)
 		if !slices.Contains([]string{"", "none", "gzip"}, strings.ToLower(compression)) {
-			log.Warnf("ignoring unsupported %s=%q", compressionKey, compression)
+			logging.Warnf("ignoring unsupported %s=%q", compressionKey, compression)
 		}
 		httpClient, err := newHTTPClient(signal)
 		if err != nil {
@@ -144,7 +144,7 @@ func exportsOTLP(signal string) bool {
 		case "none":
 			known = true
 		default:
-			log.Warnf("ignoring unsupported %s value %q", key, value)
+			logging.Warnf("ignoring unsupported %s value %q", key, value)
 		}
 	}
 	return otlp || !known
@@ -166,7 +166,7 @@ func millis(key string, fallback, zero time.Duration) time.Duration {
 	}
 	ms, err := strconv.ParseInt(value, 10, 32)
 	if err != nil || ms < 0 {
-		log.Warnf("ignoring %s=%q, it must be a non-negative number of milliseconds", key, value)
+		logging.Warnf("ignoring %s=%q, it must be a non-negative number of milliseconds", key, value)
 		return fallback
 	}
 	return cmp.Or(time.Duration(ms)*time.Millisecond, zero)

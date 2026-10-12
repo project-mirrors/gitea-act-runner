@@ -16,7 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sirupsen/logrus/hooks/test"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -391,14 +392,13 @@ func TestLoadDefault_WarnsOnUnknownKeysButStillLoads(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("container:\n  volumes:\n    - /host:/ctr\n  privileged: true\n"), 0o600))
 
-	hook := test.NewGlobal()
-	defer hook.Reset()
+	hook := logtest.SetDefault(t)
 
 	cfg, err := LoadDefault(path)
 	require.NoError(t, err)
 	assert.True(t, cfg.Container.Privileged)
-	require.Len(t, hook.Entries, 1)
-	assert.Contains(t, hook.LastEntry().Message, "field volumes not found")
+	require.Len(t, hook.AllRecords(), 1)
+	assert.Contains(t, hook.LastRecord().Message, "field volumes not found")
 }
 
 func TestContainerNetworkCreateOptions(t *testing.T) {
@@ -539,8 +539,7 @@ cache:
 // The shipped configs must parse, hold no key the config does not know, and leave
 // every option at its default, as all of their values are commented out.
 func TestLoadDefault_ShippedConfigsChangeNothing(t *testing.T) {
-	hook := test.NewGlobal()
-	defer hook.Reset()
+	hook := logtest.SetDefault(t)
 
 	defaults, err := LoadDefault("")
 	require.NoError(t, err)
@@ -554,7 +553,7 @@ func TestLoadDefault_ShippedConfigsChangeNothing(t *testing.T) {
 		require.NoError(t, err, name)
 		assert.Equal(t, defaults, cfg, name)
 	}
-	assert.Empty(t, hook.AllEntries())
+	assert.Empty(t, hook.AllRecords())
 }
 
 func TestLoadDefault_ClampsFetchTimeout(t *testing.T) {

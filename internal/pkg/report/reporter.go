@@ -23,7 +23,6 @@ import (
 	"connectrpc.com/connect"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"github.com/avast/retry-go/v5"
-	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -357,10 +356,10 @@ func (r *Reporter) noteReport(method string, err error) {
 	switch {
 	case err != nil && !r.reportFailing[method]:
 		r.reportFailing[method] = true
-		log.Warnf("%s error: %v, retrying until reconnected", method, err)
+		logging.Warnf("%s error: %v, retrying until reconnected", method, err)
 	case err == nil && r.reportFailing[method]:
 		delete(r.reportFailing, method)
-		log.Infof("%s reconnected", method)
+		logging.Infof("%s reconnected", method)
 	}
 }
 
@@ -497,17 +496,17 @@ func (r *Reporter) SetOutputs(outputs map[string]string) {
 	}
 	for k, v := range outputs {
 		if l := len(k); l > maxOutputKeyLen {
-			log.Warnf("ignore output %q because the key is too long: %d > %d", k, l, maxOutputKeyLen)
+			logging.Warnf("ignore output %q because the key is too long: %d > %d", k, l, maxOutputKeyLen)
 			r.logf("ignore output %q because the key is too long: %d > %d", k, l, maxOutputKeyLen)
 			continue
 		}
 		if l := len(v); l > maxOutputValueLen {
-			log.Warnf("ignore output %q because the value is too long: %d > %d", k, l, maxOutputValueLen)
+			logging.Warnf("ignore output %q because the value is too long: %d > %d", k, l, maxOutputValueLen)
 			r.logf("ignore output %q because the value is too long: %d > %d", k, l, maxOutputValueLen)
 			continue
 		}
 		if r.logReplacer.Replace(v) != v { // GitHub skips an output that may carry a secret rather than masking it
-			log.Warnf("ignore output %q because it may contain a secret", k)
+			logging.Warnf("ignore output %q because it may contain a secret", k)
 			r.logf("ignore output %q because it may contain a secret", k)
 			continue
 		}
@@ -559,7 +558,7 @@ func (r *Reporter) Close(lastWords string) error {
 	select {
 	case <-r.daemon:
 	case <-time.After(r.daemonWait):
-		log.Errorf("No Response from RunDaemon for %s, continue best effort", r.daemonWait)
+		logging.Errorf("No Response from RunDaemon for %s, continue best effort", r.daemonWait)
 	}
 
 	// Gitea's UpdateLog short-circuits on len(Rows)==0 before honoring NoMore,
