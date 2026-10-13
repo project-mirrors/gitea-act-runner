@@ -172,6 +172,22 @@ func TestLoadDefault_ToolCacheMode(t *testing.T) {
 	assert.Contains(t, err.Error(), "tool_cache_mode")
 }
 
+func TestLoadDefault_LogReportLevel(t *testing.T) {
+	cfg, err := LoadDefault("")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Runner.LogReportLevel) // follows log.level
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("runner:\n  log_report_level: debug\n"), 0o600))
+	cfg, err = LoadDefault(path)
+	require.NoError(t, err)
+	assert.Equal(t, "debug", cfg.Runner.LogReportLevel)
+
+	require.NoError(t, os.WriteFile(path, []byte("runner:\n  log_report_level: loud\n"), 0o600))
+	_, err = LoadDefault(path)
+	require.ErrorContains(t, err, "runner.log_report_level")
+}
+
 func TestLoadDefault_LoadsExtraHeaders(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("runner:\n  extra_headers:\n    X-Proxy-Token: proxy-token\n"), 0o600))

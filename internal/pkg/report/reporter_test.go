@@ -1711,3 +1711,36 @@ func fire(r *Reporter, e logEntry) error {
 	}
 	return r.WithAttrs(attrs).Handle(context.Background(), logging.Record{Message: e.Message, Level: e.Level})
 }
+
+func TestReporter_shouldAppendLogRow_Level(t *testing.T) {
+	prev := logging.GetLevel()
+	t.Cleanup(func() { logging.SetLevel(prev) })
+	debug, warn := logging.LevelDebug, logging.LevelWarn
+	row := func(level logging.Level) logging.Record { return logging.Record{Level: level} }
+	newReporter := func(level *logging.Level) *Reporter {
+		return &Reporter{state: &runnerv1.TaskState{}, logReportLevel: level}
+	}
+
+	// unset follows log.level
+	logging.SetLevel(logging.LevelInfo)
+	assert.True(t, newReporter(nil).shouldAppendLogRow(row(logging.LevelInfo)))
+	assert.False(t, newReporter(nil).shouldAppendLogRow(row(logging.LevelDebug)))
+
+	// set, it no longer does
+	assert.True(t, newReporter(&debug).shouldAppendLogRow(row(logging.LevelDebug)))
+	logging.SetLevel(logging.LevelTrace)
+	assert.False(t, newReporter(&warn).shouldAppendLogRow(row(logging.LevelInfo)))
+	assert.True(t, newReporter(&warn).shouldAppendLogRow(row(logging.LevelError)))
+
+	// and the config reaches the Reporter
+	cfg, err := config.LoadDefault("")
+	require.NoError(t, err)
+	cfg.Runner.LogReportLevel = "warn"
+	taskCtx, err := structpb.NewStruct(map[string]any{})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	reporter := NewReporter(ctx, cancel, mocks.NewClient(t), &runnerv1.Task{Context: taskCtx}, cfg)
+	require.NotNil(t, reporter.logReportLevel)
+	assert.Equal(t, logging.LevelWarn, *reporter.logReportLevel)
+}

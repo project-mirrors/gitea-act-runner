@@ -76,6 +76,7 @@ type Runner struct {
 	LogReportInterval     time.Duration     `yaml:"log_report_interval"`      // LogReportInterval specifies the base interval for periodic log flush.
 	LogReportMaxLatency   time.Duration     `yaml:"log_report_max_latency"`   // LogReportMaxLatency specifies the max time a log row can wait before being sent.
 	LogReportBatchSize    int               `yaml:"log_report_batch_size"`    // LogReportBatchSize triggers immediate log flush when buffer reaches this size.
+	LogReportLevel        string            `yaml:"log_report_level"`         // LogReportLevel is the lowest level of the runner's own messages sent to the job log between steps. Empty, the default, follows log.level.
 	StateReportInterval   time.Duration     `yaml:"state_report_interval"`    // StateReportInterval specifies the interval for state reporting.
 	ReportCloseTimeout    time.Duration     `yaml:"report_close_timeout"`     // ReportCloseTimeout caps each RPC attempt when flushing the final logs and task state at job completion, on a detached context so a server cancel can't block the acknowledgement.
 	Labels                []string          `yaml:"labels"`                   // Labels specify the labels of the runner. Labels are declared on each startup
@@ -347,6 +348,11 @@ func LoadDefault(file string) (*Config, error) {
 	}
 	if !slices.Contains(ToolCacheModes, cfg.Runner.ToolCacheMode) {
 		return nil, fmt.Errorf("invalid runner.tool_cache_mode %q: must be one of %q", cfg.Runner.ToolCacheMode, ToolCacheModes)
+	}
+	if cfg.Runner.LogReportLevel != "" {
+		if _, err := logging.ParseLevel(cfg.Runner.LogReportLevel); err != nil {
+			return nil, fmt.Errorf("invalid runner.log_report_level: %w", err)
+		}
 	}
 	if err := validateExtraHeaders(cfg.Runner.ExtraHeaders); err != nil {
 		return nil, err
