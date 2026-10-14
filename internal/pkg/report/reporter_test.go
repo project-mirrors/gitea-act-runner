@@ -309,7 +309,10 @@ func TestReporter_LogLevelFiltering(t *testing.T) {
 	taskCtx, err := structpb.NewStruct(map[string]any{})
 	require.NoError(t, err)
 	cfg, _ := config.LoadDefault("")
+	cfg.Runner.LogReportLevel = "warn"
 	reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{Context: taskCtx}, cfg)
+	assert.False(t, reporter.shouldAppendLogRow(logging.Record{Level: logging.LevelInfo}))
+	assert.True(t, reporter.shouldAppendLogRow(logging.Record{Level: logging.LevelWarn}))
 	reporter.RunDaemon()
 	defer func() {
 		require.NoError(t, reporter.Close(""))

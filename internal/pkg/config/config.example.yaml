@@ -76,6 +76,9 @@ runner:
   # Flush logs immediately when the buffer reaches this many rows.
   # This ensures bursty output (e.g., npm install) is delivered promptly.
   #log_report_batch_size: 100
+  # The lowest severity of the runner's own messages (not step output) that are sent to the
+  # job log between steps: trace, debug, info, warn, error. Default if omitted: follow log.level.
+  #log_report_level: info
   # The interval for reporting task state (step status, timing) to the Gitea instance.
   # State is also reported on step transitions (start/stop) and after each log flush.
   #state_report_interval: 5s
