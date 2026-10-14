@@ -52,5 +52,5 @@ jobs:
       - run: |
           docker run --rm --user 1001 --group-add 2375 -v /var/run/docker.sock:/var/run/docker.sock -v /usr/local/bin/docker:/usr/local/bin/docker:ro -v "${GITEA_DOCKER_WORKSPACE:?}/data:/data:ro" \
             "$PROXY_TEST_IMAGE" sh -c 'grep -qx from-job /data/marker && docker volume create "$0"' "$PROXY_TEST_RESOURCE-nested"
-          test "$(docker volume inspect -f '{{ index .Labels "com.gitea.runner.job" }}' "$PROXY_TEST_RESOURCE-nested")" = "$JOB_CONTAINER_NAME"
+          test "$(docker volume ls -q -f "label=com.gitea.runner.job.$JOB_CONTAINER_NAME" -f "name=$PROXY_TEST_RESOURCE-nested")" = "$PROXY_TEST_RESOURCE-nested"
           echo "docker binds verified"

@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	jobLabel      = "com.gitea.runner.job"
+	jobLabel      = "com.gitea.runner.job."
 	maxCreateBody = 8 << 20
 
 	dockerProxyProbeTimeout = 5 * time.Second
@@ -302,7 +302,7 @@ func rewriteCreate(r *http.Request, job string, mounts map[string]string) error 
 	if config.Labels == nil {
 		config.Labels = make(map[string]string)
 	}
-	config.Labels[jobLabel] = job
+	config.Labels[jobLabel+job] = "" // per-job key, so nested proxies keep each other's
 	if fields["Labels"], err = json.Marshal(config.Labels); err != nil {
 		return err
 	}
@@ -560,7 +560,7 @@ func RemoveDockerJobResources(ctx context.Context, job string) error {
 
 func removeLabelled(ctx context.Context, cli client.APIClient, job string) error {
 	logger := common.Logger(ctx)
-	filters := make(client.Filters).Add("label", jobLabel+"="+job)
+	filters := make(client.Filters).Add("label", jobLabel+job)
 	containers, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filters})
 	errs := []error{err}
 	for _, c := range containers.Items {

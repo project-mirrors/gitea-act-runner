@@ -37,10 +37,10 @@ async function main() {
     await request('POST', `${api}/networks/${name}/connect`, {Container: job});
     fs.appendFileSync(process.env.GITHUB_STATE, 'post=true\n');
   }
-  const label = process.env.PROXY_TEST_MODE === 'proxy' ? job : undefined;
-  assert.equal(JSON.parse(await request('GET', `${api}/volumes/${name}`)).Labels?.['com.gitea.runner.job'], label);
+  const label = process.env.PROXY_TEST_MODE === 'proxy' ? '' : undefined;
+  assert.equal(JSON.parse(await request('GET', `${api}/volumes/${name}`)).Labels?.[`com.gitea.runner.job.${job}`], label);
   const network = JSON.parse(await request('GET', `${api}/networks/${name}`));
-  assert.equal(network.Labels?.['com.gitea.runner.job'], label);
+  assert.equal(network.Labels?.[`com.gitea.runner.job.${job}`], label);
   assert(Object.values(network.Containers).some((container) => container.Name === job));
   if (post) {
     console.log('docker proxy post verified');
