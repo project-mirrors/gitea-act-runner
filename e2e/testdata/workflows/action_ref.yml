@@ -1,0 +1,13 @@
+name: action-ref
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        required: true
+jobs:
+  moving:
+    runs-on: e2e-action-ref
+    steps:
+      - uses: self:e2e-admin/e2e-moving-action@main
+        with:
+          revision: ${{ inputs.revision }}

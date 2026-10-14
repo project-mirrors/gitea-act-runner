@@ -1,0 +1,9 @@
+name: moving
+inputs:
+  revision:
+    required: true
+runs:
+  using: composite
+  steps:
+    - run: test -e "$GITHUB_ACTION_PATH/${{ inputs.revision }}"
+      shell: sh

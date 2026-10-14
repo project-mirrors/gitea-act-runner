@@ -304,7 +304,7 @@ func shallowPinnedClone(ctx context.Context, input NewGitCloneExecutorInput) err
 }
 
 func fetch(ctx context.Context, input NewGitCloneExecutorInput) error {
-	args := []string{"fetch", "--force", "--prune"}
+	args := []string{"fetch", "--force", "--no-prune"}
 	if _, err := os.Stat(filepath.Join(input.Dir, ".git", "shallow")); err == nil {
 		args = append(args, "--depth", "1", "--no-tags")
 	}

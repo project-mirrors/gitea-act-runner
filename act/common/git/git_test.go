@@ -354,6 +354,8 @@ func TestGitCloneExecutorFollowsRemoteRefChanges(t *testing.T) {
 	dir := t.TempDir()
 	clone := NewGitCloneExecutor(NewGitCloneExecutorInput{URL: remoteDir, Ref: "main", Dir: dir})
 	require.NoError(t, clone(t.Context()))
+	require.NoError(t, gitCmd("-C", dir, "config", "fetch.prune", "true"))
+	require.NoError(t, clone(t.Context()))
 
 	require.NoError(t, gitCmd("-C", workDir, "reset", "--hard", "HEAD~1"))
 	require.NoError(t, gitCmd("-C", workDir, "commit", "--allow-empty", "-m", "feature-rewritten"))
@@ -361,11 +363,20 @@ func TestGitCloneExecutorFollowsRemoteRefChanges(t *testing.T) {
 	require.NoError(t, clone(t.Context()), "a non-fast-forward ref must update")
 	assert.Equal(t, "feature-rewritten", gitHeadSubject(t, dir))
 
-	tagClone := NewGitCloneExecutor(NewGitCloneExecutorInput{URL: remoteDir, Ref: "v9", Dir: t.TempDir()})
+	tagDir := t.TempDir()
+	tagClone := NewGitCloneExecutor(NewGitCloneExecutorInput{URL: remoteDir, Ref: "v9", Dir: tagDir})
 	require.Error(t, tagClone(t.Context()))
 	require.NoError(t, gitCmd("-C", workDir, "tag", "v9"))
 	require.NoError(t, gitCmd("-C", workDir, "push", "origin", "v9"))
 	require.NoError(t, tagClone(t.Context()), "a tag published after a failed lookup must be fetched")
+
+	require.NoError(t, gitCmd("-C", workDir, "commit", "--allow-empty", "-m", "tag-moved"))
+	require.NoError(t, gitCmd("-C", workDir, "tag", "--force", "v9"))
+	require.NoError(t, gitCmd("-C", workDir, "push", "--force", "origin", "v9"))
+	for range 2 {
+		require.NoError(t, tagClone(t.Context()), "a moved tag must update and stay current")
+		assert.Equal(t, "tag-moved", gitHeadSubject(t, tagDir))
+	}
 }
 
 func TestGitCloneExecutorOfflineMode(t *testing.T) {

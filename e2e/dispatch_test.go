@@ -23,7 +23,7 @@ func testWorkflowDispatch(t *testing.T) {
 		t.Fatalf("get default branch: %v", err)
 	}
 	inputs := map[string]string{"subject": "dispatch-input-value"}
-	if err := waitForDispatch(ctx, api, repo, branch, inputs); err != nil {
+	if err := waitForDispatch(ctx, api, repo, "dispatch.yml", branch, inputs); err != nil {
 		t.Fatalf("dispatch workflow: %v", err)
 	}
 
@@ -35,13 +35,13 @@ func testWorkflowDispatch(t *testing.T) {
 }
 
 // Gitea indexes workflows asynchronously after the Contents API commit.
-func waitForDispatch(ctx context.Context, api *GiteaAPI, repo, branch string, inputs map[string]string) error {
+func waitForDispatch(ctx context.Context, api *GiteaAPI, repo, workflow, branch string, inputs map[string]string) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
 	var lastErr error
 	for {
-		lastErr = api.DispatchWorkflow(ctx, repo, "dispatch.yml", branch, inputs)
+		lastErr = api.DispatchWorkflow(ctx, repo, workflow, branch, inputs)
 		if lastErr == nil {
 			return nil
 		}
