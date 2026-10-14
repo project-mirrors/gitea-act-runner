@@ -10,7 +10,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Libraries the runner depends on, such as the workflow model and the Docker client, log through
+// Libraries the runner depends on, such as docker/cli and moby/go-archive, log through
 // logrus's global logger. Hand what they log to the process-wide Logger, so it follows the same
 // level, format and secret masking as the rest of the output.
 func init() {

@@ -40,8 +40,8 @@ fields.
 
 - The process-wide logger masks the secrets of every live task, the job logger masks its own.
   Going around either leaks them.
-- Libraries that log through logrus's global logger are forwarded to the process-wide one, so they
-  follow its level and masking too.
+- Libraries that log through logrus's or slog's global logger are forwarded to the process-wide
+  one, so they follow its level and masking too.
 - That forwarding only works while logrus's global logger is left as `logging` configures it. A
   dependency that calls `logrus.SetOutput` or `SetLevel` breaks it, so check
   `logging.LogrusBridgeIntact()` when adding or upgrading one.

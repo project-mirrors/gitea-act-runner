@@ -102,7 +102,7 @@ func TestGraphMissingEvent(t *testing.T) {
 	assert.NotNil(t, plan)
 	assert.Empty(t, plan.Stages)
 
-	assert.Contains(t, buf.String(), "no events found for workflow: no-event.yml")
+	assert.Contains(t, buf.String(), `msg="no events found for workflow" file=no-event.yml`)
 }
 
 func TestGraphMissingFirst(t *testing.T) {

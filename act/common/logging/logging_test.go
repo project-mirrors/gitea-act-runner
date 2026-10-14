@@ -169,6 +169,23 @@ func TestLogrusBridge(t *testing.T) {
 	assert.Empty(t, h.AllRecords())
 }
 
+func TestSlogBridge(t *testing.T) {
+	h := logtest.SetDefault(t)
+	slog.With("lib", "actionslib").Warn("from a library", "n", 1)
+	_, _, line, _ := runtime.Caller(0)
+	slog.Debug("dropped")
+
+	recs := h.AllRecords()
+	require.Len(t, recs, 1)
+	assert.Equal(t, "from a library", recs[0].Message)
+	assert.Equal(t, logging.LevelWarn, recs[0].Level)
+	lib, _ := recs[0].Attr("lib")
+	assert.Equal(t, "actionslib", lib)
+	n, _ := recs[0].Attr("n")
+	assert.EqualValues(t, 1, n)
+	assert.Equal(t, line-1, frameOf(t, recs[0].PC).Line)
+}
+
 func TestLogrusBridgeIntact(t *testing.T) {
 	assert.True(t, logging.LogrusBridgeIntact())
 
