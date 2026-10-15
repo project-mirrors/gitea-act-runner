@@ -116,7 +116,7 @@ func TestConnectAndDisconnectNetwork(t *testing.T) {
 // Of this runner's networks, only the ones nothing but its own cache container is attached to
 // and old enough to predate any job now starting are the runner's to reclaim. An unexpected
 // NetworkRemove fails the test on its own, since testify has no expectation to match it against.
-func TestRemoveOrphanNetworks(t *testing.T) {
+func TestRemoveNetworks(t *testing.T) {
 	ctx := t.Context()
 	cutoff := time.Date(2026, time.April, 29, 20, 0, 0, 0, time.UTC)
 	client := &mockDockerClient{}
@@ -128,11 +128,13 @@ func TestRemoveOrphanNetworks(t *testing.T) {
 		{ID: "starting"},
 		{ID: "cached"},
 		{ID: "shared"},
+		{ID: "gone"},
+		{ID: "raced"},
 	}}, nil)
 	client.On("NetworkInspect", ctx, "orphan", mobyclient.NetworkInspectOptions{}).
-		Return(mobyclient.NetworkInspectResult{}, nil)
+		Return(mobyclient.NetworkInspectResult{}, nil).Twice()
 	client.On("NetworkInspect", ctx, "busy", mobyclient.NetworkInspectOptions{}).
-		Return(mobyclient.NetworkInspectResult{Network: network.Inspect{Containers: map[string]network.EndpointResource{"c": {}}}}, nil)
+		Return(mobyclient.NetworkInspectResult{Network: network.Inspect{Containers: map[string]network.EndpointResource{"c": {}}}}, nil).Twice()
 	client.On("NetworkInspect", ctx, "starting", mobyclient.NetworkInspectOptions{}).
 		Return(mobyclient.NetworkInspectResult{Network: network.Inspect{
 			Network:    network.Network{Created: cutoff.Add(time.Second)},
@@ -142,13 +144,28 @@ func TestRemoveOrphanNetworks(t *testing.T) {
 		Return(mobyclient.NetworkInspectResult{Network: network.Inspect{Containers: map[string]network.EndpointResource{"0123456789abcdef": {}}}}, nil)
 	client.On("NetworkInspect", ctx, "shared", mobyclient.NetworkInspectOptions{}).
 		Return(mobyclient.NetworkInspectResult{Network: network.Inspect{Containers: map[string]network.EndpointResource{"0123456789abcdef": {}, "job": {}}}}, nil)
+	client.On("NetworkInspect", ctx, "gone", mobyclient.NetworkInspectOptions{}).
+		Return(mobyclient.NetworkInspectResult{}, cerrdefs.ErrNotFound).Twice()
+	client.On("NetworkInspect", ctx, "raced", mobyclient.NetworkInspectOptions{}).
+		Return(mobyclient.NetworkInspectResult{}, nil).Twice()
+	client.On("NetworkRemove", ctx, "raced", mobyclient.NetworkRemoveOptions{}).
+		Return(mobyclient.NetworkRemoveResult{}, cerrdefs.ErrNotFound).Twice()
 	client.On("NetworkRemove", ctx, "orphan", mobyclient.NetworkRemoveOptions{}).
-		Return(mobyclient.NetworkRemoveResult{}, nil)
+		Return(mobyclient.NetworkRemoveResult{}, nil).Twice()
 	client.On("NetworkDisconnect", ctx, "cached", mobyclient.NetworkDisconnectOptions{Container: "0123456789abcdef", Force: true}).
 		Return(nil).Once()
 	client.On("NetworkRemove", ctx, "cached", mobyclient.NetworkRemoveOptions{}).
 		Return(mobyclient.NetworkRemoveResult{}, nil).Once()
 
 	require.NoError(t, removeOrphanNetworks(ctx, client, "runner-1", "0123456789ab", cutoff))
+
+	client.On("NetworkList", ctx, mobyclient.NetworkListOptions{}).Return(mobyclient.NetworkListResult{Items: []network.Summary{
+		{ID: "orphan", Name: "job"},
+		{ID: "busy", Name: "job"},
+		{ID: "gone", Name: "job"},
+		{ID: "raced", Name: "job"},
+		{ID: "shared", Name: "other"},
+	}}, nil)
+	require.NoError(t, removeNetwork(ctx, client, "job"))
 	client.AssertExpectations(t)
 }

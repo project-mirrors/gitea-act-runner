@@ -157,6 +157,8 @@ var removeOrphanJobVolumes = container.RemoveOrphanJobVolumes
 
 var removeOrphanKubernetesResources = container.RemoveOrphanKubernetesResources
 
+const orphanDockerResourceAge = 10 * time.Minute // spares the network and volumes of a job still starting its first container
+
 // OnIdle performs lightweight maintenance during polling idle windows.
 // It runs synchronously on the poller goroutine; shouldRunIdleCleanup
 // throttles invocations to runner.idle_cleanup_interval so the impact on
@@ -189,10 +191,12 @@ func (r *Runner) OnIdle(ctx context.Context) {
 }
 
 func (r *Runner) cleanupOrphanDockerResources(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
 	if r.uuid == "" || (!r.requiresDocker() && !dockerReachable(ctx)) {
 		return
 	}
-	cutoff := r.now().Add(-r.cfg.Runner.WorkdirCleanupAge)
+	cutoff := r.now().Add(-orphanDockerResourceAge)
 	if err := removeOrphanNetworks(ctx, r.uuid, r.isolatedCacheContainer(), cutoff); err != nil {
 		logging.Warnf("failed to clean up networks left behind by earlier jobs: %v", err)
 	}

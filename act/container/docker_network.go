@@ -53,7 +53,9 @@ func removeOrphanNetworks(ctx context.Context, cli client.APIClient, runnerUUID,
 networks:
 	for _, n := range networks.Items {
 		result, err := cli.NetworkInspect(ctx, n.ID, client.NetworkInspectOptions{})
-		if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			continue
+		} else if err != nil {
 			errs = append(errs, fmt.Errorf("failed to inspect network %s: %w", n.Name, err))
 			continue
 		}
@@ -71,7 +73,9 @@ networks:
 				continue networks
 			}
 		}
-		if _, err := cli.NetworkRemove(ctx, n.ID, client.NetworkRemoveOptions{}); err != nil {
+		if _, err := cli.NetworkRemove(ctx, n.ID, client.NetworkRemoveOptions{}); cerrdefs.IsNotFound(err) {
+			continue
+		} else if err != nil {
 			errs = append(errs, fmt.Errorf("failed to remove network %s: %w", n.Name, err))
 			continue
 		}
@@ -203,36 +207,35 @@ func NewDockerNetworkRemoveExecutor(name string) common.Executor {
 			return err
 		}
 		defer cli.Close()
+		return removeNetwork(ctx, cli, name)
+	}
+}
 
-		// Make sure that all network of the specified name are removed
-		// cli.NetworkRemove refuses to remove a network if there are duplicates
-		networks, err := cli.NetworkList(ctx, client.NetworkListOptions{})
-		if err != nil {
+func removeNetwork(ctx context.Context, cli client.APIClient, name string) error {
+	networks, err := cli.NetworkList(ctx, client.NetworkListOptions{}) // NetworkRemove by name refuses duplicates, so remove each by ID
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, n := range networks.Items {
+		if n.Name != name {
+			continue
+		}
+		result, err := cli.NetworkInspect(ctx, n.ID, client.NetworkInspectOptions{})
+		if cerrdefs.IsNotFound(err) {
+			continue
+		} else if err != nil {
 			return err
 		}
-		// For Gitea, reduce log noise
-		// common.Logger(ctx).Debugf("%v", networks)
-		var errs []error
-		for _, n := range networks.Items {
-			if n.Name == name {
-				result, err := cli.NetworkInspect(ctx, n.ID, client.NetworkInspectOptions{})
-				if err != nil {
-					return err
-				}
-
-				// it holds a subnet out of the daemon's pool until something reclaims it
-				if len(result.Network.Containers) != 0 {
-					common.Logger(ctx).Warnf("Refusing to remove network %s because it still has active endpoints, the idle cleanup reclaims it once they are gone", name)
-					continue
-				}
-				if _, err = cli.NetworkRemove(ctx, n.ID, client.NetworkRemoveOptions{}); err != nil {
-					errs = append(errs, fmt.Errorf("failed to remove network %s: %w", name, err))
-				}
-			}
+		if len(result.Network.Containers) != 0 {
+			common.Logger(ctx).Warnf("Refusing to remove network %s because it still has active endpoints, the orphan cleanup reclaims it once they are gone", name)
+			continue
 		}
-
-		return errors.Join(errs...)
+		if _, err = cli.NetworkRemove(ctx, n.ID, client.NetworkRemoveOptions{}); err != nil && !cerrdefs.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("failed to remove network %s: %w", name, err))
+		}
 	}
+	return errors.Join(errs...)
 }
 
 // IsolatedCacheContainer returns the container holding addr, when jobs on jobNetwork cannot reach it there.

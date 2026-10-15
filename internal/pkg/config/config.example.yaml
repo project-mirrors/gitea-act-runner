@@ -61,9 +61,9 @@ runner:
   #workdir_cleanup_age: 24h
   # Cadence for the idle cleanup pass. Besides the directories above, on runners that use
   # docker it removes the per-job networks and volumes of jobs this runner did not live to
-  # tear down, which would otherwise hold a subnet of the daemon address pool and the job's
-  # workspace contents until the host is rebuilt. On runners with kubernetes labels it
-  # removes such jobs' pods and Secrets.
+  # tear down once unused and 10 minutes old, which would otherwise hold a subnet of the
+  # daemon address pool and the job's workspace contents until the host is rebuilt. On
+  # runners with kubernetes labels it removes such jobs' pods and Secrets.
   #idle_cleanup_interval: 10m
   # The base interval for periodic log flush to the Gitea instance.
   # Logs may be sent earlier if the buffer reaches log_report_batch_size

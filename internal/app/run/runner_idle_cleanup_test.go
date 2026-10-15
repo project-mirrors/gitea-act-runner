@@ -317,7 +317,9 @@ func TestRunnerOnIdleRemovesOrphanNetworks(t *testing.T) {
 	var sweptVolumes []string
 	var sweptCutoff time.Time
 	origRemoveOrphanNetworks := removeOrphanNetworks
-	removeOrphanNetworks = func(_ context.Context, runnerUUID, detach string, createdBefore time.Time) error {
+	removeOrphanNetworks = func(ctx context.Context, runnerUUID, detach string, createdBefore time.Time) error {
+		_, hasDeadline := ctx.Deadline()
+		assert.True(t, hasDeadline)
 		swept = append(swept, runnerUUID)
 		detached = append(detached, detach)
 		sweptCutoff = createdBefore
@@ -327,7 +329,7 @@ func TestRunnerOnIdleRemovesOrphanNetworks(t *testing.T) {
 	origRemoveOrphanJobVolumes := removeOrphanJobVolumes
 	removeOrphanJobVolumes = func(_ context.Context, runnerUUID string, createdBefore time.Time) error {
 		sweptVolumes = append(sweptVolumes, runnerUUID)
-		assert.Equal(t, now.Add(-24*time.Hour), createdBefore)
+		assert.Equal(t, now.Add(-orphanDockerResourceAge), createdBefore)
 		return nil
 	}
 	t.Cleanup(func() { removeOrphanJobVolumes = origRemoveOrphanJobVolumes })
@@ -350,7 +352,7 @@ func TestRunnerOnIdleRemovesOrphanNetworks(t *testing.T) {
 	assert.Equal(t, []string{"runner-1"}, swept)
 	assert.Equal(t, swept, sweptVolumes)
 	// a network of a job starting during the pass is younger than this and so out of scope
-	assert.Equal(t, now.Add(-24*time.Hour), sweptCutoff)
+	assert.Equal(t, now.Add(-orphanDockerResourceAge), sweptCutoff)
 
 	// a host-only runner has no daemon to sweep
 	origDockerReachable := dockerReachable

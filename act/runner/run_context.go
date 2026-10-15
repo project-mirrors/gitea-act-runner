@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -719,29 +720,53 @@ func (rc *RunContext) cleanupJobResources(networkName string, createAndDeleteNet
 		logger := common.Logger(ctx)
 		rc.printServiceLogs(ctx)
 		errs := []error{rc.closeDockerProxy(ctx)}
+		var containers []common.Executor
 		if rc.JobContainer != nil {
-			errs = append(errs, rc.JobContainer.Remove()(ctx))
+			containers = append(containers, rc.JobContainer.Remove())
 		}
 		if len(rc.serviceContainers) > 0 {
 			logger.Infof("Cleaning up services for job %s", rc.JobName)
-			errs = append(errs, rc.stopServiceContainers()(ctx))
+			containers = append(containers, rc.stopServiceContainers())
 		}
+		errs = append(errs, runAll(ctx, containers))
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobCleanupTimeout)
+		defer cancel()
 		if !common.Dryrun(ctx) && !rc.Config.NoSweep && (preclean || rc.hadDockerProxy) {
-			errs = append(errs, container.RemoveDockerJobResources(ctx, rc.jobContainerName()))
+			errs = append(errs, container.RemoveDockerJobResources(ctx, rc.jobContainerName())) // after the containers, whose endpoints would block removing the job networks
 		}
+		var rest []common.Executor
 		if preclean || rc.deferVolumeCleanup == nil {
-			errs = append(errs, rc.cleanupJobVolumes(ctx))
+			rest = append(rest, rc.cleanupJobVolumes)
 		} else {
 			rc.deferVolumeCleanup(rc.cleanupJobVolumes)
 		}
 		if createAndDeleteNetwork {
 			logger.Infof("Cleaning up network for job %s, and network name is: %s", rc.JobName, networkName)
-			errs = append(errs, container.NewDockerNetworkDisconnectExecutor(networkName, rc.Config.CacheContainer).
-				IfBool(rc.Config.CacheContainer != "")(ctx))
-			errs = append(errs, container.NewDockerNetworkRemoveExecutor(networkName)(ctx))
+			rest = append(rest, func(ctx context.Context) error {
+				return errors.Join(
+					container.NewDockerNetworkDisconnectExecutor(networkName, rc.Config.CacheContainer).IfBool(rc.Config.CacheContainer != "")(ctx),
+					container.NewDockerNetworkRemoveExecutor(networkName)(ctx))
+			})
 		}
-		return errors.Join(errs...)
+		return errors.Join(append(errs, runAll(ctx, rest))...)
 	}
+}
+
+func runAll(ctx context.Context, executors []common.Executor) error {
+	errs := make([]error, len(executors))
+	var wg sync.WaitGroup
+	for i, executor := range executors {
+		wg.Go(func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					errs[i] = fmt.Errorf("panic: %v\n%s", recovered, debug.Stack())
+				}
+			}()
+			errs[i] = executor(ctx)
+		})
+	}
+	wg.Wait()
+	return errors.Join(errs...)
 }
 
 func (rc *RunContext) createJobVolumes(ctx context.Context, mounts map[string]string) error {

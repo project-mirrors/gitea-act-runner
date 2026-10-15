@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -775,10 +776,10 @@ func TestRemoveDockerActionImagesByTag(t *testing.T) {
 	assert.Equal(t, []string{"act-action-dockeraction:latest-job"}, removed)
 }
 
-func TestCleanupJobResourcesContinuesAfterFailure(t *testing.T) {
+func TestCleanupJobResources(t *testing.T) {
 	t.Setenv("TMPDIR", "/tmp")
 	proxyDir := t.TempDir()
-	for _, name := range []string{"synchronous", "proxy", "closed proxy", "kept proxy", "deferred", "preclean deferred", "canceled"} {
+	for _, name := range []string{"synchronous", "proxy", "closed proxy", "kept proxy", "deferred", "preclean deferred", "canceled proxy"} {
 		t.Run(name, func(t *testing.T) {
 			proxy, preclean, deferred := strings.HasSuffix(name, "proxy"), strings.HasPrefix(name, "preclean"), strings.HasSuffix(name, "deferred")
 			removesLabelled := (proxy || preclean) && name != "kept proxy"
@@ -787,8 +788,20 @@ func TestCleanupJobResourcesContinuesAfterFailure(t *testing.T) {
 			}
 			jobError, removeError, closeError := errors.New("remove job"), errors.New("remove service"), errors.New("close service")
 			job, service := &containerMock{}, &containerMock{}
-			job.On("Remove").Return(func(context.Context) error { return jobError }).Once()
-			service.On("Remove").Return(func(context.Context) error { return removeError }).Once()
+			removeAlongside := func(started, other chan struct{}, failure error) func(context.Context) error {
+				return func(context.Context) error {
+					close(started)
+					select {
+					case <-other:
+					case <-time.After(10 * time.Second):
+						t.Error("the containers are removed one after the other instead of alongside each other")
+					}
+					return failure
+				}
+			}
+			jobRemoving, serviceRemoving := make(chan struct{}), make(chan struct{})
+			job.On("Remove").Return(removeAlongside(jobRemoving, serviceRemoving, jobError)).Once()
+			service.On("Remove").Return(removeAlongside(serviceRemoving, jobRemoving, removeError)).Once()
 			service.On("Close").Return(func(context.Context) error { return closeError }).Once()
 			rc := &RunContext{
 				Config:            &Config{CacheContainer: "cache-container", NoSweep: name == "kept proxy"},
@@ -825,7 +838,7 @@ func TestCleanupJobResourcesContinuesAfterFailure(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			if name == "canceled" {
+			if name == "canceled proxy" {
 				cancel()
 			}
 			err := rc.cleanupJobResources("job-network", true, preclean)(ctx)
@@ -839,14 +852,10 @@ func TestCleanupJobResourcesContinuesAfterFailure(t *testing.T) {
 			for _, failure := range []error{jobError, removeError, closeError} {
 				require.ErrorIs(t, err, failure)
 			}
-			if name == "canceled" {
-				require.ErrorIs(t, err, context.Canceled)
-			} else {
-				for _, operation := range []string{"DELETE /volumes/" + rc.jobContainerName(), "DELETE /volumes/" + rc.jobContainerName() + "-env", "POST /networks/job-network/disconnect", "GET /networks"} {
-					require.ErrorContains(t, err, operation)
-				}
-				assert.Equal(t, 2, volumeRemovals)
+			for _, operation := range []string{"DELETE /volumes/" + rc.jobContainerName(), "DELETE /volumes/" + rc.jobContainerName() + "-env", "POST /networks/job-network/disconnect", "GET /networks"} {
+				require.ErrorContains(t, err, operation)
 			}
+			assert.Equal(t, 2, volumeRemovals)
 			assert.Equal(t, removesLabelled, strings.Contains(err.Error(), "labelled GET /containers/json"))
 			if removesLabelled {
 				require.ErrorContains(t, err, "labelled GET /networks")
@@ -1360,8 +1369,11 @@ func TestRunContext_cleanupFailedStart(t *testing.T) {
 	} {
 		t.Run(testcase.name, func(t *testing.T) {
 			var operations []string
+			var operationsMu sync.Mutex
 			record := func(operation string, failure error) func(context.Context) error {
 				return func(context.Context) error {
+					operationsMu.Lock()
+					defer operationsMu.Unlock()
 					operations = append(operations, operation)
 					return failure
 				}
@@ -1403,7 +1415,7 @@ func TestRunContext_cleanupFailedStart(t *testing.T) {
 			ctx := common.WithLogger(common.WithDryrun(t.Context(), true), logger)
 			rc.ExprEval = rc.NewExpressionEvaluator(ctx)
 			err = rc.startContainer().Then(rc.stopContainer()).Finally(rc.closeContainer())(ctx)
-			want := "job.Remove service.Remove service.Close service.Pull job.Pull"
+			want := "job.Remove service.Close service.Remove service.Pull job.Pull"
 			switch {
 			case testcase.pullError != nil:
 				require.ErrorIs(t, err, testcase.pullError)
@@ -1418,7 +1430,9 @@ func TestRunContext_cleanupFailedStart(t *testing.T) {
 					require.NoError(t, err)
 				}
 			}
-			assert.Equal(t, strings.Fields(want+" job.Remove service.Remove service.Close job.Close"), operations)
+			slices.Sort(operations[:3])
+			slices.Sort(operations[len(operations)-4 : len(operations)-1])
+			assert.Equal(t, strings.Fields(want+" job.Remove service.Close service.Remove job.Close"), operations)
 			assert.Empty(t, rc.Masks)
 			assert.Equal(t, testcase.pullError == nil && testcase.health != container.HealthUnhealthy, slices.ContainsFunc(hook.AllRecords(), func(entry logging.Record) bool {
 				return strings.HasPrefix(entry.Message, "::group::Print service container logs")
