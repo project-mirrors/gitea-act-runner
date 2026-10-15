@@ -80,7 +80,7 @@ func reportStepError(ctx context.Context, rc *RunContext, err error) {
 // executor can fetch all of them up front.
 type actionPreparer interface {
 	prepareActionExecutor() common.Executor
-	actionDownloadInfo() (reference, sha string, ok bool)
+	actionDownloadInfo() (reference, sha string)
 }
 
 // printPrepareActions downloads every action the job uses before its first step runs and reports
@@ -101,15 +101,11 @@ func printPrepareActions(rc *RunContext, preparers []actionPreparer) common.Exec
 				reportStepError(ctx, rc, err)
 				return setupError{err}
 			}
-			reference, sha, ok := preparer.actionDownloadInfo()
-			if !ok {
+			reference, sha := preparer.actionDownloadInfo()
+			if sha == "" {
 				continue
 			}
-			if sha == "" {
-				rawLogger.Infof("Download action repository '%s'", reference)
-			} else {
-				rawLogger.Infof("Download action repository '%s' (SHA:%s)", reference, sha)
-			}
+			rawLogger.Infof("Download action repository '%s' (SHA:%s)", reference, sha)
 		}
 		return nil
 	}

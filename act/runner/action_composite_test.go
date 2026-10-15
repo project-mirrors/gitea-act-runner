@@ -4,9 +4,9 @@
 package runner
 
 import (
+	"context"
 	"testing"
 
-	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/git"
 
 	"gitea.dev/actionslib/pkg/model"
@@ -50,7 +50,9 @@ func TestCompositeActionParity(t *testing.T) {
 	})
 
 	t.Run("propagates pre failures", func(t *testing.T) {
-		setCloneExecutor(t, func(git.NewGitCloneExecutorInput) common.Executor { return common.NewErrorExecutor(assert.AnError) })
+		setFetch(t, func(_ctx context.Context, _input git.NewGitCloneExecutorInput) (string, string, error) {
+			return "", "", assert.AnError
+		})
 		rc := &RunContext{
 			Config:       &Config{GitHubInstance: "github.com", ActionCacheDir: t.TempDir()},
 			Run:          &model.Run{JobID: "job", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job": {}}}},

@@ -223,8 +223,6 @@ func TestActionScriptPaths(t *testing.T) {
 	assert.Nil(t, actionScriptPaths("/a", escaping))
 }
 
-// The bundle has to be patched whatever state the shared action directory is in, because a
-// concurrent job's prepare checks the action out again and resets it.
 func TestPatchActionsAtTheContainerCopy(t *testing.T) {
 	copiedBundle := func(t *testing.T, noPatch bool) string {
 		t.Helper()
@@ -234,12 +232,13 @@ func TestPatchActionsAtTheContainerCopy(t *testing.T) {
 			Step:         &model.Step{Uses: "owner/repo/sub@v1"},
 			remoteAction: &remoteAction{Org: "owner", Repo: "repo", Path: "sub", Ref: "v1"},
 			action:       &model.Action{Runs: model.ActionRuns{Using: "node20", Main: "index.js"}},
+			actionDir:    t.TempDir(),
 			RunContext: &RunContext{
 				Config:       &Config{ActionCacheDir: t.TempDir(), NoActionPatch: noPatch},
 				JobContainer: cm,
 			},
 		}
-		script := filepath.Join(sar.actionDir(), "sub", "index.js")
+		script := filepath.Join(sar.actionDir, "sub", "index.js")
 		require.NoError(t, os.MkdirAll(filepath.Dir(script), 0o755))
 		require.NoError(t, os.WriteFile(script, []byte(gateTSC), 0o600))
 
@@ -250,7 +249,7 @@ func TestPatchActionsAtTheContainerCopy(t *testing.T) {
 			copied = string(body)
 			return nil
 		})
-		require.NoError(t, maybeCopyToActionDir(t.Context(), sar, sar.actionDir(), "sub", "/var/run/act/actions/repo/sub"))
+		require.NoError(t, maybeCopyToActionDir(t.Context(), sar, sar.actionDir, "sub", "/var/run/act/actions/repo/sub"))
 		source, err := os.ReadFile(script)
 		require.NoError(t, err)
 		assert.Equal(t, gateTSC, string(source), "the shared copy is left as it was found")

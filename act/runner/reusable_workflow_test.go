@@ -185,8 +185,12 @@ func TestInstanceAuthAndTransportOnlyApplyToTheInstance(t *testing.T) {
 				InsecureSkipTLS:                   true,
 				ClientCertFile:                    "/cert",
 				ClientKeyFile:                     "/key",
+				InstanceTransport:                 &http.Transport{},
 			}
 			want := git.NewGitCloneExecutorInput{URL: tt.cloneURL, InsecureSkipTLS: tt.insecure}
+			if tt.insecure {
+				want.Transport = conf.InstanceTransport
+			}
 			if tt.token {
 				want.Token = "token"
 			}

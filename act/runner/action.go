@@ -91,7 +91,7 @@ func readActionImpl(ctx context.Context, step *model.Step, actionDir, actionPath
 					if b, err = trampoline.ReadFile("res/trampoline.js"); err != nil {
 						return nil, err
 					}
-					err2 := writeFile(filepath.Join(actionDir, actionPath, "trampoline.js"), b, 0o400)
+					err2 := writeFile(filepath.Join(actionDir, actionPath, "trampoline.js"), b, 0o644)
 					if err2 != nil {
 						return nil, err2
 					}
@@ -152,11 +152,11 @@ func maybeCopyToActionDir(ctx context.Context, step actionStep, actionDir, actio
 	defer unlock()
 
 	if !rc.Config.NoActionPatch {
-		// A concurrent job's prepare resets this directory, so patch under the copy's lock.
+		// Other jobs share the directory, so patch under the copy's lock.
 		defer patchActions(ctx, actionScriptPaths(filepath.Join(actionDir, actionPath), step.getActionModel()))()
 	}
 
-	return rc.JobContainer.CopyDir(containerActionDirCopy, actionDir+"/", rc.Config.UseGitIgnore, true)(ctx)
+	return rc.JobContainer.CopyDir(containerActionDirCopy, actionDir+"/", false, true)(ctx) // an exported commit has no .git to apply gitignore with
 }
 
 func runActionImpl(step actionStep, actionDir string, remoteAction *remoteAction) common.Executor {
@@ -179,7 +179,7 @@ func runActionImpl(step actionStep, actionDir string, remoteAction *remoteAction
 		}
 
 		actionLocation := path.Join(actionDir, actionPath)
-		actionName, containerActionDir := getContainerActionPaths(stepModel, actionLocation, rc)
+		actionName, containerActionDir := getContainerActionPaths(step)
 
 		logger.Debugf("type=%v actionDir=%s actionPath=%s workdir=%s actionCacheDir=%s actionName=%s containerActionDir=%s", stepModel.Type(), actionDir, actionPath, rc.Config.Workdir, rc.ActionCacheDir(), actionName, containerActionDir)
 
@@ -509,25 +509,14 @@ func populateEnvsFromInput(ctx context.Context, env *map[string]string, action *
 	return nil
 }
 
-func getContainerActionPaths(step *model.Step, actionDir string, rc *RunContext) (string, string) {
-	actionName := ""
-	containerActionDir := "."
-	if step.Type() != model.StepTypeUsesActionRemote {
-		actionName = getOsSafeRelativePath(actionDir, rc.Config.Workdir)
-		containerActionDir = rc.JobContainer.ToContainerPath(rc.Config.Workdir) + "/" + actionName
-		actionName = "./" + actionName
-	} else if step.Type() == model.StepTypeUsesActionRemote {
-		actionName = getOsSafeRelativePath(actionDir, rc.ActionCacheDir())
-		containerActionDir = rc.JobContainer.GetActPath() + "/actions/" + actionName
+func getContainerActionPaths(step actionStep) (string, string) {
+	rc := step.getRunContext()
+	if sar, ok := step.(*stepActionRemote); ok { // a copy per action, as its repository's directory is shared
+		actionName := path.Join(sar.containerKey(), sar.remoteAction.Path)
+		return actionName, rc.JobContainer.GetActPath() + "/actions/" + actionName
 	}
-
-	if actionName == "" {
-		actionName = filepath.Base(actionDir)
-		if runtime.GOOS == "windows" {
-			actionName = strings.ReplaceAll(actionName, "\\", "/")
-		}
-	}
-	return actionName, containerActionDir
+	actionName := getOsSafeRelativePath(filepath.Join(rc.Config.Workdir, step.getStepModel().Uses), rc.Config.Workdir)
+	return "./" + actionName, rc.JobContainer.ToContainerPath(rc.Config.Workdir) + "/" + actionName
 }
 
 func getOsSafeRelativePath(s, prefix string) string {
@@ -573,13 +562,13 @@ func actionStagePaths(step actionStep) (actionDir, actionPath, actionName, conta
 	stepModel := step.getStepModel()
 
 	if sar, ok := step.(*stepActionRemote); ok {
-		actionDir = sar.actionDir()
+		actionDir = sar.actionDir
 		actionPath = sar.remoteAction.Path
 	} else {
 		actionDir = filepath.Join(rc.Config.Workdir, stepModel.Uses)
 	}
 
-	actionName, containerActionDir = getContainerActionPaths(stepModel, path.Join(actionDir, actionPath), rc)
+	actionName, containerActionDir = getContainerActionPaths(step)
 	return actionDir, actionPath, actionName, containerActionDir
 }
 

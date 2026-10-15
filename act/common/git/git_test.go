@@ -21,7 +21,6 @@ import (
 	"testing/synctest"
 	"time"
 
-	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/common/logging/logtest"
 	"gitea.com/gitea/runner/internal/pkg/lock"
@@ -424,45 +423,6 @@ func TestGitCloneExecutorOfflineMode(t *testing.T) {
 		})(t.Context())
 		require.Error(t, err)
 	})
-}
-
-func TestGitCloneExecutorQuietDemotesCloneLine(t *testing.T) {
-	t.Parallel()
-	remoteDir := t.TempDir()
-	require.NoError(t, gitCmd("init", "--bare", "--initial-branch=main", remoteDir))
-	workDir := t.TempDir()
-	require.NoError(t, gitCmd("clone", remoteDir, workDir))
-	require.NoError(t, gitCmd("-C", workDir, "checkout", "-b", "main"))
-	require.NoError(t, gitCmd("-C", workDir, "commit", "--allow-empty", "-m", "initial"))
-	require.NoError(t, gitCmd("-C", workDir, "push", "-u", "origin", "main"))
-
-	// Quiet callers report the download themselves, so the clone line must not reach the job log.
-	for name, quiet := range map[string]bool{"quiet": true, "not quiet": false} {
-		t.Run(name, func(t *testing.T) {
-			hook := logtest.New()
-			logger := logging.New(logging.NewLevelHandler(hook, logging.LevelInfo))
-			ctx := common.WithLogger(t.Context(), logger.With("job", "j1"))
-
-			require.NoError(t, NewGitCloneExecutor(NewGitCloneExecutorInput{
-				URL:   remoteDir,
-				Ref:   "main",
-				Dir:   t.TempDir(),
-				Quiet: quiet,
-			})(ctx))
-
-			var cloneLines int
-			for _, entry := range hook.AllRecords() {
-				if strings.HasPrefix(entry.Message, "git clone ") {
-					cloneLines++
-				}
-			}
-			if quiet {
-				assert.Zero(t, cloneLines)
-			} else {
-				assert.Equal(t, 1, cloneLines)
-			}
-		})
-	}
 }
 
 func TestGitCloneExecutorShallow(t *testing.T) {

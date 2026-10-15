@@ -47,7 +47,7 @@ func (sal *stepActionLocal) main() common.Executor {
 		defer rawLogger.Infof("::endgroup::")
 
 		actionDir := filepath.Join(sal.getRunContext().Config.Workdir, sal.Step.Uses)
-		_, containerActionPath := getContainerActionPaths(sal.Step, path.Join(actionDir, ""), sal.RunContext)
+		_, containerActionPath := getContainerActionPaths(sal)
 
 		localReader := func(filename string) (io.Reader, io.Closer, error) {
 			spath := path.Join(containerActionPath, filename)
@@ -127,8 +127,7 @@ func (sal *stepActionLocal) getActionModel() *model.Action {
 
 func (sal *stepActionLocal) getCompositeRunContext(ctx context.Context) (*RunContext, error) {
 	if sal.compositeRunContext == nil {
-		actionDir := filepath.Join(sal.RunContext.Config.Workdir, sal.Step.Uses)
-		_, containerActionDir := getContainerActionPaths(sal.getStepModel(), actionDir, sal.RunContext)
+		_, containerActionDir := getContainerActionPaths(sal)
 
 		compositeRunContext, err := newCompositeRunContext(ctx, sal.RunContext, sal, containerActionDir)
 		if err != nil {

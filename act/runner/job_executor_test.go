@@ -118,7 +118,6 @@ func (sfm *stepFactoryMock) newStep(model *model.Step, rc *RunContext) (step, er
 type actionPreparerMock struct {
 	reference string
 	sha       string
-	ok        bool
 	err       error
 	prepared  int
 }
@@ -130,8 +129,8 @@ func (apm *actionPreparerMock) prepareActionExecutor() common.Executor {
 	}
 }
 
-func (apm *actionPreparerMock) actionDownloadInfo() (string, string, bool) {
-	return apm.reference, apm.sha, apm.ok
+func (apm *actionPreparerMock) actionDownloadInfo() (string, string) {
+	return apm.reference, apm.sha
 }
 
 func TestPrintPrepareActionsGolden(t *testing.T) {
@@ -140,18 +139,15 @@ func TestPrintPrepareActionsGolden(t *testing.T) {
 	ctx := common.WithLogger(t.Context(), logger.With("job", "j1"))
 
 	preparers := []actionPreparer{
-		&actionPreparerMock{reference: "actions/checkout@v7", sha: "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0", ok: true},
-		// A resolved commit is best effort; the ref alone is reported when it is unknown.
-		&actionPreparerMock{reference: "actions/setup-go@v6", ok: true},
+		&actionPreparerMock{reference: "actions/checkout@v7", sha: "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"},
 		// A step that downloads nothing, such as the checkout of the workflow's own repository.
-		&actionPreparerMock{ok: false},
+		&actionPreparerMock{},
 	}
 	require.NoError(t, printPrepareActions(&RunContext{}, preparers)(ctx))
 
 	want := strings.Join([]string{
 		"[j1]   | Prepare all required actions",
 		"[j1]   | Download action repository 'actions/checkout@v7' (SHA:9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)",
-		"[j1]   | Download action repository 'actions/setup-go@v6'",
 		"",
 	}, "\n")
 	assert.Equal(t, want, buf.String())
@@ -173,7 +169,7 @@ func TestPrintPrepareActionsFailsJobOnDownloadError(t *testing.T) {
 
 	downloadErr := errors.New("failed to fetch \"actions/checkout\"")
 	rc := &RunContext{}
-	remaining := &actionPreparerMock{reference: "actions/setup-go@v6", ok: true}
+	remaining := &actionPreparerMock{reference: "actions/setup-go@v6", sha: "sha"}
 
 	err := printPrepareActions(rc, []actionPreparer{
 		&actionPreparerMock{err: downloadErr},
@@ -267,7 +263,7 @@ func TestNewJobExecutorDownloadsAllActionsBeforeTheFirstStep(t *testing.T) {
 
 	for _, stepModel := range steps {
 		sm := &stepMock{}
-		apm := &actionPreparerMock{reference: "actions/checkout@v" + stepModel.ID, ok: true}
+		apm := &actionPreparerMock{reference: "actions/checkout@v" + stepModel.ID, sha: "sha" + stepModel.ID}
 		sfm.On("newStep", stepModel, rc).Return(&actionStepMock{stepMock: sm, actionPreparerMock: apm}, nil)
 
 		sm.On("pre").Return(func(ctx context.Context) error {
@@ -304,8 +300,8 @@ func TestNewJobExecutorDownloadsAllActionsBeforeTheFirstStep(t *testing.T) {
 	}
 	assert.Equal(t, []string{
 		"Prepare all required actions",
-		"Download action repository 'actions/checkout@v1'",
-		"Download action repository 'actions/checkout@v2'",
+		"Download action repository 'actions/checkout@v1' (SHA:sha1)",
+		"Download action repository 'actions/checkout@v2' (SHA:sha2)",
 		"Complete job name: test",
 		"Run Pre 1",
 		"Run Pre 2",

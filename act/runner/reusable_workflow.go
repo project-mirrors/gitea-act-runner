@@ -209,7 +209,9 @@ func (c Config) withInstanceAuth(input git.NewGitCloneExecutorInput, token strin
 		return input
 	}
 	input.ClientCertFile, input.ClientKeyFile = c.ClientCertFile, c.ClientKeyFile
-	input.InsecureSkipTLS = c.InsecureSkipTLS && onInstanceHost(u.Host, c.GitHubInstance)
+	if onInstanceHost(u.Host, c.GitHubInstance) {
+		input.InsecureSkipTLS, input.Transport = c.InsecureSkipTLS, c.InstanceTransport
+	}
 	if u.User == nil {
 		input.Token = token
 	}

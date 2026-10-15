@@ -128,7 +128,7 @@ runs:
 
 			writeFile := func(filename string, data []byte, perm fs.FileMode) error {
 				assert.Equal(t, "actionDir/actionPath/trampoline.js", filename)
-				assert.Equal(t, fs.FileMode(0o400), perm)
+				assert.Equal(t, fs.FileMode(0o644), perm)
 				return nil
 			}
 
@@ -178,7 +178,8 @@ func TestActionRunner(t *testing.T) {
 						Using: "node16",
 					},
 				},
-				env: map[string]string{},
+				env:          map[string]string{},
+				remoteAction: mustNewRemoteAction(t, "org/repo/path@ref"),
 			},
 			expectedEnv: map[string]string{"INPUT_KEY": "default value"},
 		},
@@ -217,7 +218,8 @@ func TestActionRunner(t *testing.T) {
 						Using: "node16",
 					},
 				},
-				env: map[string]string{},
+				env:          map[string]string{},
+				remoteAction: mustNewRemoteAction(t, "org/repo/path@ref"),
 			},
 			expectedEnv: map[string]string{"STATE_name": "state value"},
 		},
@@ -228,7 +230,8 @@ func TestActionRunner(t *testing.T) {
 			ctx := t.Context()
 
 			cm := &containerMock{}
-			cm.On("CopyDir", "/var/run/act/actions/dir/", "dir/", false, true).Return(func(ctx context.Context) error { return nil })
+			containerActionDir := "/var/run/act/actions/" + model.UsesHash("/org/repo/path@ref") + "/"
+			cm.On("CopyDir", containerActionDir, "dir/", false, true).Return(func(ctx context.Context) error { return nil })
 
 			envMatcher := mock.MatchedBy(func(env map[string]string) bool {
 				for k, v := range tt.expectedEnv {
@@ -239,7 +242,7 @@ func TestActionRunner(t *testing.T) {
 				return true
 			})
 
-			cm.On("Exec", []string{"node", "--preserve-symlinks-main", "/var/run/act/actions/dir/path"}, envMatcher, "", "").Return(func(ctx context.Context) error { return nil })
+			cm.On("Exec", []string{"node", "--preserve-symlinks-main", containerActionDir + "path"}, envMatcher, "", "").Return(func(ctx context.Context) error { return nil })
 
 			tt.step.getRunContext().JobContainer = cm
 

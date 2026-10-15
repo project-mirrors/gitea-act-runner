@@ -6,7 +6,7 @@
 
 On the runner:
 
-- `git` 2.34.1 or newer on `PATH`, to download actions and reusable workflows.
+- `git` 2.34.1 or newer on `PATH`, to clone reusable workflows, and actions whose host serves no archive of them.
 - `docker` or `podman` with `podman.socket` enabled, for docker mode, Docker actions and `docker://` steps. To install Docker CE, follow the official [install instructions](https://docs.docker.com/engine/install/).
 
 Where steps run, in the job image or on the runner in host mode:

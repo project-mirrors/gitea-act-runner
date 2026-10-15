@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -178,13 +179,10 @@ type NewGitCloneExecutorInput struct {
 	// 0 for full clone.
 	Depth int
 
-	// Quiet drops the informational clone line to debug level, for callers that log their own
-	// download summary (the setup section's action report).
-	Quiet bool
-
 	// For Gitea
 	InsecureSkipTLS               bool
-	ClientCertFile, ClientKeyFile string // PEM, absolute as git runs in other directories
+	ClientCertFile, ClientKeyFile string            // PEM, absolute as git runs in other directories
+	Transport                     http.RoundTripper // for FetchAction's archive downloads, nil for http.DefaultTransport
 }
 
 // CloneIfRequired reports whether an existing local clone was reused.
@@ -221,11 +219,7 @@ func CloneIfRequired(ctx context.Context, input NewGitCloneExecutorInput, logger
 func NewGitCloneExecutor(input NewGitCloneExecutorInput) common.Executor {
 	return func(ctx context.Context) error {
 		logger := common.Logger(ctx)
-		if input.Quiet {
-			logger.Debugf("git clone '%s' # ref=%s", input.URL, input.Ref)
-		} else {
-			logger.Infof("git clone '%s' # ref=%s", input.URL, input.Ref)
-		}
+		logger.Infof("git clone '%s' # ref=%s", input.URL, input.Ref)
 		logger.Debugf("  cloning %s to %s", input.URL, input.Dir)
 		unlock, err := AcquireCloneLock(ctx, input.Dir)
 		if err != nil {
@@ -233,22 +227,8 @@ func NewGitCloneExecutor(input NewGitCloneExecutorInput) common.Executor {
 		}
 		defer unlock()
 
-		reused, err := CloneIfRequired(ctx, input, logger)
+		resolved, reused, err := resolveClone(ctx, input)
 		if err != nil {
-			return err
-		}
-		resolved, err := resolveRef(ctx, input.Dir, input.Ref)
-		if errors.Is(err, ErrShortRef) || (err != nil && input.OfflineMode) {
-			return err
-		}
-		if !input.OfflineMode && (err != nil || (reused && !isFullHash(input.Ref, resolved))) {
-			if err := fetch(ctx, input); err != nil {
-				return err
-			}
-			resolved, err = resolveRef(ctx, input.Dir, input.Ref)
-		}
-		if err != nil {
-			logger.Errorf("Unable to resolve %s: %v", input.Ref, err)
 			return err
 		}
 		if _, err := runGit(ctx, input.Dir, nil, "checkout", "--force", "--detach", resolved); err != nil {
@@ -262,6 +242,28 @@ func NewGitCloneExecutor(input NewGitCloneExecutorInput) common.Executor {
 		logger.Debugf("Checked out %s", input.Ref)
 		return nil
 	}
+}
+
+func resolveClone(ctx context.Context, input NewGitCloneExecutorInput) (string, bool, error) { // the caller holds input.Dir's lock
+	logger := common.Logger(ctx)
+	reused, err := CloneIfRequired(ctx, input, logger)
+	if err != nil {
+		return "", false, err
+	}
+	resolved, err := resolveRef(ctx, input.Dir, input.Ref)
+	if errors.Is(err, ErrShortRef) || (err != nil && input.OfflineMode) {
+		return "", false, err
+	}
+	if !input.OfflineMode && (err != nil || (reused && !isFullHash(input.Ref, resolved))) {
+		if err := fetch(ctx, input); err != nil {
+			return "", false, err
+		}
+		resolved, err = resolveRef(ctx, input.Dir, input.Ref)
+	}
+	if err != nil {
+		logger.Errorf("Unable to resolve %s: %v", input.Ref, err)
+	}
+	return resolved, reused, err
 }
 
 func clone(ctx context.Context, input NewGitCloneExecutorInput) error {

@@ -30,13 +30,16 @@ type stepActionRemote struct {
 	action              *model.Action
 	env                 map[string]string
 	remoteAction        *remoteAction
-	resolvedSha         string
+	actionDir           string // the repository at the resolved commit, shared by the job's actions in it
+	resolvedSha         string // set on the step that made the job's download of the repository
 }
 
-var stepActionRemoteNewCloneExecutor = git.NewGitCloneExecutor
+type actionDownload struct {
+	dir string
+	err error
+}
 
-// selfRepoPrefix introduces a self-repository reference: the action lives in the repo holding the file that wrote the `uses:`.
-const selfRepoPrefix = "$/"
+var stepActionRemoteFetch = git.FetchAction
 
 func (sar *stepActionRemote) prepareActionExecutor() common.Executor {
 	return func(ctx context.Context) error {
@@ -64,61 +67,57 @@ func (sar *stepActionRemote) prepareActionExecutor() common.Executor {
 			common.Logger(ctx).Debugf("Skipping local actions/checkout because workdir was already copied")
 			return nil
 		}
-		actionDir := sar.actionDir()
-		defaultActionURL := sar.RunContext.Config.DefaultActionURL()
-		// For Gitea
-		// github.Token, unlike Config.GetToken, survives the composite config copy, which nils Config.Secrets.
-		gitClone := stepActionRemoteNewCloneExecutor(sar.RunContext.Config.withInstanceAuth(git.NewGitCloneExecutorInput{
-			URL:         sar.remoteAction.CloneURL(defaultActionURL),
-			Ref:         sar.remoteAction.Ref,
-			Dir:         actionDir,
-			OfflineMode: sar.RunContext.Config.ActionOfflineMode,
-			Depth:       sar.RunContext.Config.ActionCloneDepth,
-			// printPrepareActions reports the download with its resolved commit.
-			Quiet: true,
-		}, github.Token))
-		if err := gitClone(ctx); err != nil {
-			var refErr *git.Error
-			switch {
-			case errors.As(err, &refErr) && errors.Is(err, git.ErrShortRef):
-				return fmt.Errorf("unable to resolve action `%s`, the provided ref `%s` is the shortened version of a commit SHA, which is not supported. Please use the full commit SHA `%s` instead",
-					sar.Step.Uses, sar.remoteAction.Ref, refErr.Commit())
-			default:
-				return err
+		cloneURL := sar.remoteAction.CloneURL(sar.RunContext.Config.DefaultActionURL())
+		job := sar.RunContext.topLevelRunContext()
+		key := cloneURL + "@" + sar.remoteAction.Ref
+		download, ok := job.actionDownloads[key]
+		if !ok {
+			// For Gitea
+			// github.Token, unlike Config.GetToken, survives the composite config copy, which nils Config.Secrets.
+			download.dir, sar.resolvedSha, download.err = stepActionRemoteFetch(ctx, sar.RunContext.Config.withInstanceAuth(git.NewGitCloneExecutorInput{
+				URL:         cloneURL,
+				Ref:         sar.remoteAction.Ref,
+				Dir:         filepath.Join(sar.RunContext.ActionCacheDir(), model.UsesHash(key)),
+				OfflineMode: sar.RunContext.Config.ActionOfflineMode,
+				Depth:       sar.RunContext.Config.ActionCloneDepth,
+			}, github.Token))
+			if job.actionDownloads == nil {
+				job.actionDownloads = map[string]actionDownload{}
 			}
+			job.actionDownloads[key] = download
 		}
+		var refErr *git.Error
+		switch {
+		case errors.As(download.err, &refErr) && errors.Is(download.err, git.ErrShortRef):
+			return fmt.Errorf("unable to resolve action `%s`, the provided ref `%s` is the shortened version of a commit SHA, which is not supported. Please use the full commit SHA `%s` instead",
+				sar.Step.Uses, sar.remoteAction.Ref, refErr.Commit())
+		case download.err != nil:
+			return download.err
+		}
+		sar.actionDir = download.dir
 
-		unlock, err := git.AcquireCloneLock(ctx, actionDir)
+		unlock, err := git.AcquireCloneLock(ctx, sar.actionDir)
 		if err != nil {
 			return err
 		}
 		defer unlock()
 
-		// Best effort: the download report falls back to the ref alone when the commit is unknown.
-		if _, sha, err := git.FindGitRevision(ctx, actionDir); err != nil {
-			common.Logger(ctx).Debugf("unable to resolve the commit of %s: %v", sar.remoteAction.Reference(), err)
-		} else {
-			sar.resolvedSha = sha
-		}
-
 		remoteReader := func(filename string) (io.Reader, io.Closer, error) {
-			f, err := os.Open(filepath.Join(actionDir, sar.remoteAction.Path, filename))
+			f, err := os.Open(filepath.Join(sar.actionDir, sar.remoteAction.Path, filename))
 			return f, f, err
 		}
 
-		actionModel, err := sar.readAction(ctx, sar.Step, actionDir, sar.remoteAction.Path, remoteReader, os.WriteFile)
+		actionModel, err := sar.readAction(ctx, sar.Step, sar.actionDir, sar.remoteAction.Path, remoteReader, os.WriteFile)
 		sar.action = actionModel
 		return err
 	}
 }
 
-// actionDownloadInfo reports the action this step downloaded and the commit it resolved to. ok is
-// false when nothing was fetched, as for the local checkout of the workflow's own repository.
-func (sar *stepActionRemote) actionDownloadInfo() (reference, sha string, ok bool) {
-	if sar.remoteAction == nil || sar.action == nil {
-		return "", "", false
+func (sar *stepActionRemote) actionDownloadInfo() (reference, sha string) { // once per job, as actions/runner reports
+	if sar.resolvedSha == "" {
+		return "", ""
 	}
-	return sar.remoteAction.Reference(), sar.resolvedSha, true
+	return fmt.Sprintf("%s/%s@%s", sar.remoteAction.Org, sar.remoteAction.Repo, sar.remoteAction.Ref), sar.resolvedSha
 }
 
 func (sar *stepActionRemote) pre() common.Executor {
@@ -147,7 +146,7 @@ func (sar *stepActionRemote) main() common.Executor {
 				return sar.RunContext.JobContainer.CopyDir(copyToPath, sar.RunContext.Config.Workdir+string(filepath.Separator)+".", sar.RunContext.Config.UseGitIgnore, false)(ctx)
 			}
 
-			return sar.runAction(sar, sar.actionDir(), sar.remoteAction)(ctx)
+			return sar.runAction(sar, sar.actionDir, sar.remoteAction)(ctx)
 		}),
 	)
 }
@@ -156,13 +155,8 @@ func (sar *stepActionRemote) post() common.Executor {
 	return runStepExecutor(sar, stepStagePost, runPostStep(sar)).If(hasPostStep(sar)).If(shouldRunPostStep(sar))
 }
 
-func (sar *stepActionRemote) actionDir() string {
-	uses := sar.Step.Uses
-	if strings.HasPrefix(uses, selfRepoPrefix) {
-		// The same `$/x` names a different action per enclosing repo, so key the cache on what it resolved to.
-		uses = sar.remoteAction.URL + "/" + sar.remoteAction.Reference()
-	}
-	return fmt.Sprintf("%s/%s", sar.RunContext.ActionCacheDir(), model.UsesHash(uses))
+func (sar *stepActionRemote) containerKey() string {
+	return model.UsesHash(sar.remoteAction.URL + "/" + sar.remoteAction.Reference())
 }
 
 func (sar *stepActionRemote) getRunContext() *RunContext {
@@ -213,9 +207,7 @@ func (sar *stepActionRemote) getActionModel() *model.Action {
 
 func (sar *stepActionRemote) getCompositeRunContext(ctx context.Context) (*RunContext, error) {
 	if sar.compositeRunContext == nil {
-		actionDir := sar.actionDir()
-		actionLocation := path.Join(actionDir, sar.remoteAction.Path)
-		_, containerActionDir := getContainerActionPaths(sar.getStepModel(), actionLocation, sar.RunContext)
+		_, containerActionDir := getContainerActionPaths(sar)
 
 		compositeRunContext, err := newCompositeRunContext(ctx, sar.RunContext, sar, containerActionDir)
 		if err != nil {
