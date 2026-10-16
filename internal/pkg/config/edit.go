@@ -312,29 +312,9 @@ func allScalars(nodes []*yaml.Node) bool {
 	return true
 }
 
-// quoteLeadingNewlines keeps a scalar starting with a newline out of block style, whose indentation indicator the encoder drops.
-// TODO: remove once https://github.com/yaml/go-yaml/pull/396 is released.
-func quoteLeadingNewlines(node *yaml.Node) {
-	if node.Kind == yaml.ScalarNode && strings.HasPrefix(node.Value, "\n") {
-		node.Style = yaml.DoubleQuotedStyle
-	}
-	for _, child := range node.Content {
-		quoteLeadingNewlines(child)
-	}
-}
-
+// encodeYAML never wraps lines, go-yaml wraps more-indented lines of folded scalars until https://github.com/yaml/go-yaml/pull/441 is released.
 func encodeYAML(node *yaml.Node) ([]byte, error) {
-	quoteLeadingNewlines(node)
-	var buf bytes.Buffer
-	encoder := yaml.NewEncoder(&buf)
-	encoder.SetIndent(2)
-	if err := encoder.Encode(node); err != nil {
-		return nil, err
-	}
-	if err := encoder.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return yaml.Dump(node, yaml.WithV3Defaults(), yaml.WithIndent(2), yaml.WithLineWidth(-1))
 }
 
 // restoreLayout re-applies the spacing the encoder drops: the blank lines between

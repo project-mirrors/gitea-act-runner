@@ -280,6 +280,12 @@ func TestEditValuesPreservesFileText(t *testing.T) {
 			edit:    func(file string) error { return SetValue(file, "runner.capacity", "4") },
 			added:   "runner:\n  capacity: 4\n",
 		},
+		{
+			name:    "folded scalar with a long more-indented line",
+			content: []byte("runner:\n  envs:\n    FOLDED: >\n      begin\n        a more-indented line that is long enough for an encoder wrapping at 80 columns to break\n      end\n"),
+			edit:    func(file string) error { return SetValue(file, "runner.capacity", "4") },
+			added:   "  capacity: 4\n",
+		},
 	}
 
 	for _, tc := range tests {
