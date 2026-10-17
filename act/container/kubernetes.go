@@ -93,17 +93,29 @@ func (p *KubernetesPod) JobContainer(input *NewContainerInput) ExecutionsEnviron
 	return p.job
 }
 
-var invalidLabelChars = regexp.MustCompile(`[^a-z0-9-]+`)
+var (
+	invalidLabelChars = regexp.MustCompile(`[^a-z0-9-]+`)
+	dnsSubdomain      = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+)
 
-// KubernetesServiceName returns the container name and hostname of service id, made a DNS label as both must be.
-func KubernetesServiceName(id string) string {
+// kubernetesServiceName returns the container name of service id, made a DNS label as it must be.
+func kubernetesServiceName(id string) string {
 	name := strings.Trim(invalidLabelChars.ReplaceAllString(strings.ToLower(id), "-"), "-")
 	return strings.TrimRight(name[:min(63, len(name))], "-")
 }
 
-// ServiceContainer returns a container of the pod the job reaches at hostname KubernetesServiceName(id).
+// KubernetesServiceHostnames returns the hostnames of service id, its container name and, where hostAliases accept it as a DNS subdomain, id lowercased.
+func KubernetesServiceHostnames(id string) []string {
+	name, host := kubernetesServiceName(id), strings.ToLower(id)
+	if host != name && len(host) <= 253 && dnsSubdomain.MatchString(host) { // https://github.com/kubernetes/apimachinery/blob/v0.35.1/pkg/util/validation/validation.go#L198-L207
+		return []string{name, host}
+	}
+	return []string{name}
+}
+
+// ServiceContainer returns a container of the pod the job reaches at KubernetesServiceHostnames(id).
 func (p *KubernetesPod) ServiceContainer(id string, input *NewContainerInput) ExecutionsEnvironment {
-	service := &kubernetesContainer{pod: p, id: id, name: KubernetesServiceName(id), input: input}
+	service := &kubernetesContainer{pod: p, id: id, name: kubernetesServiceName(id), input: input}
 	p.services = append(p.services, service)
 	return service
 }
@@ -131,7 +143,7 @@ func (p *KubernetesPod) create(ctx context.Context) error {
 		return err
 	}
 	for _, service := range p.services {
-		if !strings.EqualFold(service.id, service.name) {
+		if !slices.ContainsFunc(KubernetesServiceHostnames(service.id), func(hostname string) bool { return strings.EqualFold(hostname, service.id) }) { // glibc and Go match /etc/hosts case-insensitively
 			common.Logger(ctx).Warnf("Service %s is reachable as %s or localhost, as a Kubernetes hostname cannot be %q", service.id, service.name, service.id)
 		}
 	}
@@ -165,7 +177,8 @@ func (p *KubernetesPod) manifest(secret string, secretData map[string]string, me
 		serviceTemplate = templateContainers[index]
 		templateSpec["containers"] = slices.Delete(slices.Clone(templateContainers), index, index+1)
 	}
-	var containers, hostnames, volumes []any
+	var containers, volumes []any
+	var hostnames []string
 	names := map[string]bool{}
 	for _, container := range templateContainers {
 		names[manifestField(container, "name")] = true
@@ -184,7 +197,7 @@ func (p *KubernetesPod) manifest(secret string, secretData map[string]string, me
 			continue
 		}
 		containers = append(containers, mergeManifest(serviceTemplate, spec, ""))
-		hostnames = append(hostnames, c.name)
+		hostnames = append(hostnames, KubernetesServiceHostnames(c.id)...)
 	}
 	for _, name := range []string{"workspace", "act"} {
 		if !slices.ContainsFunc(templateVolumes, func(volume any) bool { return manifestField(volume, "name") == name }) {

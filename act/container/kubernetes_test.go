@@ -129,6 +129,19 @@ func serveLocalExec(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func TestKubernetesServiceHostnames(t *testing.T) {
+	for id, hostnames := range map[string][]string{
+		"db":                             {"db"},
+		"My_DB":                          {"my-db"},
+		"devstoreaccount1.azurite.local": {"devstoreaccount1-azurite-local", "devstoreaccount1.azurite.local"},
+		"DB.Local":                       {"db-local", "db.local"},
+		strings.Repeat("a", 64):          {strings.Repeat("a", 63), strings.Repeat("a", 64)},
+		strings.Repeat("a", 254):         {strings.Repeat("a", 63)},
+	} {
+		assert.Equal(t, hostnames, KubernetesServiceHostnames(id), id)
+	}
+}
+
 func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX shell")

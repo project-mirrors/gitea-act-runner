@@ -501,9 +501,11 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	_ = job.RawServices.Decode(&services) // a whole-value expression names no service before evaluation
 	serviceNames := slices.Sorted(maps.Keys(services))
 	if strings.HasPrefix(platform, labels.SchemeKubernetes+"://") {
-		for index, name := range serviceNames {
-			serviceNames[index] = container.KubernetesServiceName(name)
+		var hostnames []string
+		for _, name := range serviceNames {
+			hostnames = append(hostnames, container.KubernetesServiceHostnames(name)...)
 		}
+		serviceNames = hostnames
 	}
 	proxyEnv := JobProxyEnv(envs, cacheURL, serviceNames)
 	maps.Copy(envs, proxyEnv)
