@@ -338,7 +338,7 @@ func (e *HostEnvironment) exec(ctx context.Context, command []string, cmdline st
 	} else {
 		defer k.Close()
 	}
-	err = cmd.Wait()
+	err = treeKill.Wait(ctx, cmd)
 	if err != nil {
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			return ExitCodeError(exitErr.ExitCode())

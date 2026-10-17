@@ -4,8 +4,11 @@
 package process
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync/atomic"
 	"time"
 )
@@ -63,4 +66,16 @@ func (t *TreeKill) Capture(p *os.Process) (*Killer, error) {
 	}
 	t.killer.Store(k)
 	return k, nil
+}
+
+// Wait is cmd.Wait, but like GitHub's runner a leftover holding a successful command's output does not fail it, and is killed only on Windows.
+func (t *TreeKill) Wait(ctx context.Context, cmd *exec.Cmd) error {
+	err := cmd.Wait()
+	if !errors.Is(err, exec.ErrWaitDelay) || ctx.Err() != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		_ = t.killer.Load().Kill()
+	}
+	return nil
 }
