@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,7 +27,6 @@ import (
 
 	"gitea.dev/actionslib/pkg/model"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
-	"github.com/avast/retry-go/v5"
 	"github.com/docker/go-connections/tlsconfig"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/attribute"
@@ -226,10 +226,10 @@ func (c *client) upload(ctx context.Context, data proto.Message) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	return retry.New(retry.Context(ctx), retry.Attempts(5), retry.LastErrorOnly(true), retry.DelayType(retryDelay)).Do(func() error {
+	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 		if err != nil {
-			return retry.Unrecoverable(err)
+			return err
 		}
 		req.Header = c.headers.Clone()
 		req.Header.Set("Content-Type", "application/x-protobuf")
@@ -237,33 +237,39 @@ func (c *client) upload(ctx context.Context, data proto.Message) error {
 			req.Header.Set("Content-Encoding", "gzip")
 		}
 		resp, err := c.httpClient.Do(req)
-		if err != nil {
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode < http.StatusMultipleChoices {
+				return nil
+			}
+			err = &statusError{resp.Status, resp.Header.Get("Retry-After")}
+			if !slices.Contains([]int{http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout}, resp.StatusCode) {
+				return err
+			}
+		}
+		if attempt == 5 {
 			return err
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		if resp.StatusCode < http.StatusMultipleChoices {
-			return nil
+		select {
+		case <-time.After(retryDelay(attempt, err)):
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-		err = &statusError{resp.Status, resp.Header.Get("Retry-After")}
-		if slices.Contains([]int{http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout}, resp.StatusCode) {
-			return err
-		}
-		return retry.Unrecoverable(err)
-	})
+	}
 }
 
 type statusError struct{ status, retryAfter string }
 
 func (e *statusError) Error() string { return "OTLP export failed: " + e.status }
 
-func retryDelay(attempt uint, err error, config retry.DelayContext) time.Duration {
+func retryDelay(attempt int, err error) time.Duration {
 	if status := (*statusError)(nil); errors.As(err, &status) {
 		if seconds, err := strconv.ParseUint(status.retryAfter, 10, 31); err == nil {
 			return time.Duration(seconds) * time.Second
 		}
 	}
-	return retry.CombineDelay(retry.BackOffDelay, retry.RandomDelay)(attempt, err, config)
+	return 100*time.Millisecond<<(attempt-1) + rand.N(100*time.Millisecond)
 }
 
 func StartJob(ctx context.Context, task *runnerv1.Task) (context.Context, func(runnerv1.Result)) {

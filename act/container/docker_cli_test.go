@@ -25,13 +25,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/moby/moby/api/types/container"
 	networktypes "github.com/moby/moby/api/types/network"
 	"github.com/spf13/pflag"
-	"gotest.tools/v3/assert"
-	is "gotest.tools/v3/assert/cmp"
-	"gotest.tools/v3/skip"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func mustParseMAC(s string) networktypes.HardwareAddr {
@@ -90,7 +88,7 @@ func setupRunFlags() (*pflag.FlagSet, *containerOptions) {
 func mustParse(t *testing.T, args string) (*container.Config, *container.HostConfig, *networktypes.NetworkingConfig) {
 	t.Helper()
 	config, hostConfig, nwConfig, err := parseRun(append(strings.Split(args, " "), "ubuntu", "bash"))
-	assert.NilError(t, err)
+	require.NoError(t, err)
 	return config, hostConfig, nwConfig
 }
 
@@ -156,12 +154,12 @@ func TestParseRunLinks(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, hostConfig, netConfig := mustParse(t, tc.input)
-			assert.Check(t, is.DeepEqual(hostConfig.Links, tc.expHostConfigLinks))
-			assert.Check(t, is.Len(netConfig.EndpointsConfig, len(tc.expNetConfigLinks)))
+			assert.Equal(t, tc.expHostConfigLinks, hostConfig.Links)
+			assert.Len(t, netConfig.EndpointsConfig, len(tc.expNetConfigLinks))
 			for netName, expLinks := range tc.expNetConfigLinks {
 				nc, ok := netConfig.EndpointsConfig[netName]
-				assert.Assert(t, ok)
-				assert.Check(t, is.DeepEqual(nc.Links, expLinks))
+				require.True(t, ok)
+				assert.Equal(t, expLinks, nc.Links)
 			}
 		})
 	}
@@ -169,15 +167,15 @@ func TestParseRunLinks(t *testing.T) {
 
 func TestParseRunWithoutUmask(t *testing.T) {
 	_, hostConfig, _, err := parseRun([]string{"ubuntu", "bash"})
-	assert.NilError(t, err)
-	assert.Assert(t, hostConfig.Umask == nil)
+	require.NoError(t, err)
+	require.Nil(t, hostConfig.Umask)
 }
 
 func TestParseRunUmask(t *testing.T) {
 	_, hostConfig, _, err := parseRun([]string{"--umask", "0022", "ubuntu", "bash"})
-	assert.NilError(t, err)
-	assert.Assert(t, hostConfig.Umask != nil)
-	assert.Equal(t, uint32(0o22), *hostConfig.Umask)
+	require.NoError(t, err)
+	require.NotNil(t, hostConfig.Umask)
+	require.Equal(t, uint32(0o22), *hostConfig.Umask)
 }
 
 func TestParseRunAttach(t *testing.T) {
@@ -225,9 +223,9 @@ func TestParseRunAttach(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
 			config, _, _ := mustParse(t, tc.input)
-			assert.Equal(t, config.AttachStdin, tc.expected.AttachStdin)
-			assert.Equal(t, config.AttachStdout, tc.expected.AttachStdout)
-			assert.Equal(t, config.AttachStderr, tc.expected.AttachStderr)
+			require.Equal(t, tc.expected.AttachStdin, config.AttachStdin)
+			require.Equal(t, tc.expected.AttachStdout, config.AttachStdout)
+			require.Equal(t, tc.expected.AttachStderr, config.AttachStderr)
 		})
 	}
 }
@@ -273,7 +271,7 @@ func TestParseRunWithInvalidArgs(t *testing.T) {
 	flags, _ := setupRunFlags()
 	for _, tc := range tests {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
-			assert.Error(t, flags.Parse(tc.args), tc.error)
+			require.EqualError(t, flags.Parse(tc.args), tc.error)
 		})
 	}
 }
@@ -396,23 +394,23 @@ func TestRunFlagsParseWithMemory(t *testing.T) {
 	flags, _ := setupRunFlags()
 	args := []string{"--memory=invalid", "img", "cmd"}
 	err := flags.Parse(args)
-	assert.ErrorContains(t, err, `invalid argument "invalid" for "-m, --memory" flag`)
+	require.ErrorContains(t, err, `invalid argument "invalid" for "-m, --memory" flag`)
 
 	_, hostconfig, _ := mustParse(t, "--memory=1G")
-	assert.Check(t, is.Equal(int64(1073741824), hostconfig.Memory))
+	assert.Equal(t, int64(1073741824), hostconfig.Memory)
 }
 
 func TestParseWithMemorySwap(t *testing.T) {
 	flags, _ := setupRunFlags()
 	args := []string{"--memory-swap=invalid", "img", "cmd"}
 	err := flags.Parse(args)
-	assert.ErrorContains(t, err, `invalid argument "invalid" for "--memory-swap" flag`)
+	require.ErrorContains(t, err, `invalid argument "invalid" for "--memory-swap" flag`)
 
 	_, hostconfig, _ := mustParse(t, "--memory-swap=1G")
-	assert.Check(t, is.Equal(int64(1073741824), hostconfig.MemorySwap))
+	assert.Equal(t, int64(1073741824), hostconfig.MemorySwap)
 
 	_, hostconfig, _ = mustParse(t, "--memory-swap=-1")
-	assert.Check(t, is.Equal(int64(-1), hostconfig.MemorySwap))
+	assert.Equal(t, int64(-1), hostconfig.MemorySwap)
 }
 
 func TestParseHostname(t *testing.T) {
@@ -474,7 +472,7 @@ func TestParseWithExpose(t *testing.T) {
 		for expose, expectedError := range tests {
 			t.Run(expose, func(t *testing.T) {
 				_, _, _, err := parseRun([]string{fmt.Sprintf("--expose=%v", expose), "img", "cmd"})
-				assert.Error(t, err, expectedError)
+				require.EqualError(t, err, expectedError)
 			})
 		}
 	})
@@ -489,10 +487,10 @@ func TestParseWithExpose(t *testing.T) {
 		for expose, exposedPorts := range tests {
 			t.Run(expose, func(t *testing.T) {
 				config, _, _, err := parseRun([]string{fmt.Sprintf("--expose=%v", expose), "img", "cmd"})
-				assert.NilError(t, err)
+				require.NoError(t, err)
 				for _, port := range exposedPorts {
 					_, ok := config.ExposedPorts[port]
-					assert.Check(t, ok, "missing port %q in exposed ports: %#+v", port, config.ExposedPorts[port])
+					assert.True(t, ok, "missing port %q in exposed ports: %#+v", port, config.ExposedPorts[port])
 				}
 			})
 		}
@@ -501,18 +499,20 @@ func TestParseWithExpose(t *testing.T) {
 	t.Run("merge with published", func(t *testing.T) {
 		// Merge with actual published port
 		config, _, _, err := parseRun([]string{"--publish=80", "--expose=80-81/tcp", "img", "cmd"})
-		assert.NilError(t, err)
-		assert.Check(t, is.Len(config.ExposedPorts, 2))
+		require.NoError(t, err)
+		assert.Len(t, config.ExposedPorts, 2)
 		ports := []networktypes.Port{networktypes.MustParsePort("80/tcp"), networktypes.MustParsePort("81/tcp")}
 		for _, port := range ports {
 			_, ok := config.ExposedPorts[port]
-			assert.Check(t, ok, "missing port %q in exposed ports: %#+v", port, config.ExposedPorts[port])
+			assert.True(t, ok, "missing port %q in exposed ports: %#+v", port, config.ExposedPorts[port])
 		}
 	})
 }
 
 func TestParseDevice(t *testing.T) {
-	skip.If(t, runtime.GOOS != "linux") // Windows and macOS validate server-side
+	if runtime.GOOS != "linux" {
+		t.Skip("Windows and macOS validate server-side")
+	}
 	testCases := []struct {
 		devices        []string
 		deviceMapping  *container.DeviceMapping
@@ -586,17 +586,17 @@ func TestParseDevice(t *testing.T) {
 
 			_, hostconfig, _, err := parseRun(args)
 
-			assert.NilError(t, err)
+			require.NoError(t, err)
 
 			if tc.deviceMapping != nil {
-				if assert.Check(t, is.Len(hostconfig.Devices, 1)) {
-					assert.Check(t, is.DeepEqual(*tc.deviceMapping, hostconfig.Devices[0]))
+				if assert.Len(t, hostconfig.Devices, 1) {
+					assert.Equal(t, *tc.deviceMapping, hostconfig.Devices[0])
 				}
 			} else {
-				assert.Check(t, is.Len(hostconfig.Devices, 0))
+				assert.Empty(t, hostconfig.Devices)
 			}
 
-			assert.Check(t, is.DeepEqual(tc.deviceRequests, hostconfig.DeviceRequests))
+			assert.Equal(t, tc.deviceRequests, hostconfig.DeviceRequests)
 		})
 	}
 }
@@ -665,11 +665,11 @@ func TestParseDeviceByServerOS(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := parseDevice(tc.device, tc.serverOS)
 			if tc.wantErr != "" {
-				assert.Error(t, err, tc.wantErr)
+				require.EqualError(t, err, tc.wantErr)
 				return
 			}
-			assert.NilError(t, err)
-			assert.Equal(t, got, tc.want)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -848,13 +848,13 @@ func TestParseNetworkConfig(t *testing.T) {
 			_, hConfig, nwConfig, err := parseRun(tc.flags)
 
 			if tc.expectedErr != "" {
-				assert.Error(t, err, tc.expectedErr)
+				require.EqualError(t, err, tc.expectedErr)
 				return
 			}
 
-			assert.NilError(t, err)
-			assert.DeepEqual(t, hConfig.NetworkMode, tc.expectedHostCfg.NetworkMode)
-			assert.DeepEqual(t, nwConfig.EndpointsConfig, tc.expected, cmpopts.EquateComparable(netip.Addr{}))
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedHostCfg.NetworkMode, hConfig.NetworkMode)
+			require.Equal(t, tc.expected, nwConfig.EndpointsConfig)
 		})
 	}
 }
@@ -863,24 +863,24 @@ func TestParseModes(t *testing.T) {
 	// pid ko
 	flags, copts := setupRunFlags()
 	args := []string{"--pid=container:", "img", "cmd"}
-	assert.NilError(t, flags.Parse(args))
+	require.NoError(t, flags.Parse(args))
 	_, err := parse(flags, copts, runtime.GOOS)
-	assert.ErrorContains(t, err, "--pid: invalid PID mode")
+	require.ErrorContains(t, err, "--pid: invalid PID mode")
 
 	// pid ok
 	_, hostconfig, _, err := parseRun([]string{"--pid=host", "img", "cmd"})
-	assert.NilError(t, err)
+	require.NoError(t, err)
 	if !hostconfig.PidMode.Valid() {
 		t.Fatalf("Expected a valid PidMode, got %v", hostconfig.PidMode)
 	}
 
 	// uts ko
 	_, _, _, err = parseRun([]string{"--uts=container:", "img", "cmd"}) //nolint:dogsled // verbatim copy from docker/cli tests
-	assert.ErrorContains(t, err, "--uts: invalid UTS mode")
+	require.ErrorContains(t, err, "--uts: invalid UTS mode")
 
 	// uts ok
 	_, hostconfig, _, err = parseRun([]string{"--uts=host", "img", "cmd"})
-	assert.NilError(t, err)
+	require.NoError(t, err)
 	if !hostconfig.UTSMode.Valid() {
 		t.Fatalf("Expected a valid UTSMode, got %v", hostconfig.UTSMode)
 	}
@@ -892,11 +892,11 @@ func TestRunFlagsParseShmSize(t *testing.T) {
 	args := []string{"--shm-size=a128m", "img", "cmd"}
 	expectedErr := `invalid argument "a128m" for "--shm-size" flag:`
 	err := flags.Parse(args)
-	assert.ErrorContains(t, err, expectedErr)
+	require.ErrorContains(t, err, expectedErr)
 
 	// shm-size ok
 	_, hostconfig, _, err := parseRun([]string{"--shm-size=128m", "img", "cmd"})
-	assert.NilError(t, err)
+	require.NoError(t, err)
 	if hostconfig.ShmSize != 134217728 {
 		t.Fatalf("Expected a valid ShmSize, got %d", hostconfig.ShmSize)
 	}
@@ -967,11 +967,11 @@ func TestParseRestartPolicy(t *testing.T) {
 		t.Run(tc.input, func(t *testing.T) {
 			_, hostConfig, _, err := parseRun([]string{"--restart=" + tc.input, "img", "cmd"})
 			if tc.expectedErr != "" {
-				assert.Check(t, is.Error(err, tc.expectedErr))
-				assert.Check(t, is.Nil(hostConfig))
+				assert.Nil(t, hostConfig)
+				assert.EqualError(t, err, tc.expectedErr)
 			} else {
-				assert.NilError(t, err)
-				assert.Check(t, is.DeepEqual(hostConfig.RestartPolicy, tc.expected))
+				require.NoError(t, err)
+				assert.Equal(t, tc.expected, hostConfig.RestartPolicy)
 			}
 		})
 	}
@@ -980,7 +980,7 @@ func TestParseRestartPolicy(t *testing.T) {
 func TestParseRestartPolicyAutoRemove(t *testing.T) {
 	_, _, _, err := parseRun([]string{"--rm", "--restart=always", "img", "cmd"}) //nolint:dogsled // verbatim copy from docker/cli tests
 	const expected = "conflicting options: cannot specify both --restart and --rm"
-	assert.Check(t, is.Error(err, expected))
+	assert.EqualError(t, err, expected)
 }
 
 func TestParseHealth(t *testing.T) {
@@ -1118,12 +1118,14 @@ func TestParseLabelfileVariables(t *testing.T) { //nolint:dupl // verbatim copy 
 
 func TestParseEntryPoint(t *testing.T) {
 	config, _, _, err := parseRun([]string{"--entrypoint=anything", "cmd", "img"})
-	assert.NilError(t, err)
-	assert.Check(t, is.DeepEqual(config.Entrypoint, []string{"anything"}))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anything"}, config.Entrypoint)
 }
 
 func TestValidateDevice(t *testing.T) {
-	skip.If(t, runtime.GOOS != "linux") // Windows and macOS validate server-side
+	if runtime.GOOS != "linux" {
+		t.Skip("Windows and macOS validate server-side")
+	}
 	valid := []string{
 		"/home",
 		"/home:/home",
@@ -1222,22 +1224,22 @@ func TestValidateDeviceByServerOS(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := validateDevice(tc.value, tc.serverOS)
 			if tc.wantError != "" {
-				assert.Error(t, err, tc.wantError)
+				require.EqualError(t, err, tc.wantError)
 				return
 			}
-			assert.NilError(t, err)
-			assert.Equal(t, got, tc.want)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
 
 func TestDeviceCgroupRulesAndInvalidParameter(t *testing.T) {
 	got, err := validateDeviceCgroupRule("c 1:3 rwm")
-	assert.NilError(t, err)
-	assert.Equal(t, got, "c 1:3 rwm")
+	require.NoError(t, err)
+	require.Equal(t, "c 1:3 rwm", got)
 
 	_, err = validateDeviceCgroupRule("invalid")
-	assert.Error(t, err, "invalid device cgroup format 'invalid'")
+	require.EqualError(t, err, "invalid device cgroup format 'invalid'")
 
 	if invalidParameter(nil) != nil {
 		t.Fatal("invalidParameter(nil) should be nil")
@@ -1245,9 +1247,9 @@ func TestDeviceCgroupRulesAndInvalidParameter(t *testing.T) {
 	cause := errors.New("bad input")
 	err = invalidParameter(cause)
 	var invalid interface{ InvalidParameter() }
-	assert.Assert(t, errors.As(err, &invalid))
-	assert.Assert(t, errors.Is(err, cause))
-	assert.Equal(t, invalidParameter(err), err) // already invalid, so not wrapped twice
+	require.ErrorAs(t, err, &invalid)
+	require.ErrorIs(t, err, cause)
+	require.Condition(t, func() bool { return invalidParameter(err) == err })
 }
 
 func TestParseSystemPaths(t *testing.T) {
@@ -1298,9 +1300,9 @@ func TestParseSystemPaths(t *testing.T) {
 
 	for _, tc := range tests {
 		securityOpts, maskedPaths, readonlyPaths := parseSystemPaths(tc.in)
-		assert.DeepEqual(t, securityOpts, tc.out)
-		assert.DeepEqual(t, maskedPaths, tc.masked)
-		assert.DeepEqual(t, readonlyPaths, tc.readonly)
+		require.Equal(t, tc.out, securityOpts)
+		require.Equal(t, tc.masked, maskedPaths)
+		require.Equal(t, tc.readonly, readonlyPaths)
 	}
 }
 
@@ -1322,9 +1324,9 @@ func TestConvertToStandardNotation(t *testing.T) {
 	for key, ports := range valid {
 		convertedPorts, err := convertToStandardNotation(ports)
 		if err != nil {
-			assert.NilError(t, err)
+			require.NoError(t, err)
 		}
-		assert.DeepEqual(t, strings.Split(key, " "), convertedPorts)
+		require.Equal(t, strings.Split(key, " "), convertedPorts)
 	}
 
 	for _, ports := range invalid {

@@ -33,7 +33,7 @@ depending on the prefix:
 
 ## Logging
 
-Log through `act/common/logging`; the linter rejects importing `log/slog` or logrus elsewhere.
+Log through `act/common/logging`; the linter rejects importing `log/slog` elsewhere.
 A job's logger comes from `common.Logger(ctx)`; code with no job uses the package functions
 (`logging.Infof`, `logging.With`). Both take printf-style messages, and `With("key", value)` adds
 fields.
@@ -43,11 +43,8 @@ fields.
 - The job logger's output can reach the job log workflow authors see, the process-wide logger's
   stays on the runner host, so keep operator-only detail (host paths, internal addresses) off the
   job logger.
-- Libraries that log through logrus's or slog's global logger are forwarded to the process-wide
-  one, so they follow its level and masking too.
-- That forwarding only works while logrus's global logger is left as `logging` configures it. A
-  dependency that calls `logrus.SetOutput` or `SetLevel` breaks it, so check
-  `logging.LogrusBridgeIntact()` when adding or upgrading one.
+- Libraries that log through slog's global logger are forwarded to the process-wide one, so they
+  follow its level and masking too. Avoid dependencies that log through logrus, nothing forwards it.
 - Tests read what was logged with `logtest.NewLogger()`, or `logtest.SetDefault(t)` for the
   package functions.
 

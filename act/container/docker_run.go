@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -27,11 +28,8 @@ import (
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/logging"
 
-	"dario.cat/mergo"
 	"github.com/bmatcuk/doublestar/v4"
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/cli/cli/compose/loader"
-	"github.com/docker/cli/cli/connhelper"
 	"github.com/docker/cli/opts"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
@@ -372,15 +370,13 @@ func GetDockerClient(ctx context.Context) (cli client.APIClient, err error) {
 	dockerHost := os.Getenv("DOCKER_HOST")
 
 	if strings.HasPrefix(dockerHost, "ssh://") {
-		var helper *connhelper.ConnectionHelper
-
-		helper, err = connhelper.GetConnectionHelper(dockerHost)
-		if err != nil {
+		var args []string
+		if args, err = sshArgs(dockerHost); err != nil {
 			return nil, err
 		}
 		cli, err = client.New(
-			client.WithHost(helper.Host),
-			client.WithDialContext(helper.Dialer),
+			client.WithHost("http://docker.example.com"), // the dialer below ignores the address
+			client.WithDialContext(func(context.Context, string, string) (net.Conn, error) { return dialCommand("ssh", args...) }),
 		)
 	} else {
 		cli, err = client.New(client.FromEnv)
@@ -622,10 +618,7 @@ func (cr *containerReference) mergeContainerConfigs(ctx context.Context, config 
 
 	logger.Debugf("Custom container.Config from options ==> %+v", containerConfig.Config)
 
-	err = mergo.Merge(config, containerConfig.Config, mergo.WithOverride, mergo.WithAppendSlice)
-	if err != nil {
-		return nil, nil, fmt.Errorf("cannot merge container.Config options: '%s': '%w'", options, err)
-	}
+	overlay(reflect.ValueOf(config).Elem(), reflect.ValueOf(containerConfig.Config).Elem(), true)
 	logger.Debugf("Merged container.Config ==> %+v", config)
 
 	logger.Debugf("Custom container.HostConfig from options ==> %+v", containerConfig.HostConfig)
@@ -635,10 +628,7 @@ func (cr *containerReference) mergeContainerConfigs(ctx context.Context, config 
 	binds := hostConfig.Binds
 	mounts := hostConfig.Mounts
 	networkMode := hostConfig.NetworkMode
-	err = mergo.Merge(hostConfig, containerConfig.HostConfig, mergo.WithOverride)
-	if err != nil {
-		return nil, nil, fmt.Errorf("cannot merge container.HostConfig options: '%s': '%w'", options, err)
-	}
+	overlay(reflect.ValueOf(hostConfig).Elem(), reflect.ValueOf(containerConfig.HostConfig).Elem(), false)
 	hostConfig.Binds = binds
 	hostConfig.Mounts = mounts
 	if cf.name != "" {
@@ -1117,7 +1107,7 @@ func (cr *containerReference) sanitizeConfig(ctx context.Context, config *contai
 		// sanitize binds
 		sanitizedBinds := make([]string, 0, len(hostConfig.Binds))
 		for _, bind := range hostConfig.Binds {
-			parsed, err := loader.ParseVolume(bind)
+			parsed, err := ParseVolume(bind)
 			if err != nil {
 				logger.Warnf("parse volume [%s] error: %v", bind, err)
 				continue
@@ -1127,8 +1117,8 @@ func (cr *containerReference) sanitizeConfig(ctx context.Context, config *contai
 				sanitizedBinds = append(sanitizedBinds, bind)
 				continue
 			}
-			if matcher.isValid(parsed.Source, mount.Type(parsed.Type), parsed.ReadOnly) {
-				if matcher.needsNoCopy(parsed.Source, mount.Type(parsed.Type)) && (parsed.Volume == nil || !parsed.Volume.NoCopy) {
+			if matcher.isValid(parsed.Source, parsed.Type, parsed.ReadOnly) {
+				if matcher.needsNoCopy(parsed.Source, parsed.Type) && !parsed.NoCopy {
 					bind += ",nocopy"
 				}
 				sanitizedBinds = append(sanitizedBinds, bind)
@@ -1168,9 +1158,56 @@ func SanitizeBinds(ctx context.Context, validVolumes, binds []string) []string {
 	return hostConfig.Binds
 }
 
+func overlay(dst, src reflect.Value, appendSlices bool) {
+	switch dst.Kind() {
+	case reflect.Struct:
+		opaque := true
+		for i := range dst.NumField() {
+			if dst.Type().Field(i).IsExported() {
+				opaque = false
+				overlay(dst.Field(i), src.Field(i), appendSlices)
+			}
+		}
+		if opaque {
+			dst.Set(src)
+		}
+	case reflect.Map:
+		if src.IsNil() {
+			return
+		}
+		if dst.IsNil() {
+			dst.Set(reflect.MakeMap(dst.Type()))
+		}
+		for key, value := range src.Seq2() {
+			dst.SetMapIndex(key, value)
+		}
+	case reflect.Slice:
+		if appendSlices {
+			dst.Set(reflect.AppendSlice(dst, src))
+		} else if src.Len() > 0 {
+			dst.Set(src)
+		}
+	case reflect.Pointer:
+		if src.IsNil() {
+			return
+		}
+		if dst.IsNil() {
+			dst.Set(src)
+			return
+		}
+		overlay(dst.Elem(), src.Elem(), appendSlices)
+	case reflect.Array:
+		dst.Set(src)
+	default:
+		if !src.IsZero() {
+			dst.Set(src)
+		}
+	}
+}
+
 // bindTarget returns the container path a bind mounts onto, empty if it cannot be parsed.
 func bindTarget(bind string) string {
-	parsed, err := loader.ParseVolume(bind)
+	parsed, err := ParseVolume(bind)
 	if err != nil {
 		return ""
 	}

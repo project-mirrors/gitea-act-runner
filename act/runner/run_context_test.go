@@ -32,7 +32,6 @@ import (
 
 	"gitea.dev/actionslib/pkg/exprparser"
 	"gitea.dev/actionslib/pkg/model"
-	"github.com/docker/cli/cli/compose/loader"
 	"github.com/moby/moby/api/types/volume"
 	assert "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -606,7 +605,7 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 				// volumes must displace the runner's rather than pile up next to them.
 				targets := map[string]bool{}
 				for _, bind := range gotbind {
-					parsed, err := loader.ParseVolume(bind)
+					parsed, err := container.ParseVolume(bind)
 					require.NoError(t, err)
 					assert.NotContains(t, targets, parsed.Target, "%s mounts an already mounted target", bind)
 					targets[parsed.Target] = true

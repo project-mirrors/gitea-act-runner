@@ -6,7 +6,8 @@
 
 // This file is exact copy of https://github.com/docker/cli/blob/4a63305d74332de5ceba7fcbccbc3cbb7412f5ba/cli/command/container/opts.go with:
 // * appended with license information
-// * regexp and loader.ParseVolume in place of the import-restricted internal/lazyregexp and internal/volumespec
+// * regexp and ParseVolume in place of the import-restricted internal/lazyregexp and internal/volumespec
+// * cdiDeviceName in place of the container-device-interface parser's IsQualifiedName
 // * jsontext in place of json.Compact for the seccomp profile
 // * invalidParameter from the package's errors.go, and convertPortSet/convertPortMap for the callers in docker_run.go
 //
@@ -33,14 +34,12 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/cli/cli/compose/loader"
 	"github.com/docker/cli/opts"
 	"github.com/docker/go-connections/nat"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
 	"github.com/spf13/pflag"
-	cdi "tags.cncf.io/container-device-interface/pkg/parser"
 )
 
 const (
@@ -388,7 +387,7 @@ func parse(flags *pflag.FlagSet, copts *containerOptions, serverOS string) (*con
 	volumes := copts.volumes.GetMap()
 	// add any bind targets to the list of container volumes
 	for bind := range volumes {
-		parsed, err := loader.ParseVolume(bind)
+		parsed, err := ParseVolume(bind)
 		if err != nil {
 			return nil, err
 		}
@@ -396,7 +395,7 @@ func parse(flags *pflag.FlagSet, copts *containerOptions, serverOS string) (*con
 		if parsed.Source != "" {
 			toBind := bind
 
-			if parsed.Type == string(mount.TypeBind) {
+			if parsed.Type == mount.TypeBind {
 				if hostPart, targetPath, ok := strings.Cut(bind, ":"); ok {
 					if !filepath.IsAbs(hostPart) && strings.HasPrefix(hostPart, ".") {
 						if absHostPart, err := filepath.Abs(hostPart); err == nil {
@@ -504,7 +503,7 @@ func parse(flags *pflag.FlagSet, copts *containerOptions, serverOS string) (*con
 	deviceMappings := make([]container.DeviceMapping, 0, len(devices))
 	cdiDeviceNames := make([]string, 0, len(devices))
 	for _, device := range devices {
-		if cdi.IsQualifiedName(device) {
+		if cdiDeviceName.MatchString(device) {
 			cdiDeviceNames = append(cdiDeviceNames, device)
 			continue
 		}
@@ -1196,6 +1195,8 @@ func convertPortSet(ports nat.PortSet) (network.PortSet, error) {
 	}
 	return converted, nil
 }
+
+var cdiDeviceName = regexp.MustCompile(`^[a-zA-Z]([a-zA-Z0-9_.-]*[a-zA-Z0-9])?/[a-zA-Z]([a-zA-Z0-9_.-]*[a-zA-Z0-9])?=[a-zA-Z0-9]([a-zA-Z0-9_.:-]*[a-zA-Z0-9])?$`)
 
 func convertPortMap(bindings nat.PortMap) (network.PortMap, error) {
 	converted := make(network.PortMap, len(bindings))

@@ -152,7 +152,7 @@ func TestExportRetriesAndMatchesOTLP(t *testing.T) {
 	<-traceBodies
 	var tracesData tracepb.TracesData
 	require.NoError(t, proto.Unmarshal(gunzip(<-traceBodies), &tracesData))
-	assert.Equal(t, 2*time.Second, retryDelay(1, &statusError{"429 Too Many Requests", "2"}, nil))
+	assert.Equal(t, 2*time.Second, retryDelay(1, &statusError{"429 Too Many Requests", "2"}))
 	assert.Equal(t, "op", tracesData.GetResourceSpans()[0].GetScopeSpans()[0].GetSpans()[0].GetName())
 
 	resourceMetrics := metricsData.GetResourceMetrics()[0]

@@ -36,11 +36,9 @@ import (
 
 	"gitea.dev/actionslib/pkg/exprparser"
 	"gitea.dev/actionslib/pkg/model"
-	"github.com/docker/cli/cli/compose/loader"
 	"github.com/docker/go-connections/nat"
 	"github.com/kballard/go-shellquote"
 	"github.com/moby/moby/api/types/mount"
-	"github.com/opencontainers/selinux/go-selinux"
 	"go.yaml.in/yaml/v4"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/text/encoding/unicode"
@@ -332,13 +330,13 @@ func splitVolumes(specs []string) ([]string, map[string]string, map[string]bool)
 	targets := map[string]bool{}
 
 	for _, spec := range specs {
-		parsed, err := loader.ParseVolume(spec)
+		parsed, err := container.ParseVolume(spec)
 		if err != nil {
 			binds = append(binds, spec) // unclassifiable, sanitizeConfig warns and drops it
 			continue
 		}
 		targets[parsed.Target] = true
-		if parsed.Type == string(mount.TypeVolume) && parsed.Source != "" && !parsed.ReadOnly {
+		if parsed.Type == mount.TypeVolume && parsed.Source != "" && !parsed.ReadOnly {
 			mounts[parsed.Source] = parsed.Target
 		} else {
 			binds = append(binds, spec)
@@ -379,7 +377,7 @@ func (rc *RunContext) GetBindsAndMounts(ctx context.Context) ([]string, map[stri
 			if runtime.GOOS == "darwin" {
 				bindModifiers = ":delegated"
 			}
-			if selinux.GetEnabled() {
+			if selinuxEnabled() {
 				bindModifiers = ":z"
 			}
 			binds = append(binds, fmt.Sprintf("%s:%s%s", source, target, bindModifiers))

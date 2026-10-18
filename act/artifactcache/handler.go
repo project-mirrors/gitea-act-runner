@@ -32,7 +32,6 @@ import (
 	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/disk"
 
-	"github.com/julienschmidt/httprouter"
 	"github.com/timshannon/bolthold"
 	"go.etcd.io/bbolt"
 )
@@ -80,7 +79,7 @@ type Handler struct {
 	dir      string
 	storage  cacheStorage
 	s3       *s3Storage
-	router   *httprouter.Router
+	router   *http.ServeMux
 	listener net.Listener
 	port     int
 	server   *http.Server
@@ -201,22 +200,22 @@ func StartHandler(opts Options) (*Handler, error) {
 	}
 	h.secret = secret
 
-	router := httprouter.New()
-	router.GET(apiPath+"/cache", h.bearerAuth(h.find))
-	router.POST(apiPath+"/caches", h.bearerAuth(h.reserve))
-	router.PATCH(apiPath+"/caches/:id", h.bearerAuth(h.upload))
-	router.POST(apiPath+"/caches/:id", h.bearerAuth(h.commit))
-	router.POST(apiPath+"/clean", h.bearerAuth(h.clean))
+	router := http.NewServeMux()
+	router.HandleFunc("GET "+apiPath+"/cache", h.bearerAuth(h.find))
+	router.HandleFunc("POST "+apiPath+"/caches", h.bearerAuth(h.reserve))
+	router.HandleFunc("PATCH "+apiPath+"/caches/{id}", h.bearerAuth(h.upload))
+	router.HandleFunc("POST "+apiPath+"/caches/{id}", h.bearerAuth(h.commit))
+	router.HandleFunc("POST "+apiPath+"/clean", h.bearerAuth(h.clean))
 	// Artifact GET is signed via query-string HMAC because @actions/cache
 	// does not attach Authorization when downloading archiveLocation.
-	router.GET(apiPath+"/artifacts/:id", h.signedAuth("", h.get))
+	router.HandleFunc("GET "+apiPath+"/artifacts/{id}", h.signedAuth("", h.get))
 	// Control-plane: a remote runner registers/revokes per-job tokens so the
 	// cache API can authenticate them. Always wired so the routes exist; the
 	// handlers themselves 401 when internalSecret is unset.
-	router.POST(internalPath+"/register", h.internalAuth(h.internalRegister))
-	router.POST(internalPath+"/revoke", h.internalAuth(h.internalRevoke))
+	router.HandleFunc("POST "+internalPath+"/register", h.internalAuth(h.internalRegister))
+	router.HandleFunc("POST "+internalPath+"/revoke", h.internalAuth(h.internalRevoke))
 	h.registerV2Routes(router)
-	router.NotFound = http.HandlerFunc(h.forwardOrNotFound)
+	router.HandleFunc(artifactServicePath, h.forwardOrNotFound)
 
 	h.router = router
 
@@ -498,7 +497,7 @@ func (h *Handler) importMetadata(ctx context.Context) error {
 }
 
 // GET /_apis/artifactcache/cache
-func (h *Handler) find(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+func (h *Handler) find(w http.ResponseWriter, r *http.Request) {
 	cred := credFromContext(r.Context())
 	keys := strings.Split(r.URL.Query().Get("keys"), ",")
 	version := r.URL.Query().Get("version")
@@ -549,7 +548,7 @@ func (h *Handler) lookupCache(db *bolthold.Store, repo string, keys []string, ve
 }
 
 // POST /_apis/artifactcache/caches
-func (h *Handler) reserve(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+func (h *Handler) reserve(w http.ResponseWriter, r *http.Request) {
 	cred := credFromContext(r.Context())
 	api := &Request{}
 	if err := json.UnmarshalRead(r.Body, api); err != nil {
@@ -581,9 +580,9 @@ func (h *Handler) reserve(w http.ResponseWriter, r *http.Request, _ httprouter.P
 }
 
 // PATCH /_apis/artifactcache/caches/:id
-func (h *Handler) upload(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+func (h *Handler) upload(w http.ResponseWriter, r *http.Request) {
 	cred := credFromContext(r.Context())
-	id, err := strconv.ParseInt(params.ByName("id"), 10, 64)
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		h.responseJSON(w, r, 400, err)
 		return
@@ -629,9 +628,9 @@ func (h *Handler) upload(w http.ResponseWriter, r *http.Request, params httprout
 }
 
 // POST /_apis/artifactcache/caches/:id
-func (h *Handler) commit(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+func (h *Handler) commit(w http.ResponseWriter, r *http.Request) {
 	cred := credFromContext(r.Context())
-	id, err := strconv.ParseInt(params.ByName("id"), 10, 64)
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		h.responseJSON(w, r, 400, err)
 		return
@@ -716,8 +715,8 @@ func (h *Handler) commitCache(cache *Cache) error {
 // @actions/cache toolkit downloads archiveLocation without Authorization.
 // Repository scoping is already enforced at find() time; the signature binds
 // the URL to the specific cache ID and an expiry.
-func (h *Handler) get(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
-	id, err := strconv.ParseInt(params.ByName("id"), 10, 64)
+func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		h.responseJSON(w, r, 400, err)
 		return
@@ -727,7 +726,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request, params httprouter.
 }
 
 // POST /_apis/artifactcache/clean
-func (h *Handler) clean(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+func (h *Handler) clean(w http.ResponseWriter, r *http.Request) {
 	// TODO: don't support force deleting cache entries
 	// see: https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows#force-deleting-cache-entries
 
@@ -737,8 +736,8 @@ func (h *Handler) clean(w http.ResponseWriter, r *http.Request, _ httprouter.Par
 // bearerAuth resolves ACTIONS_RUNTIME_TOKEN against the set of currently
 // registered jobs. A match attaches the job's JobCredential to the request
 // context; a miss returns 401 before the handler body runs.
-func (h *Handler) bearerAuth(handler httprouter.Handle) httprouter.Handle {
-	return func(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+func (h *Handler) bearerAuth(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		h.logger.Debugf("%s %s", r.Method, r.URL.Path)
 		token := bearerToken(r)
 		if token == "" {
@@ -751,7 +750,7 @@ func (h *Handler) bearerAuth(handler httprouter.Handle) httprouter.Handle {
 			return
 		}
 		ctx := context.WithValue(r.Context(), credKey{}, cred)
-		handler(w, r.WithContext(ctx), params)
+		handler(w, r.WithContext(ctx))
 		go h.gcCache()
 	}
 }
@@ -766,10 +765,10 @@ func (h *Handler) unauthorized(w http.ResponseWriter, r *http.Request, err error
 
 // signedAuth authenticates a signed URL. purpose separates the flavours of URL the
 // handler hands out, so one cannot be replayed as another; see computeSignature.
-func (h *Handler) signedAuth(purpose string, handler httprouter.Handle) httprouter.Handle {
-	return func(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+func (h *Handler) signedAuth(purpose string, handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		h.logger.Debugf("%s %s", r.Method, r.URL.Path)
-		id, err := strconv.ParseInt(params.ByName("id"), 10, 64)
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		if err != nil {
 			h.responseJSON(w, r, 400, err)
 			return
@@ -794,7 +793,7 @@ func (h *Handler) signedAuth(purpose string, handler httprouter.Handle) httprout
 			h.responseJSON(w, r, http.StatusUnauthorized, errors.New("bad signature"))
 			return
 		}
-		handler(w, r, params)
+		handler(w, r)
 		go h.gcCache()
 	}
 }
@@ -803,8 +802,8 @@ func (h *Handler) signedAuth(purpose string, handler httprouter.Handle) httprout
 // constant-time-equal the configured internalSecret. If the secret is empty,
 // the control-plane is disabled and every request gets 404 — which matches
 // the upstream nektos/act behavior of "the route does not exist".
-func (h *Handler) internalAuth(handler httprouter.Handle) httprouter.Handle {
-	return func(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+func (h *Handler) internalAuth(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if h.internalSecret == "" {
 			http.NotFound(w, r)
 			return
@@ -814,7 +813,7 @@ func (h *Handler) internalAuth(handler httprouter.Handle) httprouter.Handle {
 			h.responseJSON(w, r, http.StatusUnauthorized, errors.New("internal: bad secret"))
 			return
 		}
-		handler(w, r, params)
+		handler(w, r)
 	}
 }
 
@@ -837,7 +836,7 @@ func (h *Handler) ResultsURL(cred JobCredential) string {
 	return h.baseURL(cred)
 }
 
-func (h *Handler) internalRegister(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+func (h *Handler) internalRegister(w http.ResponseWriter, r *http.Request) {
 	var body internalRegisterBody
 	if err := json.UnmarshalRead(r.Body, &body); err != nil {
 		h.responseJSON(w, r, http.StatusBadRequest, err)
@@ -852,7 +851,7 @@ func (h *Handler) internalRegister(w http.ResponseWriter, r *http.Request, _ htt
 }
 
 // POST /_internal/revoke
-func (h *Handler) internalRevoke(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+func (h *Handler) internalRevoke(w http.ResponseWriter, r *http.Request) {
 	var body internalRevokeBody
 	if err := json.UnmarshalRead(r.Body, &body); err != nil {
 		h.responseJSON(w, r, http.StatusBadRequest, err)

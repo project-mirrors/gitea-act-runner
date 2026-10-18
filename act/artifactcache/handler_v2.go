@@ -15,8 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/julienschmidt/httprouter"
 )
 
 // The cache service v2 API. A client on this version talks twirp to
@@ -44,16 +42,16 @@ const (
 	twirpUnauthenticated = "unauthenticated"
 )
 
-func (h *Handler) registerV2Routes(router *httprouter.Router) {
-	router.POST(cacheServiceV2Path+"/CreateCacheEntry", h.bearerAuth(h.v2CreateCacheEntry))
-	router.POST(cacheServiceV2Path+"/FinalizeCacheEntryUpload", h.bearerAuth(h.v2FinalizeCacheEntryUpload))
-	router.POST(cacheServiceV2Path+"/GetCacheEntryDownloadURL", h.bearerAuth(h.v2GetCacheEntryDownloadURL))
-	router.PUT(blobPath+"/:id", h.signedAuth(blobUploadPurpose, h.v2UploadBlob))
+func (h *Handler) registerV2Routes(router *http.ServeMux) {
+	router.HandleFunc("POST "+cacheServiceV2Path+"/CreateCacheEntry", h.bearerAuth(h.v2CreateCacheEntry))
+	router.HandleFunc("POST "+cacheServiceV2Path+"/FinalizeCacheEntryUpload", h.bearerAuth(h.v2FinalizeCacheEntryUpload))
+	router.HandleFunc("POST "+cacheServiceV2Path+"/GetCacheEntryDownloadURL", h.bearerAuth(h.v2GetCacheEntryDownloadURL))
+	router.HandleFunc("PUT "+blobPath+"/{id}", h.signedAuth(blobUploadPurpose, h.v2UploadBlob))
 }
 
 // An entry that already exists is reported as not ok, which is how the client learns to skip
 // the upload.
-func (h *Handler) v2CreateCacheEntry(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+func (h *Handler) v2CreateCacheEntry(w http.ResponseWriter, r *http.Request) {
 	cred := credFromContext(r.Context())
 	req, err := decodeTwirpRequest[v2CreateRequest](r)
 	if err != nil {
@@ -123,7 +121,7 @@ func (h *Handler) v2CreateCacheEntry(w http.ResponseWriter, r *http.Request, _ h
 	})
 }
 
-func (h *Handler) v2FinalizeCacheEntryUpload(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+func (h *Handler) v2FinalizeCacheEntryUpload(w http.ResponseWriter, r *http.Request) {
 	cred := credFromContext(r.Context())
 	req, err := decodeTwirpRequest[v2FinalizeRequest](r)
 	if err != nil {
@@ -172,7 +170,7 @@ func (h *Handler) v2FinalizeCacheEntryUpload(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-func (h *Handler) v2GetCacheEntryDownloadURL(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+func (h *Handler) v2GetCacheEntryDownloadURL(w http.ResponseWriter, r *http.Request) {
 	cred := credFromContext(r.Context())
 	req, err := decodeTwirpRequest[v2DownloadRequest](r)
 	if err != nil {
@@ -207,8 +205,8 @@ func (h *Handler) v2GetCacheEntryDownloadURL(w http.ResponseWriter, r *http.Requ
 // The archive arrives over the subset of the Azure blob API the toolkit uses: a small
 // cache is a single PUT, a large one is staged as blocks that a final block list puts
 // in order.
-func (h *Handler) v2UploadBlob(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
-	id, err := strconv.ParseUint(params.ByName("id"), 10, 64)
+func (h *Handler) v2UploadBlob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
 	if err != nil {
 		h.responseJSON(w, r, http.StatusBadRequest, err)
 		return

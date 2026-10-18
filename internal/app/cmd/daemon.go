@@ -33,9 +33,8 @@ import (
 
 	"connectrpc.com/connect"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
-	"github.com/avast/retry-go/v5"
-	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) func(cmd *cobra.Command, args []string) error {
@@ -189,22 +188,22 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 		}()
 
 		// declare the labels of the runner before fetching tasks
-		resp, err := retry.NewWithData[*connect.Response[runnerv1.DeclareResponse]](
-			retry.Context(ctx),
-			retry.UntilSucceeded(),
-			retry.Delay(declareRetryDelay),
-			retry.DelayType(retry.FixedDelay),
-			retry.RetryIf(shouldRetryDeclare),
-			retry.OnRetry(func(attempt uint, err error) {
-				if attempt == 0 {
-					logging.WithError(err).Warn("fail to invoke Declare, retrying until Gitea is reachable")
-				} else {
-					logging.WithError(err).Debug("fail to invoke Declare, retrying")
-				}
-			}),
-		).Do(func() (*connect.Response[runnerv1.DeclareResponse], error) {
-			return runner.Declare(ctx, ls.Names())
-		})
+		var resp *connect.Response[runnerv1.DeclareResponse]
+		for attempt := 0; ; attempt++ {
+			resp, err = runner.Declare(ctx, ls.Names())
+			if err == nil || !shouldRetryDeclare(err) || ctx.Err() != nil {
+				break
+			}
+			if attempt == 0 {
+				logging.WithError(err).Warn("fail to invoke Declare, retrying until Gitea is reachable")
+			} else {
+				logging.WithError(err).Debug("fail to invoke Declare, retrying")
+			}
+			select {
+			case <-time.After(declareRetryDelay):
+			case <-ctx.Done():
+			}
+		}
 		switch {
 		case err != nil && ctx.Err() != nil && !client.IsRegistrationRejected(err):
 			return nil
@@ -340,7 +339,7 @@ func initLogging(cfg *config.Config) {
 		return funcname, filename
 	}
 
-	isTerm := isatty.IsTerminal(os.Stdout.Fd())
+	isTerm := term.IsTerminal(int(os.Stdout.Fd()))
 	logging.SetTextFormat(logging.TextOptions{
 		DisableColors:    !isTerm,
 		FullTimestamp:    true,

@@ -24,15 +24,15 @@ import (
 	"connectrpc.com/connect"
 	pingv1 "gitea.dev/actionslib/ping/v1"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
-	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // runRegister registers a runner to the server
 func runRegister(ctx context.Context, regArgs *registerArgs, configFile *string) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		logging.SetReportCaller(false)
-		isTerm := isatty.IsTerminal(os.Stdout.Fd())
+		isTerm := term.IsTerminal(int(os.Stdout.Fd()))
 		logging.SetTextFormat(logging.TextOptions{
 			DisableColors:    !isTerm,
 			DisableTimestamp: true,

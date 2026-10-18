@@ -12,7 +12,6 @@ import (
 	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/common/logging/logtest"
 
-	"github.com/docker/cli/cli/config"
 	assert "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,10 +43,7 @@ func TestCleanImage(t *testing.T) {
 func TestGetImagePullOptions(t *testing.T) {
 	ctx := t.Context()
 
-	orig := config.Dir()
-	t.Cleanup(func() { config.SetDir(orig) })
-
-	config.SetDir("/non-existent/docker")
+	t.Setenv("DOCKER_CONFIG", "/non-existent/docker")
 
 	options, err := getImagePullOptions(ctx, NewDockerPullExecutorInput{})
 	assert.NoError(t, err, "Failed to create ImagePullOptions")                                                 //nolint:testifylint // pre-existing issue from nektos/act
@@ -61,7 +57,7 @@ func TestGetImagePullOptions(t *testing.T) {
 	assert.NoError(t, err, "Failed to create ImagePullOptions") //nolint:testifylint // pre-existing issue from nektos/act
 	assert.Equal(t, "eyJ1c2VybmFtZSI6InVzZXJuYW1lIiwicGFzc3dvcmQiOiJwYXNzd29yZCJ9", options.RegistryAuth, "Username and Password should be provided")
 
-	config.SetDir("testdata/docker-pull-options")
+	t.Setenv("DOCKER_CONFIG", "testdata/docker-pull-options")
 
 	options, err = getImagePullOptions(ctx, NewDockerPullExecutorInput{
 		Image: "nektos/act",

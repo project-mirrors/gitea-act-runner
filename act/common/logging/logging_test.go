@@ -13,7 +13,6 @@ import (
 	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/common/logging/logtest"
 
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -132,43 +131,6 @@ func TestSlogHandler(t *testing.T) {
 	assert.Contains(t, out, "error=boom")
 }
 
-func TestLogrusBridge(t *testing.T) {
-	prevLevel, prevDefault := logging.GetLevel(), logging.Default()
-	t.Cleanup(func() {
-		logging.SetLevel(prevLevel)
-		logging.SetReportCaller(false)
-		logging.SetDefault(prevDefault)
-	})
-	logging.SetLevel(logging.LevelInfo)
-	assert.False(t, logrus.IsLevelEnabled(logrus.DebugLevel))
-	logging.SetLevel(logging.LevelTrace)
-	logging.SetReportCaller(true)
-	h := logtest.NewWithLevel(logging.LevelTrace)
-	logging.SetDefault(logging.New(h))
-
-	logrus.WithField("lib", "docker").Warnf("from a library %d", 1)
-	_, _, line, _ := runtime.Caller(0)
-	logrus.Debug("below")
-	logrus.Trace("lowest")
-
-	recs := h.AllRecords()
-	require.Len(t, recs, 3)
-	assert.Equal(t, "from a library 1", recs[0].Message)
-	assert.Equal(t, logging.LevelWarn, recs[0].Level)
-	v, _ := recs[0].Attr("lib")
-	assert.Equal(t, "docker", v)
-	assert.Equal(t, logging.LevelDebug, recs[1].Level)
-	f := frameOf(t, recs[1].PC)
-	assert.True(t, strings.HasSuffix(f.Function, "TestLogrusBridge"), f.Function)
-	assert.Equal(t, line+1, f.Line)
-	assert.Equal(t, logging.LevelTrace, recs[2].Level)
-
-	h = logtest.New() // logrus passes Debug, the Logger does not
-	logging.SetDefault(logging.New(h))
-	logrus.Debug("dropped")
-	assert.Empty(t, h.AllRecords())
-}
-
 func TestSlogBridge(t *testing.T) {
 	h := logtest.SetDefault(t)
 	slog.With("lib", "actionslib").Warn("from a library", "n", 1)
@@ -184,20 +146,4 @@ func TestSlogBridge(t *testing.T) {
 	n, _ := recs[0].Attr("n")
 	assert.EqualValues(t, 1, n)
 	assert.Equal(t, line-1, frameOf(t, recs[0].PC).Line)
-}
-
-func TestLogrusBridgeIntact(t *testing.T) {
-	assert.True(t, logging.LogrusBridgeIntact())
-
-	prev := logrus.StandardLogger().Out
-	t.Cleanup(func() { logrus.SetOutput(prev) })
-	logrus.SetOutput(&strings.Builder{}) // what a dependency doing this would do
-	assert.False(t, logging.LogrusBridgeIntact())
-	logrus.SetOutput(prev)
-	assert.True(t, logging.LogrusBridgeIntact())
-
-	prevLevel := logrus.GetLevel()
-	t.Cleanup(func() { logrus.SetLevel(prevLevel) })
-	logrus.SetLevel(logrus.PanicLevel)
-	assert.False(t, logging.LogrusBridgeIntact())
 }

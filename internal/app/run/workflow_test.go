@@ -10,7 +10,6 @@ import (
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v4"
-	"gotest.tools/v3/assert"
 )
 
 func Test_generateWorkflow(t *testing.T) {
@@ -58,7 +57,7 @@ jobs:
 				},
 			},
 			assert: func(t *testing.T, wf *model.Workflow) {
-				assert.DeepEqual(t, wf.GetJob("job9").Needs(), []string{"job1", "job2"})
+				require.Equal(t, []string{"job1", "job2"}, wf.GetJob("job9").Needs())
 			},
 			want1:   "job9",
 			wantErr: false,
@@ -83,8 +82,8 @@ jobs:
 			},
 			assert: func(t *testing.T, wf *model.Workflow) {
 				job := wf.GetJob("test")
-				assert.DeepEqual(t, job.Needs(), []string{})
-				assert.Equal(t, len(job.Steps), 2)
+				require.Equal(t, []string{}, job.Needs())
+				require.Len(t, job.Steps, 2)
 			},
 			want1:   "test",
 			wantErr: false,
@@ -125,9 +124,9 @@ jobs:
 			assert: func(t *testing.T, wf *model.Workflow) {
 				job := wf.GetJob("deploy")
 				needs := job.Needs()
-				assert.DeepEqual(t, needs, []string{"build", "lint", "test"})
-				assert.Equal(t, wf.Jobs["test"].Outputs["coverage"], "80%")
-				assert.Equal(t, wf.Jobs["lint"].Result, "failure")
+				require.Equal(t, []string{"build", "lint", "test"}, needs)
+				require.Equal(t, "80%", wf.Jobs["test"].Outputs["coverage"])
+				require.Equal(t, "failure", wf.Jobs["lint"].Result)
 			},
 			want1:   "deploy",
 			wantErr: false,
@@ -165,11 +164,11 @@ jobs:
 				},
 			},
 			assert: func(t *testing.T, wf *model.Workflow) {
-				assert.Equal(t, wf.Name, "Complex workflow")
-				assert.Equal(t, wf.Env["NODE_ENV"], "production")
-				assert.Equal(t, wf.Env["CI"], "true")
+				require.Equal(t, "Complex workflow", wf.Name)
+				require.Equal(t, "production", wf.Env["NODE_ENV"])
+				require.Equal(t, "true", wf.Env["CI"])
 				job := wf.GetJob("build")
-				assert.Equal(t, len(job.Steps), 4)
+				require.Len(t, job.Steps, 4)
 			},
 			want1:   "build",
 			wantErr: false,
@@ -200,8 +199,8 @@ jobs:
 			assert: func(t *testing.T, wf *model.Workflow) {
 				job := wf.GetJob("integration")
 				container := job.Container()
-				assert.Equal(t, container.Image, "node:18")
-				assert.Equal(t, job.Services["postgres"].Image, "postgres:15")
+				require.Equal(t, "node:18", container.Image)
+				require.Equal(t, "postgres:15", job.Services["postgres"].Image)
 			},
 			want1:   "integration",
 			wantErr: false,
@@ -231,7 +230,7 @@ jobs:
 				job := wf.GetJob("test")
 				matrixes, err := job.GetMatrixes()
 				require.NoError(t, err)
-				assert.Equal(t, len(matrixes), 2)
+				require.Len(t, matrixes, 2)
 			},
 			want1:   "test",
 			wantErr: false,
@@ -245,9 +244,9 @@ jobs:
 				},
 			},
 			assert: func(t *testing.T, wf *model.Workflow) {
-				assert.Equal(t, wf.Name, "Special: characters & test")
+				require.Equal(t, "Special: characters & test", wf.Name)
 				job := wf.GetJob("test")
-				assert.Equal(t, len(job.Steps), 3)
+				require.Len(t, job.Steps, 3)
 			},
 			want1:   "test",
 			wantErr: false,
@@ -283,7 +282,7 @@ jobs:
 			}
 			require.NoError(t, err)
 			tt.assert(t, got)
-			assert.Equal(t, got1, tt.want1)
+			require.Equal(t, tt.want1, got1)
 		})
 	}
 }
@@ -301,7 +300,7 @@ func Test_yamlV4NodeRoundTrip(t *testing.T) {
 
 		out, err := yaml.Marshal(&node)
 		require.NoError(t, err)
-		assert.Equal(t, string(out), "- a\n- b\n- c\n")
+		require.Equal(t, "- a\n- b\n- c\n", string(out))
 	})
 
 	t.Run("unmarshal and re-marshal workflow", func(t *testing.T) {
@@ -310,7 +309,7 @@ func Test_yamlV4NodeRoundTrip(t *testing.T) {
 		var wf map[string]any
 		err := yaml.Unmarshal(input, &wf)
 		require.NoError(t, err)
-		assert.Equal(t, wf["name"], "test")
+		require.Equal(t, "test", wf["name"])
 
 		out, err := yaml.Marshal(wf)
 		require.NoError(t, err)
@@ -318,7 +317,7 @@ func Test_yamlV4NodeRoundTrip(t *testing.T) {
 		var wf2 map[string]any
 		err = yaml.Unmarshal(out, &wf2)
 		require.NoError(t, err)
-		assert.Equal(t, wf2["name"], "test")
+		require.Equal(t, "test", wf2["name"])
 	})
 
 	t.Run("node kind constants", func(t *testing.T) {

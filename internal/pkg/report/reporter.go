@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"regexp"
 	"slices"
 	"strings"
@@ -24,7 +25,6 @@ import (
 	"connectrpc.com/connect"
 	"gitea.dev/actionslib/pkg/model"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
-	"github.com/avast/retry-go/v5"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -777,7 +777,23 @@ func (r *Reporter) Close(lastWords string) error {
 func (r *Reporter) flushFinal(fn func() error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*r.effectiveCloseTimeout())
 	defer cancel()
-	return retry.New(retry.Context(ctx)).Do(fn)
+	var errs []error
+	for attempt := range 10 {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		errs = append(errs, err)
+		if attempt == 9 {
+			break
+		}
+		select {
+		case <-time.After(100*time.Millisecond<<attempt + rand.N(100*time.Millisecond)):
+		case <-ctx.Done():
+			return errors.Join(append(errs, ctx.Err())...)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // effectiveCloseTimeout returns closeTimeout, or 10s when unset, so a zero

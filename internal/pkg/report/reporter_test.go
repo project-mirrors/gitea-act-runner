@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"gitea.com/gitea/runner/act/common/logging"
@@ -1159,6 +1160,19 @@ func TestReporter_OutputsSentOnce(t *testing.T) {
 func TestReporter_EffectiveCloseTimeout(t *testing.T) {
 	assert.Equal(t, 10*time.Second, (&Reporter{}).effectiveCloseTimeout())
 	assert.Equal(t, 5*time.Second, (&Reporter{closeTimeout: 5 * time.Second}).effectiveCloseTimeout())
+}
+
+func TestReporter_FlushFinalRetriesUntilSuccess(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		calls := 0
+		require.NoError(t, (&Reporter{}).flushFinal(func() error {
+			if calls++; calls < 3 {
+				return errors.New("unavailable")
+			}
+			return nil
+		}))
+		assert.Equal(t, 3, calls)
+	})
 }
 
 func TestReporter_ParseResult(t *testing.T) {

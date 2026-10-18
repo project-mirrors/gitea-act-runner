@@ -14,7 +14,6 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/config"
 
 	"github.com/stretchr/testify/require"
-	"gotest.tools/v3/assert"
 )
 
 func TestRegisterNonInteractiveReturnsLabelValidationError(t *testing.T) {
@@ -23,7 +22,7 @@ func TestRegisterNonInteractiveReturnsLabelValidationError(t *testing.T) {
 		Token:        "token",
 		InstanceAddr: "http://localhost:3000",
 	})
-	assert.ErrorContains(t, err, "empty label")
+	require.ErrorContains(t, err, "empty label")
 }
 
 func TestRegisterInputsValidate(t *testing.T) {
@@ -262,6 +261,6 @@ func TestDoRegisterReturnsPingErrorWithoutRetrying(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Runner.File = filepath.Join(t.TempDir(), ".runner")
 	err := doRegister(t.Context(), cfg, &registerInputs{InstanceAddr: server.URL, RunnerName: "runner"})
-	assert.ErrorContains(t, err, "cannot ping the Gitea instance server")
-	assert.Equal(t, int32(1), requests.Load())
+	require.ErrorContains(t, err, "cannot ping the Gitea instance server")
+	require.Equal(t, int32(1), requests.Load())
 }

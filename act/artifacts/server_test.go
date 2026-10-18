@@ -19,14 +19,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/julienschmidt/httprouter"
 	"github.com/stretchr/testify/require"
 )
 
 func TestArtifactFlow(t *testing.T) {
 	artifactPath := t.TempDir()
 
-	router := httprouter.New()
+	router := http.NewServeMux()
 	uploads(router, artifactPath)
 	downloads(router, artifactPath)
 	server := httptest.NewServer(router)

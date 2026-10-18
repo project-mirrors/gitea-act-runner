@@ -19,8 +19,6 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
-
-	"github.com/julienschmidt/httprouter"
 )
 
 type FileContainerResourceURL struct {
@@ -67,24 +65,21 @@ func writeJSON(w http.ResponseWriter, value any) {
 	}
 }
 
-func uploads(router *httprouter.Router, baseDir string) {
-	router.POST("/_apis/pipelines/workflows/:runId/artifacts", func(w http.ResponseWriter, req *http.Request, params httprouter.Params) {
-		runID := params.ByName("runId")
-
+func uploads(router *http.ServeMux, baseDir string) {
+	router.HandleFunc("POST /_apis/pipelines/workflows/{runId}/artifacts", func(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, FileContainerResourceURL{
-			FileContainerResourceURL: fmt.Sprintf("http://%s/upload/%s", req.Host, runID),
+			FileContainerResourceURL: fmt.Sprintf("http://%s/upload/%s", req.Host, req.PathValue("runId")),
 		})
 	})
 
-	router.PUT("/upload/:runId", func(w http.ResponseWriter, req *http.Request, params httprouter.Params) {
+	router.HandleFunc("PUT /upload/{runId}", func(w http.ResponseWriter, req *http.Request) {
 		itemPath := req.URL.Query().Get("itemPath")
-		runID := params.ByName("runId")
 
 		if req.Header.Get("Content-Encoding") == "gzip" {
 			itemPath += gzipExtension
 		}
 
-		safeRunPath := safeResolve(baseDir, runID)
+		safeRunPath := safeResolve(baseDir, req.PathValue("runId"))
 		safePath := safeResolve(safeRunPath, itemPath)
 
 		if err := os.MkdirAll(filepath.Dir(safePath), os.ModePerm); err != nil {
@@ -114,16 +109,16 @@ func uploads(router *httprouter.Router, baseDir string) {
 		})
 	})
 
-	router.PATCH("/_apis/pipelines/workflows/:runId/artifacts", func(w http.ResponseWriter, req *http.Request, params httprouter.Params) {
+	router.HandleFunc("PATCH /_apis/pipelines/workflows/{runId}/artifacts", func(w http.ResponseWriter, _req *http.Request) {
 		writeJSON(w, ResponseMessage{
 			Message: "success",
 		})
 	})
 }
 
-func downloads(router *httprouter.Router, baseDir string) {
-	router.GET("/_apis/pipelines/workflows/:runId/artifacts", func(w http.ResponseWriter, req *http.Request, params httprouter.Params) {
-		runID := params.ByName("runId")
+func downloads(router *http.ServeMux, baseDir string) {
+	router.HandleFunc("GET /_apis/pipelines/workflows/{runId}/artifacts", func(w http.ResponseWriter, req *http.Request) {
+		runID := req.PathValue("runId")
 
 		safePath := safeResolve(baseDir, runID)
 
@@ -146,8 +141,8 @@ func downloads(router *httprouter.Router, baseDir string) {
 		})
 	})
 
-	router.GET("/download/:container", func(w http.ResponseWriter, req *http.Request, params httprouter.Params) {
-		container := params.ByName("container")
+	router.HandleFunc("GET /download/{container}", func(w http.ResponseWriter, req *http.Request) {
+		container := req.PathValue("container")
 		itemPath := req.URL.Query().Get("itemPath")
 		safePath := safeResolve(baseDir, filepath.Join(container, itemPath))
 
@@ -183,10 +178,8 @@ func downloads(router *httprouter.Router, baseDir string) {
 		})
 	})
 
-	router.GET("/artifact/*path", func(w http.ResponseWriter, req *http.Request, params httprouter.Params) {
-		path := params.ByName("path")[1:]
-
-		safePath := safeResolve(baseDir, path)
+	router.HandleFunc("GET /artifact/{path...}", func(w http.ResponseWriter, req *http.Request) {
+		safePath := safeResolve(baseDir, req.PathValue("path"))
 
 		file, err := os.Open(safePath)
 		if err != nil {
@@ -214,7 +207,7 @@ func Serve(ctx context.Context, artifactPath, addr, port string) context.CancelF
 		return cancel
 	}
 
-	router := httprouter.New()
+	router := http.NewServeMux()
 
 	logger.Debugf("Artifacts base path '%s'", artifactPath)
 	uploads(router, artifactPath)
