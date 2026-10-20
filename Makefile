@@ -8,11 +8,11 @@ XGO_PACKAGE ?= src.techknowlogick.com/xgo@v1.9.0 # renovate: datasource=go
 XGO_VERSION := go-1.27.x
 GXZ_PACKAGE ?= github.com/ulikunitz/xz/cmd/gxz@v0.5.17 # renovate: datasource=go
 
-PODMAN_TEST_IMAGE ?= quay.io/containers/podman:v5.8.4-immutable@sha256:90405e3c6a86f33c5a6f8dbdfa8e02a98143a8ba4337b84bdaec5336d2ef008a # renovate: datasource=docker
+PODMAN_TEST_IMAGE ?= quay.io/containers/podman:v5.8.9-immutable@sha256:87f42f37fa85b421664c30b8f5f9cfc23920057f5e5fcadf0b6f68d9edc6d415 # renovate: datasource=docker
 E2E_JOB_IMAGE ?= docker.gitea.com/runner-images:ubuntu-latest@sha256:0e62e56b382ebf485bff1e51a05cbe27c708545a2e91425467fd31eb3e249521 # renovate: datasource=docker
-SERVICE_IMAGE ?= nginx:1.31.4-alpine@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913 # renovate: datasource=docker
+SERVICE_IMAGE ?= nginx:1.31.7-alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d # renovate: datasource=docker
 E2E_GITEA_IMAGE ?= gitea/gitea:main-nightly
-E2E_K3S_IMAGE ?= rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657 # renovate: datasource=docker
+E2E_K3S_IMAGE ?= rancher/k3s:v1.37.1-k3s1@sha256:ca7f37d993d82ef0dcdcfecb2e0e2618ea541dbaffc620c8cedebe01a82acd0d # renovate: datasource=docker
 
 LINUX_ARCHS ?= linux/amd64,linux/arm64
 DARWIN_ARCHS ?= darwin-12/amd64,darwin-12/arm64

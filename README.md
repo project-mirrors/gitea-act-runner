@@ -242,7 +242,7 @@ A job's `services` are started before its steps run. When a service's image or i
 ```yaml
 services:
   postgres:
-    image: postgres:17
+    image: postgres:18
     options: >-
       --health-cmd pg_isready
       --health-interval 5s

@@ -7,7 +7,7 @@ jobs:
       - run: |
           mkdir -p cached
           echo "cached-payload" > cached/data.txt
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: cached
           key: e2e-cache-${{ github.run_id }}
@@ -15,7 +15,7 @@ jobs:
     needs: save
     runs-on: e2e-cache
     steps:
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: restore
         with:
           path: cached

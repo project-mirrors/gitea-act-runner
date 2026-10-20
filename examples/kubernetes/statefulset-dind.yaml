@@ -39,7 +39,7 @@ spec:
         emptyDir: {}
       initContainers:
       - name: docker
-        image: docker:28.2.2-dind
+        image: docker:29.9.1-dind
         securityContext:
           privileged: true
         volumeMounts:

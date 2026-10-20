@@ -33,7 +33,7 @@ jobs:
       - id: emit
         run: echo "token=produced-value-42" >> "$GITHUB_OUTPUT"
       - run: echo "artifact content" > payload.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: payload
           path: payload.txt
@@ -41,7 +41,7 @@ jobs:
     needs: produce
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: payload
       - run: grep -q 'artifact content' payload.txt

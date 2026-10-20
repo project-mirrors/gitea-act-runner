@@ -200,21 +200,21 @@ func TestPatchedBundleAcrossActions(t *testing.T) {
 		// The cache toolkit, in each bundler shape and from a spread of ecosystems, including the
 		// actions that drive a Go or a Rust cache client of their own.
 		{"actions/cache", actionsCacheRef, "dist/restore/index.js", true},
-		{"actions/setup-node", "v7.0.0", "dist/cache-save/index.js", true},
+		{"actions/setup-node", "v7.1.0", "dist/cache-save/index.js", true},
 		{"actions/setup-python", "v7.0.0", "dist/setup/index.js", true},
 		{"actions/setup-go", "v7.0.0", "dist/setup/index.js", true},
 		{"actions/setup-java", "v5.7.0", "dist/setup/index.js", true},
-		{"ruby/setup-ruby", "v1.321.0", "dist/index.js", true},
-		{"pnpm/action-setup", "v6.0.9", "dist/index.js", true},
+		{"ruby/setup-ruby", "v1.331.0", "dist/index.js", true},
+		{"pnpm/action-setup", "v6.1.0", "dist/index.js", true},
 		{"oven-sh/setup-bun", "v2.2.0", "dist/setup/index.js", true},
 		{"Swatinem/rust-cache", "v2.9.1", "dist/restore/index.js", true},
-		{"docker/build-push-action", "v7.3.0", "dist/index.cjs", true},
+		{"docker/build-push-action", "v7.4.0", "dist/index.cjs", true},
 		// The artifact toolkit, where the gate is a refusal and there is nothing to redirect.
 		// v4.4.0 is the first release whose gate carries the localhost test this matches; the
 		// releases before it refuse in a shape the runner leaves alone.
 		{"actions/upload-artifact", "v4.4.0", "dist/upload/index.js", true},
-		{"actions/upload-artifact", "v7.0.1", "dist/upload/index.js", true},
-		{"actions/download-artifact", "v8.0.1", "dist/index.js", true},
+		{"actions/upload-artifact", "v7.0.2", "dist/upload/index.js", true},
+		{"actions/download-artifact", "v8.0.2", "dist/index.js", true},
 		// Neither toolkit's gate, so these have to come back byte for byte. sccache-action is the
 		// one that exports ACTIONS_CACHE_SERVICE_V2 itself, for the Rust client it installs.
 		{"actions/checkout", "v7.0.1", "dist/index.js", false},
@@ -297,7 +297,7 @@ func TestUploadArtifactThroughTheResultsService(t *testing.T) {
 	token := "e30." + base64.RawURLEncoding.EncodeToString([]byte(`{"scp":"Actions.Results:11:22"}`)) + ".sig"
 	defer handler.RegisterJob(token, artifactcache.JobCredential{Repo: "testuser/testrepo", Results: gitea.URL})()
 
-	upload := patchedAction(t, "actions/upload-artifact", "v7.0.1", "dist/upload/index.js")
+	upload := patchedAction(t, "actions/upload-artifact", "v7.0.2", "dist/upload/index.js")
 
 	env := jobEnv{
 		workspace:  tempDirPath(t),
@@ -319,7 +319,7 @@ func TestUploadArtifactThroughTheResultsService(t *testing.T) {
 
 	// And back down again: listing and downloading go the same way, and the signed URL the
 	// artifact service hands out is fetched straight from it.
-	download := patchedAction(t, "actions/download-artifact", "v8.0.1", "dist/index.js")
+	download := patchedAction(t, "actions/download-artifact", "v8.0.2", "dist/index.js")
 	env.workspace = tempDirPath(t)
 	out = runActionEntrypoint(t, download, env, map[string]string{
 		"name": "an-artifact", "path": "downloaded", "merge-multiple": "false",
@@ -341,7 +341,7 @@ func TestUploadArtifactThroughTheResultsService(t *testing.T) {
 func TestSetupActionFindsTheCacheService(t *testing.T) {
 	requireHostTools(t, "node", "npm")
 
-	setup := patchedAction(t, "actions/setup-node", "v7.0.0", "dist/setup/index.js")
+	setup := patchedAction(t, "actions/setup-node", "v7.1.0", "dist/setup/index.js")
 
 	handler, err := artifactcache.StartHandler(artifactcache.Options{Dir: filepath.Join(t.TempDir(), "cache"), OutboundIP: "127.0.0.1"})
 	require.NoError(t, err)
