@@ -1,12 +1,7 @@
 DIST := dist
 EXECUTABLE := gitea-runner
-DIST_DIRS := $(DIST)/binaries $(DIST)/release
 GO ?= go
-SHASUM ?= shasum -a 256
 HAS_GO = $(shell hash $(GO) > /dev/null 2>&1 && echo "GO" || echo "NOGO" )
-XGO_PACKAGE ?= src.techknowlogick.com/xgo@v1.9.0 # renovate: datasource=go
-XGO_VERSION := go-1.27.x
-GXZ_PACKAGE ?= github.com/ulikunitz/xz/cmd/gxz@v0.5.17 # renovate: datasource=go
 
 PODMAN_TEST_IMAGE ?= quay.io/containers/podman:v5.8.9-immutable@sha256:87f42f37fa85b421664c30b8f5f9cfc23920057f5e5fcadf0b6f68d9edc6d415 # renovate: datasource=docker
 E2E_JOB_IMAGE ?= docker.gitea.com/runner-images:ubuntu-latest@sha256:0e62e56b382ebf485bff1e51a05cbe27c708545a2e91425467fd31eb3e249521 # renovate: datasource=docker
@@ -14,9 +9,6 @@ SERVICE_IMAGE ?= nginx:1.31.7-alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054
 E2E_GITEA_IMAGE ?= gitea/gitea:main-nightly
 E2E_K3S_IMAGE ?= rancher/k3s:v1.37.1-k3s1@sha256:ca7f37d993d82ef0dcdcfecb2e0e2618ea541dbaffc620c8cedebe01a82acd0d # renovate: datasource=docker
 
-LINUX_ARCHS ?= linux/amd64,linux/arm64
-DARWIN_ARCHS ?= darwin-12/amd64,darwin-12/arm64
-WINDOWS_ARCHS ?= windows/amd64
 GOFILES := $(shell find . -type f -name "*.go" -o -name "go.mod" ! -name "generated.*")
 
 DOCKER_IMAGE ?= gitea/runner
@@ -38,9 +30,6 @@ endif
 ifeq ($(HAS_GO), GO)
 	GOPATH ?= $(shell $(GO) env GOPATH)
 	export PATH := $(GOPATH)/bin:$(PATH)
-
-	CGO_EXTRA_CFLAGS := -DSQLITE_MAX_VARIABLE_NUMBER=32766
-	CGO_CFLAGS ?= $(shell $(GO) env CGO_CFLAGS) $(CGO_EXTRA_CFLAGS)
 endif
 
 ifeq ($(OS), Windows_NT)
@@ -108,8 +97,6 @@ fmt-check: ## check the Go code formatting
 .PHONY: deps-tools
 deps-tools: ## install tool dependencies
 	$(GO) install $(GOLANGCI_LINT_PACKAGE) & \
-	$(GO) install $(GXZ_PACKAGE) & \
-	$(GO) install $(XGO_PACKAGE) & \
 	$(GO) install $(GOVULNCHECK_PACKAGE) & \
 	wait
 
@@ -186,45 +173,6 @@ $(EXECUTABLE): $(GOFILES)
 .PHONY: deps-backend
 deps-backend: ## install backend dependencies
 	$(GO) mod download
-
-.PHONY: release
-release: release-windows release-linux release-darwin release-copy release-compress release-check ## build release artifacts
-
-$(DIST_DIRS):
-	mkdir -p $(DIST_DIRS)
-
-.PHONY: release-windows
-release-windows: | $(DIST_DIRS)
-	CGO_CFLAGS="$(CGO_CFLAGS)" $(GO) run $(XGO_PACKAGE) -go $(XGO_VERSION) -buildmode exe -dest $(DIST)/binaries -tags 'netgo osusergo $(TAGS)' -ldflags '-s -w -linkmode external -extldflags "-static" $(LDFLAGS)' -targets '$(WINDOWS_ARCHS)' -out $(EXECUTABLE)-$(VERSION) .
-ifeq ($(CI),true)
-	cp -r /build/* $(DIST)/binaries/
-endif
-
-.PHONY: release-linux
-release-linux: | $(DIST_DIRS)
-	CGO_CFLAGS="$(CGO_CFLAGS)" $(GO) run $(XGO_PACKAGE) -go $(XGO_VERSION) -dest $(DIST)/binaries -tags 'netgo osusergo $(TAGS)' -ldflags '-s -w -linkmode external -extldflags "-static" $(LDFLAGS)' -targets '$(LINUX_ARCHS)' -out $(EXECUTABLE)-$(VERSION) .
-ifeq ($(CI),true)
-	cp -r /build/* $(DIST)/binaries/
-endif
-
-.PHONY: release-darwin
-release-darwin: | $(DIST_DIRS)
-	CGO_CFLAGS="$(CGO_CFLAGS)" $(GO) run $(XGO_PACKAGE) -go $(XGO_VERSION) -dest $(DIST)/binaries -tags 'netgo osusergo $(TAGS)' -ldflags '-s -w $(LDFLAGS)' -targets '$(DARWIN_ARCHS)' -out $(EXECUTABLE)-$(VERSION) .
-ifeq ($(CI),true)
-	cp -r /build/* $(DIST)/binaries/
-endif
-
-.PHONY: release-copy
-release-copy: | $(DIST_DIRS)
-	cd $(DIST); for file in `find . -type f -name "*"`; do cp $${file} ./release/; done;
-
-.PHONY: release-check
-release-check: | $(DIST_DIRS)
-	cd $(DIST)/release/; for file in `find . -type f -name "*"`; do echo "checksumming $${file}" && $(SHASUM) `echo $${file} | sed 's/^..//'` > $${file}.sha256; done;
-
-.PHONY: release-compress
-release-compress: | $(DIST_DIRS)
-	cd $(DIST)/release/; for file in `find . -type f -name "*"`; do echo "compressing $${file}" && $(GO) run $(GXZ_PACKAGE) -k -9 $${file}; done;
 
 .PHONY: docker
 docker: ## build the docker image
