@@ -20,6 +20,7 @@ import (
 
 	"gitea.com/gitea/runner/act/artifactcache"
 
+	"gitea.dev/actionslib/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +29,7 @@ import (
 // deliberately: a new release is exactly what can stop the patch matching.
 const actionsCacheRef = "v6.1.0"
 
-// bundleFromGitHub downloads one entrypoint, keeping it in the user cache dir so repeated runs
+// bundleFromGitHub downloads one bundle file, keeping it in the user cache dir so repeated runs
 // cost nothing. The bundles are megabytes, too large to vendor.
 func bundleFromGitHub(t *testing.T, repo, ref, path string) string {
 	t.Helper()
@@ -52,6 +53,7 @@ func bundleFromGitHub(t *testing.T, repo, ref, path string) string {
 		t.Skipf("cannot reach %s: %v", url, err)
 	}
 	defer resp.Body.Close()
+	require.NotEqual(t, http.StatusNotFound, resp.StatusCode, "%s is not in this release", url)
 	if resp.StatusCode != http.StatusOK {
 		t.Skipf("GET %s: %s", url, resp.Status)
 	}
@@ -189,7 +191,7 @@ func TestCacheServiceV2EndToEnd(t *testing.T) {
 
 // The gate and the URL getter are separate functions, and a bundler may put either first: the gap
 // between them runs from 159 to 1179 bytes across these actions, which is why neither edit is
-// anchored on that distance. One entrypoint from each of the families that bundle the cache
+// anchored on that distance. One bundle file from each of the families that bundle the cache
 // toolkit, patched but not run, is what keeps a future release from quietly matching only one of
 // the two shapes and leaving every cache on v1.
 func TestPatchedBundleAcrossActions(t *testing.T) {
@@ -204,11 +206,14 @@ func TestPatchedBundleAcrossActions(t *testing.T) {
 		{"actions/setup-python", "v7.0.0", "dist/setup/index.js", true},
 		{"actions/setup-go", "v7.0.0", "dist/setup/index.js", true},
 		{"actions/setup-java", "v5.7.0", "dist/setup/index.js", true},
+		{"actions/setup-java", "v6.1.0", "dist/setup/295.index.js", true},
 		{"ruby/setup-ruby", "v1.331.0", "dist/index.js", true},
 		{"pnpm/action-setup", "v6.1.0", "dist/index.js", true},
 		{"oven-sh/setup-bun", "v2.2.0", "dist/setup/index.js", true},
 		{"Swatinem/rust-cache", "v2.9.1", "dist/restore/index.js", true},
+		{"Swatinem/rust-cache", "v2.9.2", "dist/cache-CTfQoCTL.js", true},
 		{"docker/build-push-action", "v7.4.0", "dist/index.cjs", true},
+		{"gradle/actions", "v6.4.0", "dist/setup-gradle/main/index.js", true},
 		// The artifact toolkit, where the gate is a refusal and there is nothing to redirect.
 		// v4.4.0 is the first release whose gate carries the localhost test this matches; the
 		// releases before it refuse in a shape the runner leaves alone.
@@ -363,4 +368,48 @@ func TestSetupActionFindsTheCacheService(t *testing.T) {
 
 	require.Contains(t, out, "Cache service version: v2")
 	require.Contains(t, out, "npm cache is not found", "the lookup did not reach the cache server")
+}
+
+func TestCodeSplitActionFindsTheCacheService(t *testing.T) {
+	requireHostTools(t, "node", "rustc")
+
+	dir := tempDirPath(t)
+	for _, name := range []string{
+		"action.yml", "dist/restore.js", "dist/save.js", "dist/cleanup-BWEbZ6YT.js",
+		"dist/cache-CTfQoCTL.js", "dist/cache-DC26rUaF.js", "dist/state-cjs-CkvFUaNy.js",
+	} {
+		body, err := os.ReadFile(bundleFromGitHub(t, "Swatinem/rust-cache", "v2.9.2", name))
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), body, 0o600))
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "action.yml"))
+	require.NoError(t, err)
+	action, err := model.ReadAction(strings.NewReader(string(body)))
+	require.NoError(t, err)
+	inputs := map[string]string{"lookup-only": "true", "add-rust-environment-hash-key": "false", "cache-bin": "false"}
+	for name, input := range action.Inputs {
+		if _, ok := inputs[name]; !ok {
+			inputs[name] = input.Default
+		}
+	}
+	t.Setenv("CARGO_HOME", tempDirPath(t))
+
+	handler, err := artifactcache.StartHandler(artifactcache.Options{Dir: filepath.Join(t.TempDir(), "cache"), OutboundIP: "127.0.0.1"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = handler.Close() })
+	const token = "split-runtime-token"
+	defer handler.RegisterJob(token, artifactcache.JobCredential{Repo: "testuser/testrepo"})()
+
+	defer patchActions(t.Context(), actionScriptPaths(dir, dir, action))()
+	out := runActionEntrypoint(t, filepath.Join(dir, action.Runs.Main), jobEnv{
+		workspace:  tempDirPath(t),
+		runnerTemp: tempDirPath(t),
+		cacheURL:   handler.ExternalURL(),
+		resultsURL: handler.ExternalURL(),
+		token:      token,
+	}, inputs)
+
+	require.Contains(t, out, "Cache service version: v2")
+	require.Contains(t, out, "No cache found.", "the lookup did not reach the cache server")
 }

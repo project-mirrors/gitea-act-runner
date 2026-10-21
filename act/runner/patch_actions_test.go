@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -82,6 +83,21 @@ func TestPatchedBundleLeavesTrustworthyURLCheckAlone(t *testing.T) {
 	require.True(t, patched)
 	assert.Contains(t, string(out), undici, "the trustworthy-URL check must survive byte for byte")
 	assert.True(t, gateOpened(string(out)))
+}
+
+func TestPatchedBundleOpensOnlyTheIsGhesTest(t *testing.T) {
+	const unrelated = `function isLocalName(h){return h.toUpperCase().endsWith('.LOCALHOST')}`
+
+	for _, bundle := range []string{unrelated + "\n" + gateTSC, gateTSC + "\n" + unrelated} {
+		out, patched := patchedBundle([]byte(bundle))
+		require.True(t, patched)
+		assert.Contains(t, string(out), unrelated)
+		assert.Contains(t, string(out), "!h.endsWith('')")
+	}
+
+	apart := strings.Replace(gateTSC, "&&!h.endsWith('.LOCALHOST')", "&&"+strings.Repeat(" ", 200)+"!h.endsWith('.LOCALHOST')", 1)
+	_, patched := patchedBundle([]byte(apart))
+	assert.False(t, patched)
 }
 
 // The artifact toolkit puts the same gate in front of a plain refusal, with no URL to move, so
@@ -211,16 +227,42 @@ func bundleFile(t *testing.T, body string) string {
 }
 
 func TestActionScriptPaths(t *testing.T) {
-	node := &model.Action{Runs: model.ActionRuns{Using: "node20", Main: "dist/restore/index.js", Post: "dist/save/index.js"}}
-	assert.Equal(t, []string{"/a/dist/restore/index.js", "/a/dist/save/index.js"}, actionScriptPaths("/a", node))
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	dist := filepath.Join(dir, "dist")
+	require.NoError(t, os.MkdirAll(filepath.Join(dist, "sub"), 0o755))
+	require.NoError(t, os.Mkdir(filepath.Join(dist, "directory.js"), 0o755))
+	for _, name := range []string{"dist/restore.js", "dist/save.js", "dist/cache-CTfQoCTL.js", "dist/295.index.js", "dist/chunk.cjs", "dist/chunk.mjs", "dist/LICENSE.txt", "dist/sub/deep.js", "pre.js"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), nil, 0o644))
+	}
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "index.js"), nil, 0o644))
+	require.NoError(t, os.Symlink(filepath.Join(outside, "index.js"), filepath.Join(dist, "linked.js")))
+
+	var chunks []string
+	for _, name := range []string{"295.index.js", "cache-CTfQoCTL.js", "chunk.cjs", "chunk.mjs", "restore.js", "save.js"} {
+		chunks = append(chunks, filepath.Join(dist, name))
+	}
+	node := &model.Action{Runs: model.ActionRuns{Using: "node20", Pre: "pre.js", Main: "dist/restore.js", Post: "dist/save.js"}}
+	assert.Equal(t, append(slices.Clone(chunks), filepath.Join(dir, "pre.js")), actionScriptPaths(dir, dir, node))
 
 	// Only a node action has a bundle to patch.
-	assert.Nil(t, actionScriptPaths("/a", &model.Action{Runs: model.ActionRuns{Using: "docker", Image: "alpine"}}))
-	assert.Nil(t, actionScriptPaths("/a", nil))
+	assert.Nil(t, actionScriptPaths(dir, dir, &model.Action{Runs: model.ActionRuns{Using: "docker", Image: "alpine"}}))
+	assert.Nil(t, actionScriptPaths(dir, dir, nil))
 
-	// An action naming a file outside its own directory does not get it rewritten.
-	escaping := &model.Action{Runs: model.ActionRuns{Using: "node20", Main: "../../elsewhere/index.js"}}
-	assert.Nil(t, actionScriptPaths("/a", escaping))
+	// An action naming a file outside its checkout does not get it rewritten.
+	require.NoError(t, os.Symlink(outside, filepath.Join(dir, "linked")))
+	escaping, err := filepath.Rel(dir, filepath.Join(outside, "index.js"))
+	require.NoError(t, err)
+	for _, main := range []string{"../../elsewhere/index.js", escaping, "dist/linked.js", "linked/index.js"} {
+		assert.Nil(t, actionScriptPaths(dir, dir, &model.Action{Runs: model.ActionRuns{Using: "node20", Main: main}}), main)
+	}
+
+	require.NoError(t, os.Symlink("dist", filepath.Join(dir, "build")))
+	assert.Equal(t, chunks, actionScriptPaths(dir, dir, &model.Action{Runs: model.ActionRuns{Using: "node20", Main: "build/restore.js"}}))
+
+	assert.Equal(t, chunks, actionScriptPaths(dir, filepath.Join(dir, "setup"), &model.Action{Runs: model.ActionRuns{Using: "node20", Main: "../dist/restore.js"}}))
 }
 
 func TestPatchActionsAtTheContainerCopy(t *testing.T) {
@@ -231,15 +273,16 @@ func TestPatchActionsAtTheContainerCopy(t *testing.T) {
 		sar := &stepActionRemote{
 			Step:         &model.Step{Uses: "owner/repo/sub@v1"},
 			remoteAction: &remoteAction{Org: "owner", Repo: "repo", Path: "sub", Ref: "v1"},
-			action:       &model.Action{Runs: model.ActionRuns{Using: "node20", Main: "index.js"}},
+			action:       &model.Action{Runs: model.ActionRuns{Using: "node20", Main: "../dist/index.js"}},
 			actionDir:    t.TempDir(),
 			RunContext: &RunContext{
 				Config:       &Config{ActionCacheDir: t.TempDir(), NoActionPatch: noPatch},
 				JobContainer: cm,
 			},
 		}
-		script := filepath.Join(sar.actionDir, "sub", "index.js")
+		script := filepath.Join(sar.actionDir, "dist", "cache.js")
 		require.NoError(t, os.MkdirAll(filepath.Dir(script), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(script), "index.js"), []byte("require('./cache.js')"), 0o600))
 		require.NoError(t, os.WriteFile(script, []byte(gateTSC), 0o600))
 
 		var copied string
