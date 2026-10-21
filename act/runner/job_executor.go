@@ -19,10 +19,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/container"
 
 	"gitea.dev/actionslib/pkg/exprparser"
@@ -94,6 +96,39 @@ func printPrepareActions(rc *RunContext, preparers []actionPreparer) common.Exec
 
 		rawLogger := common.Logger(ctx).With(rawOutputField, true)
 		rawLogger.Infof("Prepare all required actions")
+
+		fetchCtx, cancelFetches := context.WithCancel(ctx)
+		var fetches sync.WaitGroup
+		defer func() { cancelFetches(); fetches.Wait() }()
+		slots := make(chan struct{}, 4)
+		job := rc.topLevelRunContext()
+		if job.actionDownloads == nil {
+			job.actionDownloads = map[string]*actionDownload{}
+		}
+		for _, preparer := range preparers {
+			action, ok := preparer.(*stepActionRemote)
+			if !ok || strings.Contains(action.Step.Uses, "${{") || action.action != nil {
+				continue
+			}
+			github := action.getGithubContext(common.WithLogger(ctx, logging.New(logging.DiscardHandler)))
+			remote, err := newRemoteAction(action.Step.Uses, github, action.RunContext.Config.GitHubInstance)
+			if err != nil || action.skipsLocalCheckout(remote, github) {
+				continue
+			}
+			key := remote.downloadKey(action.RunContext.Config.DefaultActionURL())
+			if job.actionDownloads[key] != nil {
+				continue
+			}
+			download := &actionDownload{fetched: make(chan struct{})}
+			job.actionDownloads[key] = download
+			fetches.Go(func() {
+				defer close(download.fetched)
+				defer common.RecoverPanic(&download.err)
+				slots <- struct{}{}
+				defer func() { <-slots }()
+				download.dir, download.sha, download.err = action.fetchAction(fetchCtx, remote, github.Token)
+			})
+		}
 
 		for _, preparer := range preparers {
 			if err := preparer.prepareActionExecutor()(ctx); err != nil {

@@ -13,9 +13,13 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"gitea.com/gitea/runner/act/common"
@@ -408,13 +412,12 @@ func TestFindRevalidatesStaleID(t *testing.T) {
 		client := &mockDockerClient{}
 		return &containerReference{id: id, cli: client, input: &NewContainerInput{Name: "job-1"}}, client
 	}
-	listOpts := mobyclient.ContainerListOptions{All: true}
 	inspectOpts := mobyclient.ContainerInspectOptions{}
 
 	t.Run("stale id cleared, name lookup empty", func(t *testing.T) {
 		cr, client := newCR("stale")
 		client.On("ContainerInspect", ctx, "stale", inspectOpts).Return(mobyclient.ContainerInspectResult{}, notFound)
-		client.On("ContainerList", ctx, listOpts).Return(mobyclient.ContainerListResult{}, nil)
+		client.On("ContainerInspect", ctx, "job-1", inspectOpts).Return(mobyclient.ContainerInspectResult{}, notFound)
 		require.NoError(t, cr.find()(ctx))
 		assert.Empty(t, cr.id)
 		client.AssertExpectations(t)
@@ -423,8 +426,18 @@ func TestFindRevalidatesStaleID(t *testing.T) {
 	t.Run("stale id cleared, name lookup repopulates", func(t *testing.T) {
 		cr, client := newCR("stale")
 		client.On("ContainerInspect", ctx, "stale", inspectOpts).Return(mobyclient.ContainerInspectResult{}, notFound)
-		client.On("ContainerList", ctx, listOpts).Return(mobyclient.ContainerListResult{Items: []container.Summary{
-			{ID: "other", Names: []string{"/somebody-else"}},
+		client.On("ContainerInspect", ctx, "job-1", inspectOpts).
+			Return(mobyclient.ContainerInspectResult{Container: container.InspectResponse{ID: "fresh", Name: "/job-1"}}, nil)
+		require.NoError(t, cr.find()(ctx))
+		assert.Equal(t, "fresh", cr.id)
+		client.AssertExpectations(t)
+	})
+
+	t.Run("id match falls back to listing", func(t *testing.T) {
+		cr, client := newCR("")
+		client.On("ContainerInspect", ctx, "job-1", inspectOpts).
+			Return(mobyclient.ContainerInspectResult{Container: container.InspectResponse{ID: "job-1abc", Name: "/somebody-else"}}, nil)
+		client.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true}).Return(mobyclient.ContainerListResult{Items: []container.Summary{
 			{ID: "fresh", Names: []string{"/job-1"}},
 		}}, nil)
 		require.NoError(t, cr.find()(ctx))
@@ -448,12 +461,43 @@ func TestFindRevalidatesStaleID(t *testing.T) {
 		client.AssertExpectations(t)
 	})
 
-	t.Run("list error propagates", func(t *testing.T) {
+	t.Run("name lookup error falls back to listing", func(t *testing.T) {
 		cr, client := newCR("")
-		client.On("ContainerList", ctx, listOpts).Return(mobyclient.ContainerListResult{}, boom)
+		client.On("ContainerInspect", ctx, "job-1", inspectOpts).Return(mobyclient.ContainerInspectResult{}, boom)
+		client.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true}).Return(mobyclient.ContainerListResult{Items: []container.Summary{
+			{ID: "other", Names: []string{"/somebody-else"}},
+			{ID: "fresh", Names: []string{"/job-1"}},
+		}}, nil).Once()
+		require.NoError(t, cr.find()(ctx))
+		assert.Equal(t, "fresh", cr.id)
+		client.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true}).Return(mobyclient.ContainerListResult{}, boom)
+		cr.id = ""
 		require.ErrorIs(t, cr.find()(ctx), boom)
 		client.AssertExpectations(t)
 	})
+}
+
+func TestRunnerArchCachedPerRun(t *testing.T) {
+	var infos atomic.Int32
+	daemon := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.Header().Set("API-Version", "1.47")
+		if strings.HasSuffix(request.URL.Path, "/info") {
+			infos.Add(1)
+			_, _ = io.WriteString(writer, `{"Architecture":"aarch64"}`)
+		}
+	}))
+	t.Cleanup(daemon.Close)
+	t.Setenv("DOCKER_HOST", daemon.URL)
+	extensions := &LinuxContainerEnvironmentExtensions{}
+	run := WithRunnerArch(t.Context())
+	var lookups sync.WaitGroup
+	for range 4 {
+		lookups.Go(func() { assert.Equal(t, "ARM64", extensions.GetRunnerContext(run)["arch"]) })
+	}
+	lookups.Wait()
+	assert.Equal(t, "ARM64", extensions.GetRunnerContext(t.Context())["arch"])
+	assert.EqualValues(t, 2, infos.Load())
 }
 
 // Every daemon entry point fails fast with a clear, container-named
@@ -461,7 +505,8 @@ func TestFindRevalidatesStaleID(t *testing.T) {
 func TestRejectsMissingContainer(t *testing.T) {
 	ctx := t.Context()
 	client := &mockDockerClient{}
-	client.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true}).Return(mobyclient.ContainerListResult{}, nil)
+	client.On("ContainerInspect", ctx, "job-1", mobyclient.ContainerInspectOptions{}).
+		Return(mobyclient.ContainerInspectResult{}, cerrdefs.ErrNotFound)
 	cr := &containerReference{cli: client, input: &NewContainerInput{Name: "job-1"}}
 	check := func(op string, err error) {
 		t.Helper()
@@ -498,10 +543,8 @@ func TestPublicCopyPipelineHandlesStaleID(t *testing.T) {
 			client := &mockDockerClient{}
 			client.On("ContainerInspect", ctx, "stale", mobyclient.ContainerInspectOptions{}).
 				Return(mobyclient.ContainerInspectResult{}, cerrdefs.ErrNotFound.WithMessage("gone"))
-			client.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true}).
-				Return(mobyclient.ContainerListResult{Items: []container.Summary{
-					{ID: "fresh", Names: []string{"/job-1"}},
-				}}, nil)
+			client.On("ContainerInspect", ctx, "job-1", mobyclient.ContainerInspectOptions{}).
+				Return(mobyclient.ContainerInspectResult{Container: container.InspectResponse{ID: "fresh", Name: "/job-1"}}, nil)
 			client.On("CopyToContainer", ctx, "fresh", mock.Anything).
 				Run(func(args mock.Arguments) {
 					opts := args.Get(2).(mobyclient.CopyToContainerOptions)

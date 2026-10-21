@@ -6,6 +6,7 @@ package runner
 
 import (
 	"strings"
+	"sync"
 	"testing"
 
 	"gitea.dev/actionslib/pkg/exprparser"
@@ -499,4 +500,23 @@ jobs:
 	a, b := containerName("a"), containerName("b")
 	assert.NotContains(t, a, "s3cr3t") // it reaches the container name, which no log masker covers
 	assert.NotEqual(t, a, b)           // masking the name must not collapse two jobs onto one container
+}
+
+func TestNewExpressionEvaluatorReadsJobOutputsWhileCombinationsWriteThem(t *testing.T) {
+	rc := createRunContext(t)
+	rc.caller = &caller{runContext: createRunContext(t)}
+	rc.ExprEval = rc.NewExpressionEvaluator(t.Context())
+	job := rc.Run.Job()
+	var writes sync.WaitGroup
+	writes.Go(func() {
+		for range 100 {
+			unlock := lockJob(job)
+			job.Outputs = map[string]string{"out": "value"}
+			unlock()
+		}
+	})
+	for range 100 {
+		rc.NewExpressionEvaluator(t.Context())
+	}
+	writes.Wait()
 }

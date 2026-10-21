@@ -24,6 +24,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gitea.com/gitea/runner/act/common"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // S3Options configures the bucket that stores completed cache entries.
@@ -47,7 +51,7 @@ type cacheStorage interface {
 	Remove(uint64) error
 }
 
-const s3PartSize = 5 << 30 // the largest part S3 accepts
+const s3PartSize = 64 << 20
 
 // s3Storage stages uploads on disk and keeps completed entries and their metadata in a bucket.
 type s3Storage struct {
@@ -69,6 +73,7 @@ func newS3Storage(staging *Storage, opts S3Options) (*s3Storage, error) {
 	}
 	transport, _ := http.DefaultTransport.(*http.Transport)
 	transport = transport.Clone()
+	transport.MaxIdleConnsPerHost = 32            // 4 parts each for the 8 jobs a runner commonly runs
 	transport.ResponseHeaderTimeout = time.Minute // a stalled endpoint must not hold the store forever
 	pathStyle := !strings.HasSuffix(endpoint.Hostname(), ".amazonaws.com")
 	if opts.PathStyle != nil {
@@ -209,26 +214,43 @@ func (s *s3Storage) Commit(id uint64, size int64) (int64, error) {
 	return written, nil
 }
 
-// upload always goes in parts, the only way S3 takes an object over 5 GiB.
-func (s *s3Storage) upload(ctx context.Context, key string, file io.ReaderAt, size int64) error {
+func (s *s3Storage) upload(ctx context.Context, key string, file io.ReaderAt, size int64) (uploadErr error) {
+	if size <= s3PartSize {
+		_, err := s.call(ctx, http.MethodPut, key, nil, io.NewSectionReader(file, 0, size), nil)
+		return err
+	}
 	var created struct {
 		UploadID string `xml:"UploadId"`
 	}
 	if _, err := s.call(ctx, http.MethodPost, key, url.Values{"uploads": {""}}, nil, &created); err != nil {
 		return err
 	}
+	defer func() {
+		if uploadErr != nil && created.UploadID != "" {
+			abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+			defer cancel()
+			_, _ = s.call(abortCtx, http.MethodDelete, key, url.Values{"uploadId": {created.UploadID}}, nil, nil)
+		}
+	}()
 	var completion struct {
 		XMLName xml.Name `xml:"CompleteMultipartUpload"`
 		Parts   []s3Part `xml:"Part"`
 	}
-	for offset := int64(0); offset == 0 || offset < size; offset += s3PartSize {
-		number, length := len(completion.Parts)+1, min(s3PartSize, size-offset)
-		query := url.Values{"partNumber": {strconv.Itoa(number)}, "uploadId": {created.UploadID}}
-		header, err := s.call(ctx, http.MethodPut, key, query, io.NewSectionReader(file, offset, length), nil)
-		if err != nil {
+	partSize := max(int64(s3PartSize), (size-1)/10000+1)
+	completion.Parts = make([]s3Part, (size-1)/partSize+1)
+	workers, workerCtx := errgroup.WithContext(ctx)
+	workers.SetLimit(4)
+	for part := range completion.Parts {
+		workers.Go(func() (err error) {
+			defer common.RecoverPanic(&err)
+			offset := int64(part) * partSize
+			header, err := s.call(workerCtx, http.MethodPut, key, url.Values{"partNumber": {strconv.Itoa(part + 1)}, "uploadId": {created.UploadID}}, io.NewSectionReader(file, offset, min(partSize, size-offset)), nil)
+			completion.Parts[part] = s3Part{part + 1, header.Get("ETag")}
 			return err
-		}
-		completion.Parts = append(completion.Parts, s3Part{number, header.Get("ETag")})
+		})
+	}
+	if err := workers.Wait(); err != nil {
+		return err
 	}
 	body, err := xml.Marshal(completion)
 	if err != nil {

@@ -476,22 +476,23 @@ func (cr *containerReference) find() common.Executor {
 			}
 			cr.id = ""
 		}
-		containers, err := cr.cli.ContainerList(ctx, client.ContainerListOptions{
-			All: true,
-		})
+		result, err := cr.cli.ContainerInspect(ctx, cr.input.Name, client.ContainerInspectOptions{})
+		if err == nil && result.Container.Name == "/"+cr.input.Name {
+			cr.id = result.Container.ID
+			return nil
+		} else if cerrdefs.IsNotFound(err) {
+			return nil
+		}
+		containers, err := cr.cli.ContainerList(ctx, client.ContainerListOptions{All: true}) // inspect also matches ids, and podman fails it with a 500 for a container removed mid-request
 		if err != nil {
 			return fmt.Errorf("failed to list containers: %w", err)
 		}
-
-		for _, c := range containers.Items {
-			for _, name := range c.Names {
-				if name[1:] == cr.input.Name {
-					cr.id = c.ID
-					return nil
-				}
+		for _, candidate := range containers.Items {
+			if slices.Contains(candidate.Names, "/"+cr.input.Name) {
+				cr.id = candidate.ID
+				break
 			}
 		}
-
 		return nil
 	}
 }

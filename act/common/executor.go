@@ -61,6 +61,13 @@ func NewErrorExecutor(err error) Executor {
 	}
 }
 
+func RecoverPanic(err *error) { // defer directly in workers to keep stacks in host logs
+	if recovered := recover(); recovered != nil {
+		logging.Errorf("panic: %v\n%s", recovered, debug.Stack())
+		*err = fmt.Errorf("panic: %v", recovered)
+	}
+}
+
 // NewParallelExecutor creates a new executor from a parallel of other executors
 func NewParallelExecutor(parallel int, executors ...Executor) Executor {
 	if len(executors) == 0 {
@@ -91,12 +98,7 @@ func NewParallelExecutor(parallel int, executors ...Executor) Executor {
 					// goroutine which would leave the runner process hung.
 					// https://gitea.com/gitea/runner/issues/371
 					errs <- func() (err error) {
-						defer func() {
-							if r := recover(); r != nil {
-								logging.Errorf("panic in executor: %v\n%s", r, debug.Stack())
-								err = fmt.Errorf("panic: %v", r)
-							}
-						}()
+						defer RecoverPanic(&err)
 						return executor(ctx)
 					}()
 				}

@@ -17,12 +17,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/timshannon/bolthold"
 	"go.etcd.io/bbolt"
+	berrors "go.etcd.io/bbolt/errors"
 )
 
 // testToken is registered with the cache server in every test that needs to
@@ -113,6 +115,26 @@ func TestHandler(t *testing.T) {
 	handler.RegisterJob(testToken, JobCredential{Repo: testRepo})
 
 	base := fmt.Sprintf("%s%s", handler.ExternalURL(), apiPath)
+
+	t.Run("database open recovers from failure, times out while held and close is idempotent", func(t *testing.T) {
+		dir := t.TempDir()
+		synctest.Test(t, func(t *testing.T) {
+			handler := &Handler{dir: dir, dbLock: make(chan struct{}, 1)}
+			require.NoError(t, os.Mkdir(filepath.Join(handler.dir, "bolt.db"), 0o755))
+			_, err := handler.openDB()
+			require.Error(t, err)
+			require.NoError(t, os.Remove(filepath.Join(handler.dir, "bolt.db")))
+			first, err := handler.openDB()
+			require.NoError(t, err)
+			_, err = handler.openDB()
+			require.ErrorIs(t, err, berrors.ErrTimeout)
+			require.NoError(t, first.Close())
+			require.NoError(t, first.Close())
+			second, err := handler.openDB()
+			require.NoError(t, err)
+			require.NoError(t, second.Close())
+		})
+	})
 
 	defer func() {
 		t.Run("inpect db", func(t *testing.T) {

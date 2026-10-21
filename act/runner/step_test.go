@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -540,10 +541,11 @@ func TestRunStepExecutorParity(t *testing.T) {
 		}
 	})
 
-	t.Run("file command error honors continue-on-error", func(t *testing.T) {
+	t.Run("file command error honors continue-on-error and keeps the step summary", func(t *testing.T) {
 		step := newStep(t, &model.Step{ID: "commands", RawContinueOnError: "true"})
 		logger, hook := logtest.NewLogger()
 		err := runStepExecutor(step, stepStageMain, func(context.Context) error {
+			require.NoError(t, os.WriteFile(step.env["GITHUB_STEP_SUMMARY"], []byte("report"), 0o600))
 			require.NoError(t, os.WriteFile(step.env["GITHUB_ENV"], []byte("GOOD=1\nmalformed\n"), 0o600))
 			require.NoError(t, os.WriteFile(step.env["GITHUB_OUTPUT"], []byte("kept=value\n"), 0o600))
 			require.NoError(t, os.WriteFile(step.env["GITHUB_STATE"], []byte("saved=value\n"), 0o600))
@@ -563,6 +565,15 @@ func TestRunStepExecutorParity(t *testing.T) {
 			require.NoError(t, readErr)
 			assert.Empty(t, contents)
 		}
+		summary, err := os.ReadFile(step.env["GITHUB_STEP_SUMMARY"])
+		require.NoError(t, err)
+		assert.Equal(t, "report", string(summary))
+	})
+
+	t.Run("a broken summary path still resets the command files", func(t *testing.T) {
+		step := newStep(t, &model.Step{ID: "noop"})
+		require.NoError(t, os.MkdirAll(filepath.Join(step.RunContext.JobContainer.GetActPath(), "workflow", "step-summary-0.md"), 0o700))
+		require.NoError(t, runStepExecutor(step, stepStageMain, noopExecutor)(t.Context()))
 	})
 
 	t.Run("file commands survive a job timeout", func(t *testing.T) {

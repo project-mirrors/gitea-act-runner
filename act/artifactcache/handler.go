@@ -34,6 +34,7 @@ import (
 
 	"github.com/timshannon/bolthold"
 	"go.etcd.io/bbolt"
+	berrors "go.etcd.io/bbolt/errors"
 )
 
 const (
@@ -44,6 +45,8 @@ const (
 	// Short enough that a leaked URL is near-worthless; long enough to let the
 	// @actions/cache client download a big blob that was returned from /cache.
 	artifactURLTTL = 10 * time.Minute
+
+	dbOpenTimeout = 5 * time.Second
 )
 
 type credKey struct{}
@@ -84,6 +87,8 @@ type Handler struct {
 	port     int
 	server   *http.Server
 	logger   *logging.Logger
+
+	dbLock chan struct{} // queues store openers without polling bolt's file lock
 
 	gcing atomic.Bool
 	gcAt  time.Time
@@ -142,6 +147,7 @@ func StartHandler(opts Options) (*Handler, error) {
 		internalSecret: opts.InternalSecret,
 		policy:         opts.Policy.withDefaults(),
 		freeDisk:       disk.FreeBytes,
+		dbLock:         make(chan struct{}, 1),
 	}
 
 	if logger == nil {
@@ -418,16 +424,42 @@ func (h *Handler) Close() error {
 	return retErr
 }
 
-func (h *Handler) openDB() (*bolthold.Store, error) {
-	return bolthold.Open(filepath.Join(h.dir, "bolt.db"), 0o644, &bolthold.Options{
+type cacheDB struct {
+	*bolthold.Store
+	close func() error
+}
+
+func (db *cacheDB) Close() error {
+	return db.close()
+}
+
+func (h *Handler) openDB() (store *cacheDB, err error) {
+	select {
+	case h.dbLock <- struct{}{}:
+	case <-time.After(dbOpenTimeout):
+		return nil, berrors.ErrTimeout
+	}
+	defer func() {
+		if store == nil { // only an opened store hands the lock to Close, even when Open panics
+			<-h.dbLock
+		}
+	}()
+	db, err := bolthold.Open(filepath.Join(h.dir, "bolt.db"), 0o644, &bolthold.Options{
 		Encoder: func(value any) ([]byte, error) { return json.Marshal(value) },
 		Decoder: func(data []byte, value any) error { return json.Unmarshal(data, value) },
 		Options: &bbolt.Options{
-			Timeout:      5 * time.Second,
+			Timeout:      dbOpenTimeout,
 			NoGrowSync:   bbolt.DefaultOptions.NoGrowSync,
 			FreelistType: bbolt.DefaultOptions.FreelistType,
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
+	return &cacheDB{Store: db, close: sync.OnceValue(func() error {
+		defer func() { <-h.dbLock }()
+		return db.Close()
+	})}, nil
 }
 
 // syncMetadata mirrors the bucket into the store until ctx ends, so no request waits on S3 for it.
@@ -528,7 +560,7 @@ func (h *Handler) find(w http.ResponseWriter, r *http.Request) {
 // lookupCache returns the entry to restore for these keys, or (nil, nil) when there is none:
 // either nothing matched, or the match had lost its blob to a prune, in which case the dangling
 // entry is dropped on the way out.
-func (h *Handler) lookupCache(db *bolthold.Store, repo string, keys []string, version string) (*Cache, error) {
+func (h *Handler) lookupCache(db *cacheDB, repo string, keys []string, version string) (*Cache, error) {
 	cache, err := findCache(db, repo, keys, version)
 	if err != nil || cache == nil {
 		return nil, err
@@ -910,7 +942,7 @@ func (h *Handler) signedArtifactURL(cred JobCredential, cacheID uint64, exp time
 }
 
 // if not found, return (nil, nil) instead of an error.
-func findCache(db *bolthold.Store, repo string, keys []string, version string) (*Cache, error) {
+func findCache(db *cacheDB, repo string, keys []string, version string) (*Cache, error) {
 	cache := &Cache{}
 	for _, prefix := range keys {
 		// if a key in the list matches exactly, don't return partial matches
@@ -944,7 +976,7 @@ func findCache(db *bolthold.Store, repo string, keys []string, version string) (
 // A completed entry is the one to restore, sorted by when it was written. An incomplete one is a
 // reservation being uploaded to, sorted by when it was last written to, because the upload route
 // touches UsedAt on every part.
-func findExactCache(db *bolthold.Store, repo, key, version string, complete bool) (*Cache, error) {
+func findExactCache(db *cacheDB, repo, key, version string, complete bool) (*Cache, error) {
 	sortBy := "UsedAt"
 	if complete {
 		sortBy = "CreatedAt"
@@ -965,7 +997,7 @@ func findExactCache(db *bolthold.Store, repo, key, version string, complete bool
 	return cache, nil
 }
 
-func (h *Handler) insertCache(db *bolthold.Store, cache *Cache) error {
+func (h *Handler) insertCache(db *cacheDB, cache *Cache) error {
 	if h.s3 != nil {
 		var id [8]byte
 		_, _ = rand.Read(id[:])
@@ -1089,7 +1121,7 @@ func (h *Handler) gcCache() {
 
 // evictForFreeSpace bounds the volume itself, so it also covers bytes the cache never
 // accounted for.
-func (h *Handler) evictForFreeSpace(db *bolthold.Store) {
+func (h *Handler) evictForFreeSpace(db *cacheDB) {
 	free, err := h.freeDisk(h.dir)
 	if err != nil {
 		h.logger.Debugf("free disk check: %v", err) // unsupported platform, treat as unavailable rather than full
@@ -1109,14 +1141,14 @@ func (h *Handler) evictForFreeSpace(db *bolthold.Store) {
 }
 
 // evictIncomplete removes uploads that stopped part way, which are most likely broken.
-func (h *Handler) evictIncomplete(db *bolthold.Store) {
+func (h *Handler) evictIncomplete(db *cacheDB) {
 	h.sweep(db, bolthold.
 		Where("UsedAt").Lt(time.Now().Add(-uploadStallTimeout).Unix()).
 		And("Complete").Eq(false).
 		Index("UsedAt"))
 }
 
-func (h *Handler) evictExpired(db *bolthold.Store) {
+func (h *Handler) evictExpired(db *cacheDB) {
 	if h.policy.Retention <= 0 {
 		return
 	}
@@ -1127,7 +1159,7 @@ func (h *Handler) evictExpired(db *bolthold.Store) {
 
 // evictSuperseded removes entries a newer one with the same key and version replaced. The
 // aggregation includes Repo so two repos sharing a (key, version) do not evict each other.
-func (h *Handler) evictSuperseded(db *bolthold.Store) {
+func (h *Handler) evictSuperseded(db *cacheDB) {
 	results, err := db.FindAggregate(&Cache{}, bolthold.Where("Complete").Eq(true).Index("Complete"), "Repo", "Key", "Version")
 	if err != nil {
 		h.logger.Warnf("find aggregate caches: %v", err)
@@ -1152,7 +1184,7 @@ func (h *Handler) evictSuperseded(db *bolthold.Store) {
 
 // evictOversized applies the per-repository limit, then the whole-store one. Only completed
 // entries count, since only those carry a size measured at commit rather than claimed.
-func (h *Handler) evictOversized(db *bolthold.Store) {
+func (h *Handler) evictOversized(db *cacheDB) {
 	if h.policy.RepoSizeLimit > 0 {
 		byRepo := make(map[string][]*Cache)
 		for _, cache := range h.completedByUse(db) {
@@ -1167,7 +1199,7 @@ func (h *Handler) evictOversized(db *bolthold.Store) {
 
 // evictTotal caps the store as a whole. It re-queries because the per-repo pass may have
 // deleted rows an earlier result still holds.
-func (h *Handler) evictTotal(db *bolthold.Store) {
+func (h *Handler) evictTotal(db *cacheDB) {
 	if h.policy.SizeLimit <= 0 {
 		return
 	}
@@ -1175,7 +1207,7 @@ func (h *Handler) evictTotal(db *bolthold.Store) {
 }
 
 // evictRepo reclaims space when a commit pushes a repo over, rather than at the next sweep.
-func (h *Handler) evictRepo(db *bolthold.Store, repo string) {
+func (h *Handler) evictRepo(db *cacheDB, repo string) {
 	if h.policy.RepoSizeLimit <= 0 {
 		return
 	}
@@ -1183,7 +1215,7 @@ func (h *Handler) evictRepo(db *bolthold.Store, repo string) {
 }
 
 // evictTo deletes until caches fit limit. caches must be ordered by UsedAt ascending.
-func (h *Handler) evictTo(db *bolthold.Store, caches []*Cache, limit int64, scope string) {
+func (h *Handler) evictTo(db *cacheDB, caches []*Cache, limit int64, scope string) {
 	// An entry bigger than the limit never fits, so it goes on its own account instead of
 	// dragging every neighbour out first and then following them next sweep.
 	fits := caches[:0]
@@ -1230,7 +1262,7 @@ func touchNeeded(cache *Cache) bool {
 // touch stamps UsedAt through the caller's store, a bolt write on the read path. It cannot
 // go through touchCache, which opens its own store and would block on the exclusive lock
 // for as long as the caller holds one.
-func (h *Handler) touch(db *bolthold.Store, cache *Cache) {
+func (h *Handler) touch(db *cacheDB, cache *Cache) {
 	if !touchNeeded(cache) {
 		return
 	}
@@ -1240,13 +1272,13 @@ func (h *Handler) touch(db *bolthold.Store, cache *Cache) {
 	}
 }
 
-func (h *Handler) sweep(db *bolthold.Store, query *bolthold.Query) {
+func (h *Handler) sweep(db *cacheDB, query *bolthold.Query) {
 	for _, cache := range h.caches(db, query) {
 		h.deleteCache(db, cache)
 	}
 }
 
-func (h *Handler) caches(db *bolthold.Store, query *bolthold.Query) []*Cache {
+func (h *Handler) caches(db *cacheDB, query *bolthold.Query) []*Cache {
 	var caches []*Cache
 	if err := db.Find(&caches, query); err != nil {
 		h.logger.Warnf("find caches: %v", err)
@@ -1256,14 +1288,14 @@ func (h *Handler) caches(db *bolthold.Store, query *bolthold.Query) []*Cache {
 
 // cachesByUse returns matches least recently accessed first, sorting here rather than with
 // bolthold's SortBy, which reflects over every field it compares.
-func (h *Handler) cachesByUse(db *bolthold.Store, query *bolthold.Query) []*Cache {
+func (h *Handler) cachesByUse(db *cacheDB, query *bolthold.Query) []*Cache {
 	caches := h.caches(db, query)
 	slices.SortFunc(caches, func(a, b *Cache) int { return cmp.Compare(a.UsedAt, b.UsedAt) })
 	return caches
 }
 
 // completedByUse returns every entry the size limits count, least recently accessed first.
-func (h *Handler) completedByUse(db *bolthold.Store) []*Cache {
+func (h *Handler) completedByUse(db *cacheDB) []*Cache {
 	return h.cachesByUse(db, bolthold.Where("Complete").Eq(true).Index("Complete"))
 }
 
@@ -1277,7 +1309,7 @@ func totalSize(caches []*Cache) int64 {
 
 // deleteCache drops an entry and its bytes, reporting whether it went fully. The blob goes
 // first, so a failed unlink leaves the row for the next sweep instead of orphaning bytes.
-func (h *Handler) deleteCache(db *bolthold.Store, cache *Cache) bool {
+func (h *Handler) deleteCache(db *cacheDB, cache *Cache) bool {
 	storage := h.storage
 	if h.s3 != nil && !cache.Complete {
 		storage = h.s3.Storage // an upload not yet committed has nothing in the bucket

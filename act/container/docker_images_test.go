@@ -66,4 +66,11 @@ func TestImageExistsLocally(t *testing.T) {
 	wrongPlatform, err := ImageExistsLocally(ctx, amd64Ref, "linux/arm64")
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 	assert.False(t, wrongPlatform)
+
+	removed, err := RemoveImage(ctx, amd64Ref, false, false)
+	require.NoError(t, err)
+	assert.True(t, removed)
+	removed, err = RemoveImage(ctx, amd64Ref, false, false)
+	require.NoError(t, err)
+	assert.False(t, removed)
 }

@@ -14,13 +14,17 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/git"
 	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/common/logging/logtest"
 	"gitea.com/gitea/runner/act/container"
@@ -118,14 +122,13 @@ func (sfm *stepFactoryMock) newStep(model *model.Step, rc *RunContext) (step, er
 type actionPreparerMock struct {
 	reference string
 	sha       string
-	err       error
 	prepared  int
 }
 
 func (apm *actionPreparerMock) prepareActionExecutor() common.Executor {
 	return func(context.Context) error {
 		apm.prepared++
-		return apm.err
+		return nil
 	}
 }
 
@@ -133,24 +136,85 @@ func (apm *actionPreparerMock) actionDownloadInfo() (string, string) {
 	return apm.reference, apm.sha
 }
 
-func TestPrintPrepareActionsGolden(t *testing.T) {
-	buf := &bytes.Buffer{}
-	logger := logging.New(logging.NewLevelHandler(newJobLogHandler(buf, cyan), logging.LevelInfo))
-	ctx := common.WithLogger(t.Context(), logger.With("job", "j1"))
+func TestPrintPrepareActionsFetchesConcurrently(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		ctx := common.WithLogger(t.Context(), logging.New(logging.NewLevelHandler(newJobLogHandler(buf, cyan), logging.LevelInfo)).With("job", "j1"))
+		rc := newPrefetchRunContext(t)
+		started, release := make(chan string), make(chan struct{})
+		var fetched atomic.Int32
+		setFetch(t, func(_ctx context.Context, input git.NewGitCloneExecutorInput) (string, string, error) {
+			fetched.Add(1)
+			started <- input.Ref
+			<-release
+			return filepath.Join(input.Dir, "commit"), "sha-" + input.Ref, nil
+		})
+		preparers := append(newRemotePreparers(rc, "org/repo@v1", "org/repo/sub@v1", "org/repo@v2", "org/repo@v3", "org/repo@v4", "org/repo@v5"), &actionPreparerMock{})
+		finished := make(chan error)
+		go func() { finished <- printPrepareActions(rc, preparers)(ctx) }()
+		for range 4 {
+			<-started
+		}
+		synctest.Wait()
+		assert.EqualValues(t, 4, fetched.Load())
+		close(release)
+		<-started
+		require.NoError(t, <-finished)
+		assert.EqualValues(t, 5, fetched.Load())
+		lines := []string{"[j1]   | Prepare all required actions"}
+		for _, ref := range []string{"v1", "v2", "v3", "v4", "v5"} {
+			lines = append(lines, fmt.Sprintf("[j1]   | Download action repository 'org/repo@%s' (SHA:sha-%s)", ref, ref))
+		}
+		assert.Equal(t, strings.Join(append(lines, ""), "\n"), buf.String())
+	})
+}
 
-	preparers := []actionPreparer{
-		&actionPreparerMock{reference: "actions/checkout@v7", sha: "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"},
-		// A step that downloads nothing, such as the checkout of the workflow's own repository.
-		&actionPreparerMock{},
+func TestPrintPrepareActionsFailsJobAndCancelsLaterDownloads(t *testing.T) {
+	for name, panicFetch := range map[string]bool{"error": false, "panic": true} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				rc := newPrefetchRunContext(t)
+				setFetch(t, func(ctx context.Context, input git.NewGitCloneExecutorInput) (string, string, error) {
+					if input.Ref == "v1" {
+						if panicFetch {
+							panic("broken archive")
+						}
+						return "", "", assert.AnError
+					}
+					<-ctx.Done()
+					return "", "", ctx.Err()
+				})
+				ctx := common.WithJobErrorContainer(common.WithLogger(t.Context(), logging.New(logging.DiscardHandler)))
+				remaining := &actionPreparerMock{}
+				err := printPrepareActions(rc, append(newRemotePreparers(rc, "org/repo@v1", "org/repo@v2"), remaining))(ctx)
+				if panicFetch {
+					require.ErrorContains(t, err, "panic: broken archive")
+				} else {
+					require.ErrorIs(t, err, assert.AnError)
+				}
+				require.ErrorIs(t, err, common.JobError(ctx))
+				assert.True(t, rc.jobFailed)
+				assert.Zero(t, remaining.prepared)
+			})
+		})
 	}
-	require.NoError(t, printPrepareActions(&RunContext{}, preparers)(ctx))
+}
 
-	want := strings.Join([]string{
-		"[j1]   | Prepare all required actions",
-		"[j1]   | Download action repository 'actions/checkout@v7' (SHA:9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)",
-		"",
-	}, "\n")
-	assert.Equal(t, want, buf.String())
+func newPrefetchRunContext(t *testing.T) *RunContext {
+	return &RunContext{
+		Config: &Config{ActionCacheDir: t.TempDir(), PresetGitHubContext: &model.GithubContext{}},
+		Run:    &model.Run{JobID: "1", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"1": {}}}},
+	}
+}
+
+func newRemotePreparers(rc *RunContext, uses ...string) []actionPreparer {
+	preparers := make([]actionPreparer, 0, len(uses))
+	for _, use := range uses {
+		preparers = append(preparers, &stepActionRemote{Step: &model.Step{Uses: use}, RunContext: rc, readAction: func(_ctx context.Context, _step *model.Step, _actionDir, _actionPath string, _readFile actionYamlReader, _writeFile fileWriter) (*model.Action, error) {
+			return &model.Action{}, nil
+		}})
+	}
+	return preparers
 }
 
 func TestPrintPrepareActionsSkipsWithoutActions(t *testing.T) {
@@ -161,26 +225,6 @@ func TestPrintPrepareActionsSkipsWithoutActions(t *testing.T) {
 	require.NoError(t, printPrepareActions(&RunContext{}, nil)(ctx))
 
 	assert.Empty(t, buf.String())
-}
-
-func TestPrintPrepareActionsFailsJobOnDownloadError(t *testing.T) {
-	logger := logging.New(logtest.New())
-	ctx := common.WithJobErrorContainer(common.WithLogger(t.Context(), logger.With("job", "j1")))
-
-	downloadErr := errors.New("failed to fetch \"actions/checkout\"")
-	rc := &RunContext{}
-	remaining := &actionPreparerMock{reference: "actions/setup-go@v6", sha: "sha"}
-
-	err := printPrepareActions(rc, []actionPreparer{
-		&actionPreparerMock{err: downloadErr},
-		remaining,
-	})(ctx)
-
-	require.ErrorIs(t, err, downloadErr)
-	// No step has run yet, so the failure has to be recorded against the job itself.
-	assert.Equal(t, downloadErr, common.JobError(ctx))
-	assert.True(t, rc.jobFailed)
-	assert.Zero(t, remaining.prepared)
 }
 
 func TestNewStepsExecutorSkipsStepsAfterSetupFailure(t *testing.T) {

@@ -156,6 +156,8 @@ func TestRunnerReclaimsVolumesAfterReporting(t *testing.T) {
 						removed.Add(1)
 					}
 					writer.WriteHeader(http.StatusNoContent)
+				case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/json"):
+					http.NotFound(writer, request)
 				default:
 					t.Errorf("unexpected Docker request: %s %s", request.Method, request.URL)
 					http.NotFound(writer, request)

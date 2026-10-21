@@ -165,10 +165,13 @@ func runStepExecutor(step step, stage stepStage, executor common.Executor) commo
 		if topRC.summaryFileInitialized == nil {
 			topRC.summaryFileInitialized = map[int]bool{}
 		}
-		_ = rc.JobContainer.Copy(actPath, files...)(ctx)
+		initialFiles := files
 		if !topRC.summaryFileInitialized[stepSummaryIndex] {
-			_ = rc.JobContainer.Copy(actPath, &container.FileEntry{Name: summaryFileCommand, Mode: 0o666})(ctx)
+			initialFiles = append([]*container.FileEntry{{Name: summaryFileCommand, Mode: 0o666}}, files...)
 			topRC.summaryFileInitialized[stepSummaryIndex] = true
+		}
+		if err := rc.JobContainer.Copy(actPath, initialFiles...)(ctx); err != nil && len(initialFiles) > len(files) {
+			_ = rc.JobContainer.Copy(actPath, files...)(ctx) // the summary goes first and the resets retry alone, so neither failure blocks the other
 		}
 
 		// The command handler needs the step's env to judge ACTIONS_ALLOW_UNSECURE_COMMANDS.

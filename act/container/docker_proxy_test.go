@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,6 +69,7 @@ func TestDockerProxy(t *testing.T) {
 	bodies := make(chan []byte, 8)
 	createStarted, releaseCreate := make(chan struct{}), make(chan struct{})
 	streamsDone := make(chan struct{}, 2)
+	var probes atomic.Int32
 	daemonSocket := filepath.Join(shortTempDir(t), "d.sock")
 	listener, err := net.Listen("unix", daemonSocket)
 	require.NoError(t, err)
@@ -75,12 +77,28 @@ func TestDockerProxy(t *testing.T) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/create"):
 			body, _ := io.ReadAll(r.Body)
+			if bytes.Contains(body, []byte(`"Image":"probe-image"`)) {
+				_, _ = w.Write([]byte(`{"Id":"probe"}`))
+				return
+			}
 			if r.URL.RawQuery == "wait" {
 				close(createStarted)
 				<-releaseCreate
 			}
 			bodies <- body
 			w.WriteHeader(http.StatusCreated)
+		case strings.HasSuffix(r.URL.Path, "/images/json"):
+			if probes.Add(1) == 1 {
+				http.Error(w, "probe unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = w.Write([]byte(`[{"Id":"probe-image"}]`))
+		case strings.HasSuffix(r.URL.Path, "/json"):
+			http.NotFound(w, r)
+		case strings.HasSuffix(r.URL.Path, "/archive"):
+			w.Header().Set("X-Docker-Container-Path-Stat", "e30=")
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == "/exec/detached/start" || r.URL.Path == "/exec/error/start":
 			if r.URL.Path == "/exec/error/start" {
 				w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
@@ -209,6 +227,31 @@ func TestDockerProxy(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		assert.Equal(t, "1.47", resp.Header.Get("Api-Version"))
 		assert.Equal(t, "OK GET /v1.47/_ping", string(body))
+	})
+
+	t.Run("discovery caches only successes", func(t *testing.T) {
+		if runtime.GOOS != "linux" {
+			t.Skip("automatic proxy discovery requires Linux")
+		}
+		t.Setenv("DOCKER_HOST", "unix://"+daemonSocket)
+		t.Setenv("TMPDIR", shortTempDir(t))
+		require.Nil(t, NewDockerProxy(t.Context(), "failed"))
+		for _, job := range []string{"first", "second"} {
+			proxy := NewDockerProxy(t.Context(), job)
+			require.NotNil(t, proxy)
+			require.NoError(t, proxy.Close(context.Background()))
+		}
+		assert.EqualValues(t, 2, probes.Load())
+		dockerProxyDirectories.Range(func(key, value any) bool {
+			directory, _ := value.(dockerProxyDirectory)
+			directory.socket, _ = os.Stat(t.TempDir())
+			dockerProxyDirectories.Store(key, directory)
+			return true
+		})
+		proxy := NewDockerProxy(t.Context(), "replaced daemon")
+		require.NotNil(t, proxy)
+		require.NoError(t, proxy.Close(context.Background()))
+		assert.EqualValues(t, 3, probes.Load())
 	})
 
 	t.Run("tunnels raw streams through stdin EOF", func(t *testing.T) {

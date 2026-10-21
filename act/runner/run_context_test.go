@@ -273,6 +273,8 @@ func startJobContainerInputs(t *testing.T, workflowYAML string, cfg *Config) []*
 			w.WriteHeader(http.StatusNoContent)
 		case strings.HasSuffix(r.URL.Path, "/info"):
 			_, _ = io.WriteString(w, `{"Architecture":"amd64","OSType":"linux"}`)
+		case strings.Contains(r.URL.Path, "/containers/") && strings.HasSuffix(r.URL.Path, "/json"):
+			http.NotFound(w, r)
 		default:
 			t.Errorf("unexpected Docker request: %s %s", r.Method, r.URL)
 			http.NotFound(w, r)
@@ -1475,7 +1477,7 @@ func TestWaitForServiceContainers(t *testing.T) {
 			var output bytes.Buffer
 			logger := logging.New(logging.NewLevelHandler(newJobLogHandler(&output, cyan), logging.LevelInfo))
 			require.NoError(t, newRunContext(0, &serviceContainer{name: "postgres", container: service}).waitForServiceContainers()(common.WithLogger(t.Context(), logger)))
-			assert.Equal(t, []time.Duration{0, time.Second, 2 * time.Second}, pollTimes)
+			assert.Equal(t, []time.Duration{0, serviceReadyPollInterval, 2 * serviceReadyPollInterval}, pollTimes)
 			assert.Equal(t, 1, strings.Count(output.String(), "postgres service is starting."))
 			assert.Contains(t, output.String(), "postgres service is healthy.")
 		})

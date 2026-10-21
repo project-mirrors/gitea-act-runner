@@ -49,7 +49,9 @@ func (rc *RunContext) NewExpressionEvaluatorWithEnv(ctx context.Context, env map
 				result := model.WorkflowCallResult{
 					Outputs: map[string]string{},
 				}
+				unlock := lockJob(job)
 				maps.Copy(result.Outputs, job.Outputs)
+				unlock()
 				workflowCallResult[jobName] = &result
 			}
 		}

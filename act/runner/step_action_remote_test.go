@@ -785,6 +785,7 @@ func TestStepActionRemotePreResolvesDownloadedCommit(t *testing.T) {
 		readAction: readActionImpl,
 	}
 
+	require.NoError(t, printPrepareActions(sar.RunContext, []actionPreparer{sar})(t.Context()))
 	require.NoError(t, sar.prepareActionExecutor()(t.Context()))
 
 	reference, sha := sar.actionDownloadInfo()
@@ -876,7 +877,7 @@ func TestStepActionRemoteCloneTokenSurvivesNilSecrets(t *testing.T) {
 
 			sarm.On("readAction", sar.Step, actionDir, "", mock.Anything, mock.Anything).Return(&model.Action{}, nil)
 
-			err := sar.prepareActionExecutor()(ctx)
+			err := printPrepareActions(sar.RunContext, []actionPreparer{sar})(ctx)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantCloneToken, capturedToken)
 

@@ -48,6 +48,13 @@ var (
 	rawStreamPath = regexp.MustCompile(`^(/v[0-9.]+)?/(containers/[^/]+/attach|exec/[^/]+/start)$`)
 )
 
+var dockerProxyDirectories sync.Map
+
+type dockerProxyDirectory struct {
+	dir, daemonDir string
+	socket         os.FileInfo
+}
+
 func NewDockerProxy(ctx context.Context, job string) *DockerProxy {
 	if host := os.Getenv("DOCKER_HOST"); runtime.GOOS != "linux" || host != "" && !strings.HasPrefix(host, "unix://") {
 		return nil
@@ -63,15 +70,24 @@ func NewDockerProxy(ctx context.Context, job string) *DockerProxy {
 	if !ok {
 		return nil
 	}
-	if info, err := os.Stat(daemonSocket); err != nil || info.Mode()&os.ModeSocket == 0 {
+	socket, err := os.Stat(daemonSocket)
+	if err != nil || socket.Mode()&os.ModeSocket == 0 {
 		return nil
 	}
-	dir, daemonDir := runnerContainerWorkdir(probeCtx, cli)
-	seen := daemonDir != ""
+	workdir, _ := os.Getwd()
+	key := [3]string{cli.DaemonHost(), workdir, os.TempDir()}
+	cached, _ := dockerProxyDirectories.Load(key)
+	directory, seen := cached.(dockerProxyDirectory)
+	seen = seen && os.SameFile(directory.socket, socket) // daemon replacement invalidates cached paths
+	dir, daemonDir := directory.dir, directory.daemonDir
 	if !seen {
-		if dir, err = filepath.Abs(os.TempDir()); err == nil {
-			daemonDir = dir
-			seen, err = daemonSeesDir(probeCtx, cli, dir, daemonDir)
+		dir, daemonDir = runnerContainerWorkdir(probeCtx, cli)
+		seen = daemonDir != ""
+		if !seen {
+			if dir, err = filepath.Abs(os.TempDir()); err == nil {
+				daemonDir = dir
+				seen, err = daemonSeesDir(probeCtx, cli, dir, daemonDir)
+			}
 		}
 	}
 	if err != nil {
@@ -87,9 +103,11 @@ func NewDockerProxy(ctx context.Context, job string) *DockerProxy {
 	}
 	proxy, err := StartDockerProxy(daemonSocket, dir, job)
 	if err != nil {
+		dockerProxyDirectories.Delete(key)
 		common.Logger(ctx).Warnf("docker proxy not started, the job gets the daemon socket directly: %v", err)
 		return nil
 	}
+	dockerProxyDirectories.Store(key, dockerProxyDirectory{dir, daemonDir, socket})
 	proxy.Socket = daemonDir + strings.TrimPrefix(proxy.Socket, dir)
 	return proxy
 }

@@ -335,7 +335,9 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 	}
 
 	executor := common.NewPipelineExecutor(stagePipeline...).Then(handleFailure(plan))
-	return func(ctx context.Context) error { return executor(ghcontext.WithPinnedCheckout(ctx)) }
+	return func(ctx context.Context) error {
+		return executor(container.WithRunnerArch(ghcontext.WithPinnedCheckout(ctx)))
+	}
 }
 
 func handleFailure(plan *model.Plan) common.Executor {

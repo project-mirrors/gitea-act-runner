@@ -69,10 +69,41 @@ func (*LinuxContainerEnvironmentExtensions) JoinPathVariable(paths ...string) st
 // DefaultToolCache is where the runner mounts the tool cache inside job containers.
 const DefaultToolCache = "/opt/hostedtoolcache"
 
+type runnerArchKey struct{}
+
+func WithRunnerArch(ctx context.Context) context.Context { // shares one architecture lookup per run
+	if ctx.Value(runnerArchKey{}) != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, runnerArchKey{}, &runnerArchCache{lock: make(chan struct{}, 1)})
+}
+
+type runnerArchCache struct {
+	lock chan struct{} // lets cancelled jobs stop waiting for the cache
+	arch string
+}
+
+func cachedRunnerArch(ctx context.Context) string {
+	cache, ok := ctx.Value(runnerArchKey{}).(*runnerArchCache)
+	if !ok {
+		return RunnerArch(ctx)
+	}
+	select {
+	case cache.lock <- struct{}{}:
+		defer func() { <-cache.lock }()
+	case <-ctx.Done():
+		return ""
+	}
+	if cache.arch == "" {
+		cache.arch = RunnerArch(ctx)
+	}
+	return cache.arch
+}
+
 func (*LinuxContainerEnvironmentExtensions) GetRunnerContext(ctx context.Context) map[string]any {
 	return map[string]any{
 		"os":         "Linux",
-		"arch":       RunnerArch(ctx),
+		"arch":       cachedRunnerArch(ctx),
 		"temp":       "/tmp",
 		"tool_cache": DefaultToolCache,
 	}

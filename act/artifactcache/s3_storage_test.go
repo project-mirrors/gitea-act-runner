@@ -4,8 +4,12 @@
 package artifactcache
 
 import (
+	"encoding/xml"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,7 +22,14 @@ import (
 func TestHandler_S3SharesEntriesAndDropsExpiredOnes(t *testing.T) {
 	backend := s3mem.New()
 	require.NoError(t, backend.CreateBucket("cache"))
-	server := httptest.NewServer(gofakes3.New(backend).Server())
+	var uploads atomic.Int32
+	handler := gofakes3.New(backend).Server()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.Contains(request.URL.Path, "/blobs/") && (request.Method == http.MethodPut || request.Method == http.MethodPost) {
+			uploads.Add(1)
+		}
+		handler.ServeHTTP(writer, request)
+	}))
 	t.Cleanup(server.Close)
 	opts := Options{S3: &S3Options{Endpoint: server.URL, Bucket: "cache", Prefix: "runners", AccessKey: "key", SecretKey: "secret"}}
 	saver, restorer := startTestHandler(t, opts), startTestHandler(t, opts)
@@ -26,6 +37,7 @@ func TestHandler_S3SharesEntriesAndDropsExpiredOnes(t *testing.T) {
 
 	finalized, _ := saveV2(t, saver, "deps", "v1", []byte("archive"))
 	require.Equal(t, true, finalized["ok"])
+	assert.EqualValues(t, 1, uploads.Load())
 	require.NoError(t, restorer.importMetadata(t.Context()))
 	found := v2Call(t, restorer, testClient, "GetCacheEntryDownloadURL", entry)
 	require.Equal(t, true, found["ok"])
@@ -35,6 +47,51 @@ func TestHandler_S3SharesEntriesAndDropsExpiredOnes(t *testing.T) {
 	require.NoError(t, backend.CreateBucket("cache"))
 	require.NoError(t, restorer.importMetadata(t.Context()))
 	assert.Equal(t, true, v2Call(t, restorer, testClient, "CreateCacheEntry", entry)["ok"])
+}
+
+type s3TestTransport func(*http.Request) (*http.Response, error)
+
+func (transport s3TestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return transport(req)
+}
+
+func TestS3StorageUploadsLargeObjectsInPartsAndAbortsOnFailure(t *testing.T) {
+	for _, failingPart := range []string{"", "2"} {
+		var parts, aborts atomic.Int32
+		var completion struct {
+			Parts []s3Part `xml:"Part"`
+		}
+		storage := &s3Storage{bucketURL: httptest.NewRequest(http.MethodGet, "http://cache.local/bucket", nil).URL}
+		storage.client = &http.Client{Transport: s3TestTransport(func(req *http.Request) (*http.Response, error) {
+			query, response := req.URL.Query(), &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}
+			switch {
+			case query.Has("uploads"):
+				response.Body = io.NopCloser(strings.NewReader("<InitiateMultipartUploadResult><UploadId>upload</UploadId></InitiateMultipartUploadResult>"))
+			case req.Method == http.MethodPut:
+				parts.Add(1)
+				response.Header.Set("ETag", "etag-"+query.Get("partNumber"))
+				if query.Get("partNumber") == failingPart {
+					response.StatusCode, response.Body = http.StatusBadRequest, io.NopCloser(strings.NewReader("<Error><Code>InvalidPart</Code></Error>"))
+				}
+			case req.Method == http.MethodPost:
+				require.NoError(t, xml.NewDecoder(req.Body).Decode(&completion))
+				response.Body = io.NopCloser(strings.NewReader("<CompleteMultipartUploadResult/>"))
+			case req.Method == http.MethodDelete:
+				aborts.Add(1)
+			}
+			return response, nil
+		})}
+		err := storage.upload(t.Context(), "blobs/1", strings.NewReader(""), 2*int64(s3PartSize)+1)
+		assert.EqualValues(t, 3, parts.Load())
+		if failingPart == "" {
+			require.NoError(t, err)
+			assert.Equal(t, []s3Part{{1, "etag-1"}, {2, "etag-2"}, {3, "etag-3"}}, completion.Parts)
+			assert.Zero(t, aborts.Load())
+		} else {
+			require.ErrorContains(t, err, "InvalidPart")
+			assert.EqualValues(t, 1, aborts.Load())
+		}
+	}
 }
 
 func TestS3StorageSignsLikeAWS(t *testing.T) {

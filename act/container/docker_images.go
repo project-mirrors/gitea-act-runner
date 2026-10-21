@@ -58,16 +58,12 @@ func RemoveImage(ctx context.Context, imageName string, force, pruneChildren boo
 	}
 	defer cli.Close()
 
-	if _, err := cli.ImageInspect(ctx, imageName); cerrdefs.IsNotFound(err) {
-		return false, nil
-	} else if err != nil {
-		return false, err
-	}
-
 	if _, err = cli.ImageRemove(ctx, imageName, client.ImageRemoveOptions{
 		Force:         force,
 		PruneChildren: pruneChildren,
-	}); err != nil {
+	}); cerrdefs.IsNotFound(err) {
+		return false, nil
+	} else if err != nil {
 		return false, err
 	}
 
