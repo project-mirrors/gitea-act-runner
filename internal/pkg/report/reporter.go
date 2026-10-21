@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -101,9 +100,6 @@ type Reporter struct {
 	logNotify   chan struct{} // signal: new log rows arrived
 	stateNotify chan struct{} // signal: step transition (start/stop)
 
-	debugOutputEnabled  bool
-	stopCommandEndToken string
-
 	jobLog *jobLog // this task's rows on the runner's own disk, nil when log.job.dir is unset
 }
 
@@ -155,10 +151,6 @@ func NewReporter(ctx context.Context, cancel context.CancelFunc, client client.C
 	rv.daemonWait = 6 * rv.effectiveCloseTimeout()
 
 	registerGlobalMasks(rv)
-
-	if task.Secrets["ACTIONS_STEP_DEBUG"] == "true" {
-		rv.debugOutputEnabled = true
-	}
 
 	return rv
 }
@@ -345,11 +337,8 @@ func (h *reporterHandler) WithAttrs(attrs []logging.Attr) logging.Handler {
 }
 
 // appendLogRow masks a row before buffering it for Gitea and the local job.log, the one point
-// feeding both. A nil row is one the command handler dropped. Caller holds stateMu.
+// feeding both. Caller holds stateMu.
 func (r *Reporter) appendLogRow(row *runnerv1.LogRow) {
-	if row == nil {
-		return
-	}
 	row.Content = r.mask(row.Content)
 	if step := r.currentReportedStep; step != nil {
 		if step.LogLength == 0 {
@@ -461,7 +450,7 @@ func (r *Reporter) Handle(_ context.Context, entry logging.Record) error {
 			}
 		}
 		if r.shouldAppendLogRow(entry) {
-			r.appendLogRow(r.parseLogRow(entry))
+			r.appendLogRow(logRow(entry))
 		}
 		r.unlockAndNotify(urgentState)
 		return nil
@@ -475,7 +464,7 @@ func (r *Reporter) Handle(_ context.Context, entry logging.Record) error {
 	}
 	if step == nil {
 		if r.shouldAppendLogRow(entry) {
-			r.appendLogRow(r.parseLogRow(entry))
+			r.appendLogRow(logRow(entry))
 		}
 		r.unlockAndNotify(false)
 		return nil
@@ -484,9 +473,6 @@ func (r *Reporter) Handle(_ context.Context, entry logging.Record) error {
 	if step.StartedAt == nil {
 		step.StartedAt = timestamppb.New(timestamp)
 		urgentState = true
-		// The runner's own handler is per step, so an unresumed ::stop-commands:: must not
-		// leave the reporter suppressed, and no longer registering masks, for the whole job.
-		r.stopCommandEndToken = ""
 	}
 
 	// Force reporting log errors as raw output to prevent silent failures
@@ -497,16 +483,14 @@ func (r *Reporter) Handle(_ context.Context, entry logging.Record) error {
 
 	if ok {
 		if rawOutput, ok := v.(bool); ok && rawOutput {
-			if row := r.parseLogRow(entry); row != nil {
-				if step.LogLength == 0 {
-					step.LogIndex = int64(r.logOffset + len(r.logRows))
-				}
-				step.LogLength++
-				r.appendLogRow(row)
+			if step.LogLength == 0 {
+				step.LogIndex = int64(r.logOffset + len(r.logRows))
 			}
+			step.LogLength++
+			r.appendLogRow(logRow(entry))
 		}
 	} else if r.shouldAppendLogRow(entry) {
-		r.appendLogRow(r.parseLogRow(entry))
+		r.appendLogRow(logRow(entry))
 	}
 	if v, ok := entry.Attr("stepResult"); ok && isJobStepEntry(entry) {
 		if stepResult, ok := r.parseResult(v); ok {
@@ -654,8 +638,8 @@ func (r *Reporter) Logf(format string, a ...any) {
 
 func (r *Reporter) logf(format string, a ...any) {
 	if !r.duringSteps() {
-		// Masked like any other row: these bypass parseLogRow, but a caller can still
-		// interpolate a secret, such as a configured URL carrying credentials.
+		// Masked like any other row, as a caller can interpolate a secret such as a configured URL
+		// carrying credentials.
 		r.appendLogRow(&runnerv1.LogRow{Time: timestamppb.Now(), Content: fmt.Sprintf(format, a...)})
 	}
 }
@@ -1000,129 +984,8 @@ func (r *Reporter) parseResult(result any) (runnerv1.Result, bool) {
 	return ret, ok
 }
 
-// A property value never contains a raw ':' (GitHub escapes it as %3A), so excluding ':' ends
-// the property list at the first '::' as GitHub does; greedily would swallow a '::' message.
-var cmdRegex = regexp.MustCompile(`^::([^ :]+)( [^:]*)?::(.*)$`)
-
-// handleCommand takes value still escaped, so that the web UI decodes it exactly once. Only
-// the branches that consume the payload here decode it.
-func (r *Reporter) handleCommand(originalContent, command, properties, value string) *string {
-	command = strings.ToLower(command) // GitHub matches command names case-insensitively
-	if r.stopCommandEndToken != "" {
-		if !strings.EqualFold(command, r.stopCommandEndToken) {
-			return &originalContent
-		}
-		// Resumed here rather than from the switch, because the end token is arbitrary and a
-		// token naming a real command would otherwise never resume.
-		r.stopCommandEndToken = ""
-		return nil
-	}
-
-	switch command {
-	case "add-mask":
-		r.addMask(runner.UnescapeCommandData(value))
-		return nil
-	case "debug":
-		if r.debugOutputEnabled {
-			return &originalContent // kept as ::debug::, so the web UI labels and decodes it
-		}
-		return nil
-
-	case "notice", "warning", "error":
-		// Gitea has no annotation store, so the annotation is rendered into the log with
-		// its source location instead of being dropped: that location is the whole point
-		// of the command for compiler and linter output.
-		annotation := formatAnnotation(command, properties, value)
-		return &annotation
-	case "group", "endgroup":
-		// Passed through: the web UI folds the log on these and decodes the payload itself.
-		return &originalContent
-	case "stop-commands":
-		r.stopCommandEndToken = runner.UnescapeCommandData(value)
-		return nil
-	}
-	return &originalContent
-}
-
-// formatAnnotation folds the file, line, column and title the command carries into its message,
-// which the web UI otherwise drops along with the rest of the properties:
-//
-//	::error file=main.go,line=12,col=5,title=vet::undefined: x
-//	::error::main.go:12:5: vet: undefined: x
-//
-// The ::-form prefix is deliberate, and value is not escaped here because it arrived escaped
-// and must stay that way.
-func formatAnnotation(level, properties, value string) string {
-	props := parseCommandProperties(properties)
-
-	prefix := props["file"]
-	if prefix != "" {
-		if props["line"] != "" {
-			prefix += ":" + props["line"]
-			if props["col"] != "" {
-				prefix += ":" + props["col"]
-			}
-		}
-		prefix += ": "
-	}
-	if props["title"] != "" {
-		prefix += props["title"] + ": "
-	}
-	return "::" + level + "::" + prefix + value
-}
-
-// parseCommandProperties parses the `file=main.go,line=12` part of a workflow command.
-func parseCommandProperties(properties string) map[string]string {
-	properties = strings.TrimSpace(properties)
-	if properties == "" {
-		return nil
-	}
-
-	props := map[string]string{}
-	for pair := range strings.SplitSeq(properties, ",") {
-		key, value, ok := strings.Cut(pair, "=")
-		if !ok {
-			continue
-		}
-		// Only the property-list separators are decoded, the web UI decodes the rest.
-		value = strings.ReplaceAll(strings.ReplaceAll(value, "%3A", ":"), "%2C", ",")
-		// GitHub keys its property dictionary case-insensitively, so `File=` works there too.
-		props[strings.ToLower(strings.TrimSpace(key))] = value
-	}
-	// GitHub's toolkit emits `col`; accept `column` as well, which some tools write instead.
-	if props["col"] == "" {
-		props["col"] = props["column"]
-	}
-	return props
-}
-
-func cutPrefixFold(s, prefix string) (string, bool) {
-	if len(s) < len(prefix) || !strings.EqualFold(s[:len(prefix)], prefix) {
-		return s, false
-	}
-	return s[len(prefix):], true
-}
-
-func (r *Reporter) parseLogRow(entry logging.Record) *runnerv1.LogRow {
-	content := strings.TrimRight(entry.Message, "\r\n")
-
-	// cmdRegex only covers the ::cmd:: form, so the ##[add-mask] one would otherwise reach
-	// the log carrying its own secret. Registered and dropped like its ::add-mask:: twin.
-	if arg, ok := cutPrefixFold(content, "##[add-mask]"); ok {
-		r.addMask(runner.UnescapeLegacyCommand(arg))
-		return nil
-	}
-
-	matches := cmdRegex.FindStringSubmatch(content)
-	if matches != nil {
-		if output := r.handleCommand(content, matches[1], matches[2], matches[3]); output != nil {
-			content = *output
-		} else {
-			return nil
-		}
-	}
-
-	return &runnerv1.LogRow{Time: timestamppb.New(entry.Time), Content: content}
+func logRow(entry logging.Record) *runnerv1.LogRow {
+	return &runnerv1.LogRow{Time: timestamppb.New(entry.Time), Content: strings.TrimRight(entry.Message, "\r\n")}
 }
 
 // mask repairs the content first, so a secret the repair itself spells out is still caught.
@@ -1130,10 +993,12 @@ func (r *Reporter) mask(content string) string {
 	return r.logReplacer.Replace(strings.ToValidUTF8(content, "?"))
 }
 
-// addMask deliberately leaves the process-wide masker alone. Its entries come from every live
+// AddMask deliberately leaves the process-wide masker alone. Its entries come from every live
 // task at once, so a workflow could otherwise mask "error" there and rewrite the runner's own
 // log, and every other task's, for the rest of the job.
-func (r *Reporter) addMask(msg string) {
+func (r *Reporter) AddMask(msg string) {
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
 	r.oldnew = runner.AppendSecretMasker(r.oldnew, msg)
 	r.logReplacer = runner.NewSecretReplacer(r.oldnew)
 }

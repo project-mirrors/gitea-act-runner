@@ -28,8 +28,8 @@ depending on the prefix:
 - **No prefix?** Do not escape, and split multi-line values into one row each.
 - **Interpolating a secret?** Masking runs after escaping, so `AppendSecretMasker` registers the
   encoded forms too.
-- Command *properties* also escape `%3A` and `%2C`, which the UI never decodes, so the reporter
-  decodes exactly those two when folding a location into an annotation.
+- Command *properties* also escape `%3A` and `%2C`, which the UI never decodes, so the command
+  handler folds an annotation's location into its decoded message and escapes the result again.
 
 ## Logging
 

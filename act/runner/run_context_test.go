@@ -1434,7 +1434,7 @@ func TestRunContext_cleanupFailedStart(t *testing.T) {
 			slices.Sort(operations[:3])
 			slices.Sort(operations[len(operations)-4 : len(operations)-1])
 			assert.Equal(t, strings.Fields(want+" job.Remove service.Close service.Remove job.Close"), operations)
-			assert.Empty(t, rc.Masks)
+			assert.Equal(t, strings.Contains(want, "service.DumpLogs"), slices.Contains(rc.Masks, "leak"))
 			assert.Equal(t, testcase.pullError == nil && testcase.health != container.HealthUnhealthy, slices.ContainsFunc(hook.AllRecords(), func(entry logging.Record) bool {
 				return strings.HasPrefix(entry.Message, "::group::Print service container logs")
 			}))

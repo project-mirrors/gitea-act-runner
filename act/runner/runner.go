@@ -94,9 +94,7 @@ type Config struct {
 	JobCompletedHook                  string         // script run inside the job environment after the job's last step; ACTIONS_RUNNER_HOOK_JOB_COMPLETED is read from Env when empty
 }
 
-// RunnerDebug reports whether debug logging is on, exposed as `runner.debug` and
-// RUNNER_DEBUG. Only the secret also makes the reporter keep ::debug:: output, the env
-// is accepted for `exec` and for runners configured with it.
+// RunnerDebug reports whether debug logging is on, exposed as `runner.debug` and RUNNER_DEBUG.
 func (c Config) RunnerDebug() bool {
 	return c.Secrets["ACTIONS_STEP_DEBUG"] == "true" || c.Env["ACTIONS_STEP_DEBUG"] == "true"
 }

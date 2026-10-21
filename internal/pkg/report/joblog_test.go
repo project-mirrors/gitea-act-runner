@@ -59,9 +59,8 @@ func TestJobLog_MirrorsUploadedRows(t *testing.T) {
 		}))
 	}
 	fire("the token is s3cret-value")
-	fire("::add-mask::dyn4mic-value")
+	reporter.AddMask("dyn4mic-value")
 	fire("and dyn4mic-value too")
-	fire("::debug::suppressed unless ACTIONS_STEP_DEBUG")
 	require.NoError(t, reporter.Close(""))
 
 	job := readJobLog(t, reporter.jobLog)
@@ -69,8 +68,6 @@ func TestJobLog_MirrorsUploadedRows(t *testing.T) {
 	assert.Contains(t, job, "and *** too")
 	assert.NotContains(t, job, "s3cret-value")
 	assert.NotContains(t, job, "dyn4mic-value")
-	assert.NotContains(t, job, "add-mask", "the row carrying the secret never reaches the log")
-	assert.NotContains(t, job, "suppressed unless", "the file holds only what was sent")
 	assert.NotRegexp(t, `(?m)^\S+Z ?$`, job, "the empty row Gitea needs is not job output")
 	assert.Contains(t, job, "[runner] task 41 finished: failure")
 }

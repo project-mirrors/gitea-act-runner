@@ -5,61 +5,72 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
+	"unicode"
 
 	"gitea.com/gitea/runner/act/common"
 )
 
-var commandPatternGA *regexp.Regexp
-
-var commandPatternADO *regexp.Regexp
-
-func init() {
-	commandPatternGA = regexp.MustCompile("^::([^ ]+?)( (.+?))?::([^\r\n]*)[\r\n]*$")
-	// excluding ']' ends the command info at the first bracket, as GitHub does
-	commandPatternADO = regexp.MustCompile("^##\\[([^ \\]]+)( ([^\\]]*))?]([^\r\n]*)[\r\n]*$")
-}
-
-func tryParseRawActionCommand(line string) (command string, kvPairs map[string]string, arg string, ok bool) {
-	command, kvPairs, arg, _, ok = tryParseActionCommand(line)
-	return command, kvPairs, arg, ok
-}
-
-func tryParseActionCommand(line string) (command string, kvPairs map[string]string, arg string, legacy, ok bool) {
-	if m := commandPatternGA.FindStringSubmatch(line); m != nil {
-		command = m[1]
-		kvPairs = parseKeyValuePairs(m[3], ",")
-		arg = m[4]
-		ok = true
-	} else if m := commandPatternADO.FindStringSubmatch(line); m != nil {
-		command = m[1]
-		kvPairs = parseKeyValuePairs(m[3], ";")
-		arg = m[4]
-		legacy = true
-		ok = true
+// parseActionCommand parses like GitHub's runner, but rejects a bare \r GitHub would split at and keeps a value's leading '=' so masks match.
+func parseActionCommand(line, resumeCommand string) (command string, properties map[string]string, data string, legacy, ok bool) {
+	line = strings.TrimRight(line, "\r\n")
+	if strings.ContainsAny(line, "\r\n") {
+		return "", nil, "", false, false
 	}
-	return command, kvPairs, arg, legacy, ok
+	trimmed := strings.TrimLeftFunc(line, unicode.IsSpace)
+	for _, legacy := range []bool{false, true} {
+		header, found := strings.CutPrefix(trimmed, "::")
+		separator, propertySeparator, unescapeProperty, unescapeData := "::", ",", commandPropertyUnescaper.Replace, UnescapeCommandData
+		if legacy {
+			_, header, found = strings.Cut(line, "##[")
+			separator, propertySeparator, unescapeProperty, unescapeData = "]", ";", UnescapeLegacyCommand, UnescapeLegacyCommand
+		}
+		if !found {
+			continue
+		}
+		header, data, found := strings.Cut(header, separator)
+		if !found {
+			continue
+		}
+		command, propertyList, _ := strings.Cut(header, " ")
+		command = strings.ToLower(command)
+		switch command {
+		case "stop-commands", "set-env", "set-output", "save-state", "add-path", "add-mask", "add-matcher",
+			"remove-matcher", "warning", "error", "notice", "debug", "group", "endgroup", "echo":
+		default:
+			if resumeCommand == "" || !strings.EqualFold(command, resumeCommand) {
+				continue
+			}
+		}
+		if !legacy {
+			propertyList = strings.TrimSpace(propertyList)
+		}
+		properties := map[string]string{}
+		for property := range strings.SplitSeq(propertyList, propertySeparator) {
+			if key, value, _ := strings.Cut(strings.TrimLeft(property, "="), "="); value != "" {
+				properties[strings.ToLower(key)] = unescapeProperty(value)
+			}
+		}
+		return command, properties, unescapeData(data), legacy, true
+	}
+	return "", nil, "", false, false
 }
 
+// commandHandler reports whether a line is logged, keeping per-handler command state as GitHub does.
 func (rc *RunContext) commandHandler(ctx context.Context) common.LineHandler {
-	logger := common.Logger(ctx)
+	rawLogger := common.Logger(ctx).With(rawOutputField, true)
+	debug := rc.topLevelRunContext().Config.RunnerDebug()
+	echo := debug
 	resumeCommand := ""
 	return func(line string) bool {
-		command, kvPairs, arg, legacy, ok := tryParseActionCommand(line)
+		command, kvPairs, arg, _, ok := parseActionCommand(line, resumeCommand)
 		if !ok {
 			return true
 		}
-		command = strings.ToLower(command)
-
 		if resumeCommand != "" {
-			// There should not be any emojis in the log output for Gitea.
-			// Return true (not false) so the line still reaches the raw_output
-			// log handler; otherwise everything between ::stop-commands:: and
-			// its end token is silently dropped from the step log.
-			logger.Infof("%s", line)
 			// Resumed here rather than from the switch, because the end token is arbitrary
 			// and a token naming a real command would otherwise never resume.
 			if strings.EqualFold(command, resumeCommand) {
@@ -67,15 +78,9 @@ func (rc *RunContext) commandHandler(ctx context.Context) common.LineHandler {
 			}
 			return true
 		}
-		if legacy {
-			arg = UnescapeLegacyCommand(arg)
-			kvPairs = unescapeKvPairs(kvPairs, UnescapeLegacyCommand)
-		} else {
-			arg = UnescapeCommandData(arg)
-			kvPairs = unescapeKvPairs(kvPairs, unescapeCommandProperty)
-		}
+		echoed := echo
 		if (command == "set-env" || command == "add-path") && rc.refuseUnsecureCommand(ctx, command) {
-			return true
+			return echoed
 		}
 		switch command {
 		case "set-env":
@@ -83,26 +88,67 @@ func (rc *RunContext) commandHandler(ctx context.Context) common.LineHandler {
 		case "set-output":
 			rc.setOutput(ctx, kvPairs, arg)
 		case "add-path":
-			rc.addPath(ctx, arg)
+			rc.addPath(arg)
+		case "save-state":
+			rc.saveState(ctx, kvPairs, arg)
+		case "echo":
+			switch strings.ToLower(strings.TrimSpace(arg)) {
+			case "on":
+				echo = true
+			case "off":
+				echo = false
+			}
 		case "add-mask":
-			rc.AddMask(arg)
-			logger.Infof("%s", "***")
-			// The raw line is still forwarded, carrying the secret: that is how the reporter
-			// learns the mask, and it drops the row rather than writing it out.
+			rc.AddMask(ctx, arg)
+			if echoed {
+				rawLogger.Infof("::add-mask::***")
+			}
+			return false
 		case "stop-commands":
 			resumeCommand = arg
-			logger.Infof("%s", line)
-		case "save-state":
-			logger.Infof("%s", line)
-			rc.saveState(ctx, kvPairs, arg)
-		default:
-			// ::debug::, ::error::, ::warning::, ::add-matcher:: and anything unrecognised are
-			// passed through for the reporter and Gitea's web UI to render.
-			logger.Infof("%s", line)
+			if len(arg) > 6 { // as on GitHub, so the log does not give away the resume token
+				rc.AddMask(ctx, arg)
+			}
+			return true
+		case "debug":
+			return debug
+		case "notice", "warning", "error":
+			rawLogger.Infof("%s", formatAnnotation(command, kvPairs, arg))
+			return false
+		case "group", "endgroup":
+			return true
 		}
+		return echoed
+	}
+}
 
-		// return true to let gitea's logger handle these special outputs also
-		return true
+// formatAnnotation folds the location and title into the message, as Gitea's web UI drops command properties.
+func formatAnnotation(level string, properties map[string]string, message string) string {
+	prefix := properties["file"]
+	if prefix != "" {
+		if line := properties["line"]; line != "" {
+			prefix += ":" + line
+			if col := cmp.Or(properties["col"], properties["column"]); col != "" {
+				prefix += ":" + col
+			}
+		}
+		prefix += ": "
+	}
+	if title := properties["title"]; title != "" {
+		prefix += title + ": "
+	}
+	return "::" + level + "::" + EscapeCommandData(prefix+message)
+}
+
+// serviceCommandHandler applies only ::add-mask::, so a service cannot set the job's env, outputs or state.
+func (rc *RunContext) serviceCommandHandler(ctx context.Context) common.LineHandler {
+	return func(line string) bool {
+		command, _, arg, _, ok := parseActionCommand(line, "")
+		if !ok || command != "add-mask" {
+			return true
+		}
+		rc.AddMask(ctx, arg)
+		return false
 	}
 }
 
@@ -162,7 +208,6 @@ func (rc *RunContext) setEnv(ctx context.Context, kvPairs map[string]string, arg
 		common.Logger(ctx).With(rawOutputField, true).Errorf("##[error]%s", EscapeCommandData(message))
 		return
 	}
-	common.Logger(ctx).Infof("::set-env:: %s=%s", name, arg)
 	if rc.Env == nil {
 		rc.Env = make(map[string]string)
 	}
@@ -195,12 +240,10 @@ func (rc *RunContext) setOutput(ctx context.Context, kvPairs map[string]string, 
 		return
 	}
 
-	logger.Infof("::set-output:: %s=%s", outputName, arg)
 	result.Outputs[outputName] = arg
 }
 
-func (rc *RunContext) addPath(ctx context.Context, arg string) {
-	common.Logger(ctx).Infof("::add-path:: %s", arg)
+func (rc *RunContext) addPath(arg string) {
 	extraPath := []string{arg}
 	for _, v := range rc.ExtraPath {
 		if v != arg {
@@ -208,18 +251,6 @@ func (rc *RunContext) addPath(ctx context.Context, arg string) {
 		}
 	}
 	rc.ExtraPath = extraPath
-}
-
-func parseKeyValuePairs(kvPairs, separator string) map[string]string {
-	rtn := make(map[string]string)
-	kvPairList := strings.SplitSeq(kvPairs, separator)
-	for kvPair := range kvPairList {
-		kv := strings.SplitN(kvPair, "=", 2)
-		if len(kv) == 2 {
-			rtn[kv[0]] = kv[1]
-		}
-	}
-	return rtn
 }
 
 // A Replacer never rescans what it wrote, so "%250A" stays a literal "%0A".
@@ -240,20 +271,9 @@ func UnescapeCommandData(arg string) string {
 	return commandDataUnescaper.Replace(arg)
 }
 
-func unescapeCommandProperty(arg string) string {
-	return commandPropertyUnescaper.Replace(arg)
-}
-
 // UnescapeLegacyCommand decodes a "##[cmd]" line, which also spells ";" and "]" escaped.
 func UnescapeLegacyCommand(arg string) string {
 	return legacyCommandUnescaper.Replace(arg)
-}
-
-func unescapeKvPairs(kvPairs map[string]string, unescape func(string) string) map[string]string {
-	for k, v := range kvPairs {
-		kvPairs[k] = unescape(v)
-	}
-	return kvPairs
 }
 
 func (rc *RunContext) saveState(_ context.Context, kvPairs map[string]string, arg string) {

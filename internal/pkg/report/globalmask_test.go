@@ -5,6 +5,7 @@ package report
 
 import (
 	"strings"
+	"sync"
 	"testing"
 
 	"gitea.com/gitea/runner/act/common/logging"
@@ -53,7 +54,11 @@ func TestGlobalMasks(t *testing.T) {
 
 	// A workflow could otherwise mask "error" here and rewrite every other task's log.
 	third := register("s3cr3t", "***")
-	third.addMask("runtime-secret")
+	var writers sync.WaitGroup
+	for _, mask := range []string{"runtime-secret", "another-secret"} {
+		writers.Go(func() { third.AddMask(mask) })
+	}
+	writers.Wait()
 	assert.Contains(t, format("saw runtime-secret"), "runtime-secret")
-	assert.NotContains(t, third.mask("saw runtime-secret"), "runtime-secret")
+	assert.Equal(t, "saw *** ***", third.mask("saw runtime-secret another-secret"))
 }

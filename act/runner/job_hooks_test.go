@@ -29,6 +29,8 @@ type hookContainer struct {
 	err     error
 	envFile map[string]string
 	pathTar []byte
+	output  string
+	stdout  io.Writer
 }
 
 func (c *hookContainer) ToContainerPath(path string) string { return path }
@@ -41,8 +43,19 @@ func (c *hookContainer) GetRunnerContext(context.Context) map[string]any {
 func (c *hookContainer) Exec(command []string, env map[string]string, _, _ string) common.Executor {
 	return func(context.Context) error {
 		c.cmd, c.env = command, env
+		if c.output != "" {
+			if _, err := io.WriteString(c.stdout, c.output); err != nil {
+				return err
+			}
+		}
 		return c.err
 	}
+}
+
+func (c *hookContainer) ReplaceLogWriter(stdout, _ io.Writer) (io.Writer, io.Writer) {
+	old := c.stdout
+	c.stdout = stdout
+	return old, nil
 }
 
 func (c *hookContainer) UpdateFromEnv(_ string, env *map[string]string) common.Executor {
@@ -88,6 +101,19 @@ func TestRunJobHook(t *testing.T) {
 		assert.Equal(t, "job", jobContainer.env["GITHUB_JOB"])
 		assert.Equal(t, "/var/run/act/workflow/hook-envs.txt", jobContainer.env["GITHUB_ENV"])
 		assert.Equal(t, "/var/run/act/workflow/hook-path.txt", jobContainer.env["GITHUB_PATH"])
+	})
+
+	t.Run("each hook has its own command state", func(t *testing.T) {
+		jobContainer := &hookContainer{output: "::stop-commands::token77"}
+		rc, ctx := newHookRunContext(jobContainer, &Config{JobStartedHook: "/started.sh", JobCompletedHook: "/completed.sh"})
+		jobWriter := rc.commandLogWriter(ctx)
+		jobContainer.stdout = jobWriter
+
+		require.NoError(t, rc.runJobStartedHook(ctx))
+		jobContainer.output = "::add-mask::s3cret"
+		require.NoError(t, rc.runJobCompletedHook(ctx))
+		assert.Equal(t, []string{"token77", "s3cret"}, rc.Masks)
+		assert.Same(t, jobWriter, jobContainer.stdout)
 	})
 
 	// Each hook reads its own variable, so a swapped constant cannot pass.

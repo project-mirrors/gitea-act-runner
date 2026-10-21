@@ -732,17 +732,6 @@ func useJobStageLogger(stage string, executor common.Executor) common.Executor {
 func useStepLogger(rc *RunContext, stepModel *model.Step, stage stepStage, executor common.Executor) common.Executor {
 	return func(ctx context.Context) error {
 		ctx = withStepLogger(ctx, stepModel.Number, stepModel.ID, rc.ExprEval.InterpolateName(ctx, stepModel.String()), stage.String())
-
-		logWriter := rc.commandLogWriter(ctx)
-
-		oldout, olderr := rc.JobContainer.ReplaceLogWriter(logWriter, logWriter)
-		defer rc.JobContainer.ReplaceLogWriter(oldout, olderr)
-
-		// Flush any buffered, not-yet-newline-terminated trailing line once the
-		// step has finished, so the final line of the step's output is not lost
-		// when it is not newline-terminated.
-		defer common.FlushWriter(logWriter)
-
-		return executor(ctx)
+		return rc.withCommandLogWriter(ctx, executor)
 	}
 }

@@ -56,7 +56,7 @@ func (rc *RunContext) runJobHook(ctx context.Context, hookPath, name string) err
 
 	err := rc.setupHookFileCommands(ctx, env)
 	if err == nil {
-		err = rc.JobContainer.Exec(cmd, env, "", "")(ctx)
+		err = rc.withCommandLogWriter(ctx, rc.JobContainer.Exec(cmd, env, "", ""))
 	}
 	// Processed even on failure, so a hook that exports what it managed to set up before
 	// failing still hands it to the job.

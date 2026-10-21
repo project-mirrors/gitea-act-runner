@@ -164,8 +164,12 @@ func (rc *RunContext) markInterrupted(err error) {
 	}
 }
 
-func (rc *RunContext) AddMask(mask string) {
+// AddMask also hands the mask to the job logger's extra handler, which receives records unmasked.
+func (rc *RunContext) AddMask(ctx context.Context, mask string) {
 	rc.Masks = append(rc.Masks, mask)
+	if masker, ok := common.LoggerHandler(ctx).(interface{ AddMask(string) }); ok {
+		masker.AddMask(mask)
+	}
 }
 
 func (rc *RunContext) String() string {
@@ -672,7 +676,7 @@ func (rc *RunContext) jobServices(ctx context.Context, networkName string) (map[
 			return nil, fmt.Errorf("failed to parse service %s ports: %w", serviceID, err)
 		}
 
-		serviceLog := common.NewLineWriter(rawLogLine(ctx)) // raw, so a service's output cannot set the job's env, outputs or state
+		serviceLog := common.NewLineWriter(rc.serviceCommandHandler(ctx), rawLogLine(ctx))
 		inputs[serviceID] = &container.NewContainerInput{
 			Name:            createContainerName(rc.jobContainerName(), serviceID),
 			Image:           spec.Image,
@@ -703,6 +707,15 @@ func (rc *RunContext) jobServices(ctx context.Context, networkName string) (map[
 
 func (rc *RunContext) commandLogWriter(ctx context.Context) io.Writer {
 	return common.NewLineWriter(rc.commandHandler(ctx), rawLogLine(ctx))
+}
+
+// withCommandLogWriter runs executor with a command handler of its own on the job environment's output.
+func (rc *RunContext) withCommandLogWriter(ctx context.Context, executor common.Executor) error {
+	logWriter := rc.commandLogWriter(ctx)
+	oldout, olderr := rc.JobContainer.ReplaceLogWriter(logWriter, logWriter)
+	defer rc.JobContainer.ReplaceLogWriter(oldout, olderr)
+	defer common.FlushWriter(logWriter) // the last line of output may lack its newline
+	return executor(ctx)
 }
 
 func rawLogLine(ctx context.Context) common.LineHandler {
@@ -853,7 +866,7 @@ func (rc *RunContext) UpdateExtraPath(ctx context.Context, githubEnvPath string)
 	for s.Scan() {
 		line := s.Text()
 		if len(line) > 0 {
-			rc.addPath(ctx, line)
+			rc.addPath(line)
 		}
 	}
 	if err := s.Err(); err != nil {

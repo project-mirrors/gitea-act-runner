@@ -241,14 +241,7 @@ func (rc *RunContext) compositeExecutor(action *model.Action) *compositeSteps {
 
 func (rc *RunContext) newCompositeCommandExecutor(executor common.Executor) common.Executor {
 	return func(ctx context.Context) error {
-		ctx = WithCompositeLogger(ctx, &rc.Masks)
-
-		logWriter := rc.commandLogWriter(ctx)
-
-		oldout, olderr := rc.JobContainer.ReplaceLogWriter(logWriter, logWriter)
-		defer rc.JobContainer.ReplaceLogWriter(oldout, olderr)
-
-		return executor(ctx)
+		return rc.withCommandLogWriter(WithCompositeLogger(ctx, &rc.Masks), executor)
 	}
 }
 

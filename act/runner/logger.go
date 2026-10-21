@@ -407,7 +407,7 @@ func (f textFormatter) format(r logging.Record) ([]byte, error) {
 	b := &bytes.Buffer{}
 
 	// the web renderer decodes command data, so this local view has to as well
-	if _, _, _, ok := tryParseRawActionCommand(r.Message + "\n"); ok {
+	if _, _, _, _, ok := parseActionCommand(r.Message, ""); ok && (strings.HasPrefix(r.Message, "::") || strings.HasPrefix(r.Message, "##[")) {
 		r.Message = UnescapeCommandData(r.Message)
 	}
 	r.Message = strings.TrimSuffix(r.Message, "\n")

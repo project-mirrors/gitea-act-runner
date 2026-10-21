@@ -35,259 +35,19 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestReporter_parseLogRow(t *testing.T) {
-	tests := []struct {
-		name               string
-		debugOutputEnabled bool
-		args               []string
-		want               []string
-	}{
-		{
-			"No command", false,
-			[]string{"Hello, world!"},
-			[]string{"Hello, world!"},
-		},
-		{
-			"Add-mask", false,
-			[]string{
-				"foo mysecret bar",
-				"::add-mask::mysecret",
-				"foo mysecret bar",
-			},
-			[]string{
-				"foo mysecret bar",
-				"<nil>",
-				"foo *** bar",
-			},
-		},
-		{
-			"Add-mask-multiline", false,
-			[]string{
-				"foo mysecret bar",
-				"::add-mask::LINE1%0ALINE2",
-				"foo LINE1 bar",
-			},
-			[]string{
-				"foo mysecret bar",
-				"<nil>",
-				"foo *** bar",
-			},
-		},
-		{
-			"Debug enabled", true,
-			[]string{
-				"::debug::GitHub Actions runtime token access controls",
-				// Left escaped: the web UI decodes it, and a real newline would not survive storage.
-				"::debug::first%0Asecond",
-			},
-			[]string{
-				"::debug::GitHub Actions runtime token access controls",
-				"::debug::first%0Asecond",
-			},
-		},
-		{
-			"Debug not enabled", false,
-			[]string{
-				"::debug::GitHub Actions runtime token access controls",
-			},
-			[]string{
-				"<nil>",
-			},
-		},
-		// The three annotation levels share one code path, so the property shapes are only
-		// exercised under "error"; notice and warning just prove the level token round-trips.
-		{
-			"notice", false,
-			[]string{
-				"::notice::Gosh, that's not going to work",
-			},
-			[]string{
-				"::notice::Gosh, that's not going to work",
-			},
-		},
-		{
-			"warning", false,
-			[]string{
-				"::warning::Gosh, that's not going to work",
-			},
-			[]string{
-				"::warning::Gosh, that's not going to work",
-			},
-		},
-		{
-			"error", false,
-			[]string{
-				"::error file=file.name,line=42,endLine=48,title=Cool Title::Gosh, that's not going to work",
-				"::error::Gosh, that's not going to work",
-				"::error file=file.name,line=42,col=7::Gosh, that's not going to work",
-				// The message keeps its own '::', the property list ends at the first one.
-				"::error file=main.cpp,line=12::no member named 'foo' in 'std::vector<int>'",
-				// GitHub matches property names case-insensitively.
-				"::error File=file.name,Line=42,Col=7::Gosh, that's not going to work",
-				// Only the property separators are decoded here, %25/%0A are left for the web UI.
-				"::error file=a%3Ab.go,title=100%252C::still %25 escaped%0Aand multi-line",
-			},
-			[]string{
-				"::error::file.name:42: Cool Title: Gosh, that's not going to work",
-				"::error::Gosh, that's not going to work",
-				"::error::file.name:42:7: Gosh, that's not going to work",
-				"::error::main.cpp:12: no member named 'foo' in 'std::vector<int>'",
-				"::error::file.name:42:7: Gosh, that's not going to work",
-				"::error::a:b.go: 100%252C: still %25 escaped%0Aand multi-line",
-			},
-		},
-		{
-			"group", false,
-			[]string{
-				"::group::",
-				"::endgroup::",
-			},
-			[]string{
-				"::group::",
-				"::endgroup::",
-			},
-		},
-		{
-			"stop-commands", false,
-			[]string{
-				"::add-mask::foo",
-				"::stop-commands::myverycoolstoptoken",
-				"::add-mask::bar",
-				"::debug::Stuff",
-				"myverycoolstoptoken",
-				"::add-mask::baz",
-				"::myverycoolstoptoken::",
-				"::add-mask::wibble",
-				"foo bar baz wibble",
-			},
-			[]string{
-				"<nil>",
-				"<nil>",
-				"::add-mask::bar",
-				"::debug::Stuff",
-				"myverycoolstoptoken",
-				"::add-mask::baz",
-				"<nil>",
-				"<nil>",
-				"*** bar baz ***",
-			},
-		},
-		{
-			// a token naming a real command must still resume
-			"stop-commands with a command-named token", false,
-			[]string{
-				"::stop-commands::add-mask",
-				"::set-output name=x::suppressed",
-				"::add-mask::",
-				"::add-mask::masked",
-				"masked",
-			},
-			[]string{
-				"<nil>",
-				"::set-output name=x::suppressed",
-				"<nil>",
-				"<nil>",
-				"***",
-			},
-		},
-		{
-			"unknown command", false,
-			[]string{
-				"::set-mask::foo",
-			},
-			[]string{
-				"::set-mask::foo",
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := &Reporter{
-				logReplacer:        strings.NewReplacer(),
-				debugOutputEnabled: tt.debugOutputEnabled,
-			}
-			for idx, arg := range tt.args {
-				rv := r.parseLogRow(logging.Record{Message: arg})
-				got := "<nil>"
+func TestReporter_CompositeStepResultDoesNotFinishStep(t *testing.T) {
+	reporter := &Reporter{state: &runnerv1.TaskState{}, logReplacer: strings.NewReplacer()}
+	reporter.ResetSteps(newTestSteps(1))
+	data := map[string]any{"stage": runner.StageMain, "stepNumber": 0, "stepID": []string{"0", "0"}, "raw_output": true, "stepResult": model.StepStatusFailure}
 
-				if rv != nil {
-					got = r.mask(rv.Content)
-				}
+	require.NoError(t, fire(reporter, logEntry{Data: data}))
+	assert.Equal(t, runnerv1.Result_RESULT_UNSPECIFIED, reporter.state.Steps[0].Result)
 
-				assert.Equal(t, tt.want[idx], got)
-			}
-		})
-	}
-}
-
-// Both add-mask forms must register the secret and drop their own row: the runner forwards
-// the raw line, so failing to consume it writes the secret straight to the job log.
-func TestReporter_parseLogRowAddMask(t *testing.T) {
-	for _, line := range []string{"::add-mask::supersecret", "##[add-mask]supersecret"} {
-		r := &Reporter{logReplacer: strings.NewReplacer()}
-
-		assert.Nil(t, r.parseLogRow(logging.Record{Message: line}), line)
-
-		assert.Equal(t, "using *** now", r.mask("using supersecret now"), line)
-	}
-}
-
-func TestReporter_Handle(t *testing.T) {
-	t.Run("ignore command lines", func(t *testing.T) {
-		client := mocks.NewClient(t)
-		client.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-			t.Logf("Received UpdateLog: %s", req.Msg.String())
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-				AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-			}), nil
-		})
-		client.On("UpdateTask", mock.Anything, mock.Anything).Return(func(_ context.Context, req *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
-			t.Logf("Received UpdateTask: %s", req.Msg.String())
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
-		})
-		ctx, cancel := context.WithCancel(t.Context())
-		taskCtx, err := structpb.NewStruct(map[string]any{})
-		require.NoError(t, err)
-		cfg, _ := config.LoadDefault("")
-		reporter := NewReporter(ctx, cancel, client, &runnerv1.Task{
-			Context: taskCtx,
-		}, cfg)
-		reporter.RunDaemon()
-		defer func() {
-			require.NoError(t, reporter.Close(""))
-		}()
-		reporter.ResetSteps(newTestSteps(5))
-
-		dataStep0 := map[string]any{
-			"stage":      "Main",
-			"stepNumber": 0,
-			"raw_output": true,
-		}
-
-		require.NoError(t, fire(reporter, logEntry{Message: "regular log line", Data: dataStep0}))
-		require.NoError(t, fire(reporter, logEntry{Message: "::debug::debug log line", Data: dataStep0}))
-		require.NoError(t, fire(reporter, logEntry{Message: "regular log line", Data: dataStep0}))
-		require.NoError(t, fire(reporter, logEntry{Message: "::debug::debug log line", Data: dataStep0}))
-		require.NoError(t, fire(reporter, logEntry{Message: "::debug::debug log line", Data: dataStep0}))
-		require.NoError(t, fire(reporter, logEntry{Message: "regular log line", Data: dataStep0}))
-		require.NoError(t, fire(reporter, logEntry{Message: "composite step result", Data: map[string]any{
-			"stage":      "Main",
-			"stepID":     []string{"0", "0"},
-			"stepNumber": 0,
-			"raw_output": true,
-			"stepResult": model.StepStatusFailure,
-		}}))
-		assert.Equal(t, runnerv1.Result_RESULT_UNSPECIFIED, reporter.state.Steps[0].Result)
-		require.NoError(t, fire(reporter, logEntry{Message: "step result", Data: map[string]any{
-			"stage":      "Main",
-			"stepNumber": 0,
-			"raw_output": true,
-			"stepResult": model.StepStatusSuccess,
-		}}))
-		assert.Equal(t, runnerv1.Result_RESULT_SUCCESS, reporter.state.Steps[0].Result)
-
-		assert.Equal(t, int64(5), reporter.state.Steps[0].LogLength)
-	})
+	delete(data, "stepID")
+	data["stepResult"] = model.StepStatusSuccess
+	require.NoError(t, fire(reporter, logEntry{Data: data}))
+	assert.Equal(t, runnerv1.Result_RESULT_SUCCESS, reporter.state.Steps[0].Result)
+	assert.Equal(t, int64(2), reporter.state.Steps[0].LogLength)
 }
 
 func TestReporter_LogLevelFiltering(t *testing.T) {
@@ -1047,7 +807,6 @@ func TestReporter_StopHeartbeats(t *testing.T) {
 
 func TestAppendLogRow(t *testing.T) {
 	r := &Reporter{logReplacer: strings.NewReplacer("supersecret", "***")}
-	r.appendLogRow(nil)
 	r.appendLogRow(&runnerv1.LogRow{Time: timestamppb.Now(), Content: "hello supersecret"})
 	require.Len(t, r.logRows, 1)
 	assert.Equal(t, "hello ***", r.logRows[0].Content)
@@ -1056,6 +815,8 @@ func TestAppendLogRow(t *testing.T) {
 	r = &Reporter{logReplacer: strings.NewReplacer("a?b", "***")}
 	r.appendLogRow(&runnerv1.LogRow{Time: timestamppb.Now(), Content: "a\xffb"})
 	assert.Equal(t, "***", r.logRows[0].Content)
+
+	assert.Equal(t, "::debug::d%0Anext", logRow(logging.Record{Message: "::debug::d%0Anext\r\n"}).Content)
 }
 
 func TestReporter_Enabled(t *testing.T) {
@@ -1122,7 +883,6 @@ func TestReporter_DebugSettingsAreNotMasked(t *testing.T) {
 	}, &config.Config{})
 	defer deregisterGlobalMasks(reporter)
 
-	assert.True(t, reporter.debugOutputEnabled)
 	assert.Equal(t, "debug is true", reporter.mask("debug is true"))
 	assert.Equal(t, "***", reporter.mask("s3cr3t"))
 
