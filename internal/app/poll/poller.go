@@ -17,7 +17,7 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/config"
 	"gitea.com/gitea/runner/internal/pkg/metrics"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 )
 
@@ -355,9 +355,9 @@ func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task,
 	// Load the version value that was in the cache when the request was sent.
 	v := p.tasksVersion.Load()
 	start := time.Now()
-	resp, err := p.client.FetchTask(reqCtx, connect.NewRequest(&runnerv1.FetchTaskRequest{
+	resp, err := p.client.FetchTask(reqCtx, &runnerv1.FetchTaskRequest{
 		TasksVersion: v,
-	}))
+	})
 
 	// Our own deadline proves nothing either way: today Gitea answers immediately,
 	// so it means a slow server, and once it holds the request open it is an idle
@@ -405,27 +405,27 @@ func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task,
 	// Successful response — reset error counter.
 	s.consecutiveErrors = 0
 
-	if resp == nil || resp.Msg == nil {
+	if resp == nil {
 		s.consecutiveEmpty++
 		metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultEmpty).Inc()
 		return nil, false
 	}
 
-	if resp.Msg.TasksVersion > v {
-		p.tasksVersion.CompareAndSwap(v, resp.Msg.TasksVersion)
+	if resp.TasksVersion > v {
+		p.tasksVersion.CompareAndSwap(v, resp.TasksVersion)
 	}
 
-	if resp.Msg.Task == nil {
+	if resp.Task == nil {
 		s.consecutiveEmpty++
 		metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultEmpty).Inc()
 		return nil, false
 	}
 
 	// got a task, set `tasksVersion` to zero to force query db in next request.
-	p.tasksVersion.CompareAndSwap(resp.Msg.TasksVersion, 0)
+	p.tasksVersion.CompareAndSwap(resp.TasksVersion, 0)
 
 	metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultTask).Inc()
-	return resp.Msg.Task, true
+	return resp.Task, true
 }
 
 func (p *Poller) markHealthyPoll() {

@@ -15,7 +15,6 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/client/mocks"
 	"gitea.com/gitea/runner/internal/pkg/config"
 
-	connect_go "connectrpc.com/connect"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -34,10 +33,10 @@ func readJobLog(t *testing.T, joblog *jobLog) string {
 
 func TestJobLog_MirrorsUploadedRows(t *testing.T) {
 	client := mocks.NewClient(t)
-	client.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-		return connect_go.NewResponse(&runnerv1.UpdateLogResponse{AckIndex: req.Msg.Index + int64(len(req.Msg.Rows))}), nil
+	client.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+		return &runnerv1.UpdateLogResponse{AckIndex: req.Index + int64(len(req.Rows))}, nil
 	})
-	client.On("UpdateTask", mock.Anything, mock.Anything).Return(connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil)
+	client.On("UpdateTask", mock.Anything, mock.Anything).Return(&runnerv1.UpdateTaskResponse{}, nil)
 
 	cfg, err := config.LoadDefault("")
 	require.NoError(t, err)

@@ -25,7 +25,7 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/labels"
 	"gitea.com/gitea/runner/internal/pkg/ver"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"gitea.dev/actionslib/pkg/model"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"github.com/stretchr/testify/assert"
@@ -38,27 +38,21 @@ func TestRunnerCapabilitiesAndDeclare(t *testing.T) {
 	require.Equal(t, []string{CapabilityCancelling}, RunnerCapabilities())
 
 	cli := clientmocks.NewClient(t)
-	cli.On("Declare", mock.Anything, mock.MatchedBy(func(req *connect.Request[runnerv1.DeclareRequest]) bool {
-		return req.Msg.Version == ver.Version() &&
-			len(req.Msg.Labels) == 1 &&
-			req.Msg.Labels[0] == "ubuntu" &&
-			len(req.Msg.Capabilities) == 1 &&
-			req.Msg.Capabilities[0] == CapabilityCancelling
-	})).Return(connect.NewResponse(&runnerv1.DeclareResponse{}), nil)
+	cli.On("Declare", mock.Anything, mock.MatchedBy(func(req *runnerv1.DeclareRequest) bool {
+		return req.Version == ver.Version() &&
+			len(req.Labels) == 1 &&
+			req.Labels[0] == "ubuntu" &&
+			len(req.Capabilities) == 1 &&
+			req.Capabilities[0] == CapabilityCancelling
+	})).Return(&runnerv1.DeclareResponse{}, nil).Run(func(args mock.Arguments) {
+		info, ok := connect.CallInfoForClientContext(args.Get(0).(context.Context))
+		require.True(t, ok)
+		info.ResponseHeader().Set("X-Gitea-Actions-Capabilities", " cancelling,cache-v2 ")
+	})
 
 	r := &Runner{client: cli}
 	_, err := r.Declare(t.Context(), []string{"ubuntu"})
 	require.NoError(t, err)
-}
-
-func TestRunnerSetCapabilitiesFromDeclare(t *testing.T) {
-	r := &Runner{}
-	r.SetCapabilitiesFromDeclare(nil)
-	require.Empty(t, r.capabilities)
-
-	resp := connect.NewResponse(&runnerv1.DeclareResponse{})
-	resp.Header().Set("X-Gitea-Actions-Capabilities", " cancelling,cache-v2 ")
-	r.SetCapabilitiesFromDeclare(resp)
 	require.Equal(t, "cancelling,cache-v2", r.capabilities)
 }
 
@@ -104,20 +98,20 @@ func TestRunnerReclaimsVolumesAfterReporting(t *testing.T) {
 			r := NewRunner(cfg, &config.Registration{UUID: "runner-1", Labels: []string{"ubuntu:docker://node:20"}}, cli)
 			var reported atomic.Bool
 			var removed atomic.Int64
-			cli.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, req *connect.Request[runnerv1.UpdateLogRequest]) (*connect.Response[runnerv1.UpdateLogResponse], error) {
+			cli.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
 				assert.False(t, reported.Load())
-				return connect.NewResponse(&runnerv1.UpdateLogResponse{AckIndex: req.Msg.Index + int64(len(req.Msg.Rows))}), nil
+				return &runnerv1.UpdateLogResponse{AckIndex: req.Index + int64(len(req.Rows))}, nil
 			})
-			cli.On("UpdateTask", mock.Anything, mock.Anything).Return(func(_ context.Context, req *connect.Request[runnerv1.UpdateTaskRequest]) (*connect.Response[runnerv1.UpdateTaskResponse], error) {
-				if req.Msg.State.Result != runnerv1.Result_RESULT_UNSPECIFIED {
-					assert.Equal(t, runnerv1.Result_RESULT_SUCCESS, req.Msg.State.Result)
+			cli.On("UpdateTask", mock.Anything, mock.Anything).Return(func(_ context.Context, req *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+				if req.State.Result != runnerv1.Result_RESULT_UNSPECIFIED {
+					assert.Equal(t, runnerv1.Result_RESULT_SUCCESS, req.State.Result)
 					assert.Equal(t, int64(1), r.RunningCount())
 					if mode == "post-task script" {
 						assert.FileExists(t, cfg.Runner.PostTaskScript+".done")
 					}
 					reported.Store(true)
 				}
-				return connect.NewResponse(&runnerv1.UpdateTaskResponse{State: req.Msg.State}), nil
+				return &runnerv1.UpdateTaskResponse{State: req.State}, nil
 			})
 			var volumesCreated atomic.Bool
 			daemon := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

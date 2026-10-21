@@ -41,7 +41,7 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/telemetry"
 	"gitea.com/gitea/runner/internal/pkg/ver"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"gitea.dev/actionslib/pkg/model"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	docker_container "github.com/moby/moby/api/types/container"
@@ -291,14 +291,6 @@ func (r *Runner) cleanupStaleDirs(ctx context.Context, root string, match func(n
 		}
 		logging.Infof("cleaned stale directory %s", dir)
 	}
-}
-
-func (r *Runner) SetCapabilitiesFromDeclare(resp *connect.Response[runnerv1.DeclareResponse]) {
-	if resp == nil {
-		return
-	}
-	// Capability negotiation is done via response headers to avoid a hard proto bump.
-	r.capabilities = strings.TrimSpace(resp.Header().Get("X-Gitea-Actions-Capabilities"))
 }
 
 func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) error {
@@ -851,12 +843,17 @@ func nearestExistingPath(path string) string {
 	return "."
 }
 
-func (r *Runner) Declare(ctx context.Context, labels []string) (*connect.Response[runnerv1.DeclareResponse], error) {
-	return r.client.Declare(ctx, connect.NewRequest(&runnerv1.DeclareRequest{
+func (r *Runner) Declare(ctx context.Context, labels []string) (*runnerv1.DeclareResponse, error) {
+	ctx, info := connect.NewClientContext(ctx)
+	resp, err := r.client.Declare(ctx, &runnerv1.DeclareRequest{
 		Version:      ver.Version(),
 		Labels:       labels,
 		Capabilities: RunnerCapabilities(),
-	}))
+	})
+	if err == nil {
+		r.capabilities = strings.TrimSpace(info.ResponseHeader().Get("X-Gitea-Actions-Capabilities"))
+	}
+	return resp, err
 }
 
 // minFreeDisk keeps the cache from growing past the point where the runner stops taking

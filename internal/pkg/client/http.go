@@ -13,7 +13,8 @@ import (
 
 	"gitea.com/gitea/runner/internal/pkg/ver"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"gitea.dev/actionslib/ping/v1/pingv1connect"
 	"gitea.dev/actionslib/pkg/protocol"
 	"gitea.dev/actionslib/runner/v1/runnerv1connect"
@@ -57,40 +58,33 @@ func getHTTPClient(endpoint string, tlsConfig *tls.Config, timeout time.Duration
 // New returns a new runner client. timeout bounds every RPC: without it a
 // stalled connection parks the reporter for the whole job context, so logs and
 // heartbeats stop together and the task is reaped as a zombie.
-func New(endpoint string, tlsConfig *tls.Config, uuid, token string, timeout time.Duration, extraHeaders map[string]string, opts ...connect.ClientOption) *HTTPClient {
+func New(endpoint string, tlsConfig *tls.Config, uuid, token string, timeout time.Duration, extraHeaders map[string]string, opts ...connecthttp.Option) *HTTPClient {
 	baseURL := strings.TrimRight(endpoint, "/") + "/api/actions"
 
-	opts = append(opts, connect.WithInterceptors(connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+	opts = append([]connecthttp.Option{connecthttp.WithReadMaxBytes(0)}, opts...)
+	rpcClient := connect.NewClient(connecthttp.NewTransport(getHTTPClient(endpoint, tlsConfig, timeout, extraHeaders), baseURL, opts...), func(next connect.ClientFunc) connect.ClientFunc {
+		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+			info, _ := connect.CallInfoForClientContext(ctx)
 			for name, value := range extraHeaders {
-				if req.Header().Get(name) == "" { // keep protocol headers such as Content-Type
-					req.Header().Set(name, value)
+				if info.RequestHeader().Get(name) == "" {
+					info.RequestHeader().Set(name, value)
 				}
 			}
-			req.Header().Set("User-Agent", "gitea-runner/"+ver.Version())
+			info.RequestHeader().Set("User-Agent", "gitea-runner/"+ver.Version())
 			if uuid != "" {
-				req.Header().Set(protocol.UUIDHeader, uuid)
+				info.RequestHeader().Set(protocol.UUIDHeader, uuid)
 			}
 			if token != "" {
-				req.Header().Set(protocol.TokenHeader, token)
+				info.RequestHeader().Set(protocol.TokenHeader, token)
 			}
-			return next(ctx, req)
+			return next(ctx, spec)
 		}
-	})))
+	})
 
-	httpClient := getHTTPClient(endpoint, tlsConfig, timeout, extraHeaders)
 	return &HTTPClient{
-		PingServiceClient: pingv1connect.NewPingServiceClient(
-			httpClient,
-			baseURL,
-			opts...,
-		),
-		RunnerServiceClient: runnerv1connect.NewRunnerServiceClient(
-			httpClient,
-			baseURL,
-			opts...,
-		),
-		endpoint: endpoint,
+		PingServiceClient:   pingv1connect.NewPingServiceClient(rpcClient),
+		RunnerServiceClient: runnerv1connect.NewRunnerServiceClient(rpcClient),
+		endpoint:            endpoint,
 	}
 }
 

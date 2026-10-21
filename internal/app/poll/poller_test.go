@@ -15,7 +15,7 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/client/mocks"
 	"gitea.com/gitea/runner/internal/pkg/config"
 
-	connect_go "connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -28,9 +28,9 @@ import (
 func TestPoller_WorkerStateCounters(t *testing.T) {
 	client := mocks.NewClient(t)
 	client.On("FetchTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.FetchTaskRequest]) (*connect_go.Response[runnerv1.FetchTaskResponse], error) {
+		func(_ context.Context, _ *runnerv1.FetchTaskRequest) (*runnerv1.FetchTaskResponse, error) {
 			// Always return an empty response.
-			return connect_go.NewResponse(&runnerv1.FetchTaskResponse{}), nil
+			return &runnerv1.FetchTaskResponse{}, nil
 		},
 	)
 
@@ -109,8 +109,8 @@ func TestPoller_FetchUnauthenticatedStopsPolling(t *testing.T) {
 		fetchErr error
 		rejected bool
 	}{
-		"proxy": {connect_go.NewError(connect_go.CodeUnauthenticated, errors.New("401 Unauthorized")), false},
-		"gitea": {connect_go.NewWireError(connect_go.CodeUnknown, errors.New("rpc error: code = Unauthenticated desc = unregistered runner")), true},
+		"proxy": {connect.NewError(connect.CodeUnauthenticated, "401 Unauthorized"), false},
+		"gitea": {connect.NewError(connect.CodeUnknown, "rpc error: code = Unauthenticated desc = unregistered runner").WithRemote(), true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			client := mocks.NewClient(t)
@@ -242,7 +242,7 @@ func TestPollerPausesAndResumesForLocalAvailability(t *testing.T) {
 	cli := mocks.NewClient(t)
 	cli.On("FetchTask", mock.Anything, mock.Anything).Maybe().Run(func(mock.Arguments) {
 		fetches.Add(1)
-	}).Return(connect_go.NewResponse(&runnerv1.FetchTaskResponse{}), nil)
+	}).Return(&runnerv1.FetchTaskResponse{}, nil)
 
 	cfg, err := config.LoadDefault("")
 	require.NoError(t, err)
@@ -294,8 +294,8 @@ func (m *idleAwareRunner) OnIdle(_ context.Context) {
 func TestPollerPollCallsOnIdle(t *testing.T) {
 	cli := mocks.NewClient(t)
 	cli.On("FetchTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.FetchTaskRequest]) (*connect_go.Response[runnerv1.FetchTaskResponse], error) {
-			return connect_go.NewResponse(&runnerv1.FetchTaskResponse{}), nil
+		func(_ context.Context, _ *runnerv1.FetchTaskRequest) (*runnerv1.FetchTaskResponse, error) {
+			return &runnerv1.FetchTaskResponse{}, nil
 		},
 	)
 
@@ -324,8 +324,8 @@ func TestPollerPollCallsOnIdle(t *testing.T) {
 func TestPollerPollOnceCallsOnIdle(t *testing.T) {
 	cli := mocks.NewClient(t)
 	cli.On("FetchTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.FetchTaskRequest]) (*connect_go.Response[runnerv1.FetchTaskResponse], error) {
-			return connect_go.NewResponse(&runnerv1.FetchTaskResponse{}), nil
+		func(_ context.Context, _ *runnerv1.FetchTaskRequest) (*runnerv1.FetchTaskResponse, error) {
+			return &runnerv1.FetchTaskResponse{}, nil
 		},
 	)
 
@@ -352,7 +352,7 @@ func TestPollerPollOnceCallsOnIdle(t *testing.T) {
 
 func TestPollerPollOnceCallsOnTaskFetchedBeforeRunningIt(t *testing.T) {
 	cli := mocks.NewClient(t)
-	cli.On("FetchTask", mock.Anything, mock.Anything).Return(connect_go.NewResponse(&runnerv1.FetchTaskResponse{Task: &runnerv1.Task{Id: 1}}), nil)
+	cli.On("FetchTask", mock.Anything, mock.Anything).Return(&runnerv1.FetchTaskResponse{Task: &runnerv1.Task{Id: 1}}, nil)
 	cfg, err := config.LoadDefault("")
 	require.NoError(t, err)
 	runner := &mockRunner{}
@@ -380,17 +380,17 @@ func TestPoller_ConcurrencyLimitedByCapacity(t *testing.T) {
 
 	cli := mocks.NewClient(t)
 	cli.On("FetchTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.FetchTaskRequest]) (*connect_go.Response[runnerv1.FetchTaskResponse], error) {
+		func(_ context.Context, _ *runnerv1.FetchTaskRequest) (*runnerv1.FetchTaskResponse, error) {
 			atomicMax(&maxFetchConcur, fetchConcur.Add(1))
 			defer fetchConcur.Add(-1)
 
 			n := tasksReturned.Add(1)
 			if n <= totalTasks {
-				return connect_go.NewResponse(&runnerv1.FetchTaskResponse{
+				return &runnerv1.FetchTaskResponse{
 					Task: &runnerv1.Task{Id: n},
-				}), nil
+				}, nil
 			}
-			return connect_go.NewResponse(&runnerv1.FetchTaskResponse{}), nil
+			return &runnerv1.FetchTaskResponse{}, nil
 		},
 	)
 
@@ -438,13 +438,13 @@ func TestPoller_ShutdownForcesJobsOnTimeout(t *testing.T) {
 	var served atomic.Bool
 	cli := mocks.NewClient(t)
 	cli.On("FetchTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.FetchTaskRequest]) (*connect_go.Response[runnerv1.FetchTaskResponse], error) {
+		func(_ context.Context, _ *runnerv1.FetchTaskRequest) (*runnerv1.FetchTaskResponse, error) {
 			if served.CompareAndSwap(false, true) {
-				return connect_go.NewResponse(&runnerv1.FetchTaskResponse{
+				return &runnerv1.FetchTaskResponse{
 					Task: &runnerv1.Task{Id: 1},
-				}), nil
+				}, nil
 			}
-			return connect_go.NewResponse(&runnerv1.FetchTaskResponse{}), nil
+			return &runnerv1.FetchTaskResponse{}, nil
 		},
 	)
 

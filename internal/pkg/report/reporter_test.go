@@ -25,7 +25,6 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/config"
 	"gitea.com/gitea/runner/internal/pkg/metrics"
 
-	connect_go "connectrpc.com/connect"
 	"gitea.dev/actionslib/pkg/model"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"github.com/stretchr/testify/assert"
@@ -57,13 +56,13 @@ func TestReporter_LogLevelFiltering(t *testing.T) {
 	defer logging.SetLevel(origLevel)
 
 	client := mocks.NewClient(t)
-	client.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-		return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-			AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-		}), nil
+	client.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+		return &runnerv1.UpdateLogResponse{
+			AckIndex: req.Index + int64(len(req.Rows)),
+		}, nil
 	})
-	client.On("UpdateTask", mock.Anything, mock.Anything).Return(func(_ context.Context, req *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
-		return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+	client.On("UpdateTask", mock.Anything, mock.Anything).Return(func(_ context.Context, req *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+		return &runnerv1.UpdateTaskResponse{}, nil
 	})
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -119,22 +118,22 @@ func TestReporter_EphemeralRunnerDeletion(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateLog", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
+		func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
 			if runnerDeleted {
 				return nil, errors.New("runner has been deleted")
 			}
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-				AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-			}), nil
+			return &runnerv1.UpdateLogResponse{
+				AckIndex: req.Index + int64(len(req.Rows)),
+			}, nil
 		},
 	)
 	client.On("UpdateTask", mock.Anything, mock.Anything).Maybe().Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
+		func(_ context.Context, req *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
 			// Server deletes ephemeral runner when it receives a completed state
-			if req.Msg.State != nil && req.Msg.State.Result != runnerv1.Result_RESULT_UNSPECIFIED {
+			if req.State != nil && req.State.Result != runnerv1.Result_RESULT_UNSPECIFIED {
 				runnerDeleted = true
 			}
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -191,15 +190,15 @@ func TestReporter_EphemeralRunnerDeletion(t *testing.T) {
 func TestReporter_RunDaemonClose_Race(t *testing.T) {
 	client := mocks.NewClient(t)
 	client.On("UpdateLog", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-				AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-			}), nil
+		func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+			return &runnerv1.UpdateLogResponse{
+				AckIndex: req.Index + int64(len(req.Rows)),
+			}, nil
 		},
 	)
 	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+		func(_ context.Context, req *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -232,16 +231,16 @@ func TestReporter_MaxLatencyTimer(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateLog", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
+		func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
 			updateLogCalls.Add(1)
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-				AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-			}), nil
+			return &runnerv1.UpdateLogResponse{
+				AckIndex: req.Index + int64(len(req.Rows)),
+			}, nil
 		},
 	)
 	client.On("UpdateTask", mock.Anything, mock.Anything).Maybe().Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+		func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -283,16 +282,16 @@ func TestReporter_BatchSizeFlush(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateLog", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
+		func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
 			updateLogCalls.Add(1)
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-				AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-			}), nil
+			return &runnerv1.UpdateLogResponse{
+				AckIndex: req.Index + int64(len(req.Rows)),
+			}, nil
 		},
 	)
 	client.On("UpdateTask", mock.Anything, mock.Anything).Maybe().Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+		func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -338,14 +337,14 @@ func TestReporter_StateChangedNotLostDuringReport(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
+		func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
 			n := updateTaskCalls.Add(1)
 			if n == 1 {
 				// Signal that the first UpdateTask is in flight, then block until released.
 				close(inFlight)
 				<-release
 			}
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -401,12 +400,12 @@ func TestReporter_StateChangedRestoredOnError(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
+		func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
 			n := updateTaskCalls.Add(1)
 			if n == 1 {
 				return nil, errors.New("transient network error")
 			}
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -442,16 +441,16 @@ func TestReporter_StateNotifyFlush(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateLog", mock.Anything, mock.Anything).Maybe().Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-				AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-			}), nil
+		func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+			return &runnerv1.UpdateLogResponse{
+				AckIndex: req.Index + int64(len(req.Rows)),
+			}, nil
 		},
 	)
 	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
+		func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
 			updateTaskCalls.Add(1)
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -496,19 +495,19 @@ func TestReporter_CloseAlwaysSendsRowsWithNoMore(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateLog", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-			lastReq.Store(req.Msg)
-			if req.Msg.NoMore {
+		func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+			lastReq.Store(req)
+			if req.NoMore {
 				noMoreCalls.Add(1)
 			}
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-				AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-			}), nil
+			return &runnerv1.UpdateLogResponse{
+				AckIndex: req.Index + int64(len(req.Rows)),
+			}, nil
 		},
 	)
 	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+		func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -557,9 +556,9 @@ func TestReporter_StateHeartbeat(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
+		func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
 			updateTaskCalls.Add(1)
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -605,13 +604,13 @@ func TestReporter_ServerCancelStillFlushesFinal(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateLog", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-			if req.Msg.NoMore {
+		func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+			if req.NoMore {
 				finalLogNoMoreSeen.Store(true)
 			}
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-				AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-			}), nil
+			return &runnerv1.UpdateLogResponse{
+				AckIndex: req.Index + int64(len(req.Rows)),
+			}, nil
 		},
 	)
 	// The first UpdateTask returns RESULT_CANCELLED — modelling a server-side
@@ -619,19 +618,19 @@ func TestReporter_ServerCancelStillFlushesFinal(t *testing.T) {
 	// UpdateTask issued by Close() must still arrive even though r.ctx is now
 	// cancelled.
 	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
+		func(_ context.Context, req *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
 			n := updateTaskCalls.Add(1)
 			if n == 1 {
-				return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{
+				return &runnerv1.UpdateTaskResponse{
 					State: &runnerv1.TaskState{
 						Result: runnerv1.Result_RESULT_CANCELLED,
 					},
-				}), nil
+				}, nil
 			}
-			if req.Msg.State != nil && req.Msg.State.Result != runnerv1.Result_RESULT_UNSPECIFIED {
+			if req.State != nil && req.State.Result != runnerv1.Result_RESULT_UNSPECIFIED {
 				finalTaskStateSeen.Store(true)
 			}
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -685,22 +684,22 @@ func TestReporter_CloseReportsCancelledOnCanceledCtx(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateLog", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-			if req.Msg.NoMore {
-				rows := append([]*runnerv1.LogRow(nil), req.Msg.Rows...)
+		func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+			if req.NoMore {
+				rows := append([]*runnerv1.LogRow(nil), req.Rows...)
 				finalLogRows.Store(&rows)
 			}
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-				AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-			}), nil
+			return &runnerv1.UpdateLogResponse{
+				AckIndex: req.Index + int64(len(req.Rows)),
+			}, nil
 		},
 	)
 	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
-			if req.Msg.State != nil && req.Msg.State.Result != runnerv1.Result_RESULT_UNSPECIFIED {
-				finalState.Store(req.Msg.State)
+		func(_ context.Context, req *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+			if req.State != nil && req.State.Result != runnerv1.Result_RESULT_UNSPECIFIED {
+				finalState.Store(req.State)
 			}
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -750,16 +749,16 @@ func TestReporter_StopHeartbeats(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateLog", mock.Anything, mock.Anything).Maybe().Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-				AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-			}), nil
+		func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+			return &runnerv1.UpdateLogResponse{
+				AckIndex: req.Index + int64(len(req.Rows)),
+			}, nil
 		},
 	)
 	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
+		func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
 			updateTaskCalls.Add(1)
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -895,9 +894,9 @@ func TestReporter_OutputsSentOnce(t *testing.T) {
 	client := mocks.NewClient(t)
 	var reported []map[string]string
 	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
-			reported = append(reported, req.Msg.Outputs)
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{SentOutputs: slices.Collect(maps.Keys(req.Msg.Outputs))}), nil
+		func(_ context.Context, req *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+			reported = append(reported, req.Outputs)
+			return &runnerv1.UpdateTaskResponse{SentOutputs: slices.Collect(maps.Keys(req.Outputs))}, nil
 		})
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -983,8 +982,8 @@ func TestReporter_masksEncodedSecrets(t *testing.T) {
 // process down with it.
 func TestReporter_AckIndexBeyondBuffer(t *testing.T) {
 	client := mocks.NewClient(t)
-	client.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, _ *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-		return connect_go.NewResponse(&runnerv1.UpdateLogResponse{AckIndex: 1000}), nil
+	client.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, _ *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+		return &runnerv1.UpdateLogResponse{AckIndex: 1000}, nil
 	})
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -1011,17 +1010,17 @@ func TestReporter_CloseWithStuckDaemon(t *testing.T) {
 	var once sync.Once
 
 	client := mocks.NewClient(t)
-	client.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
+	client.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
 		once.Do(func() {
 			close(entered)
 			<-release
 		})
-		return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-			AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-		}), nil
+		return &runnerv1.UpdateLogResponse{
+			AckIndex: req.Index + int64(len(req.Rows)),
+		}, nil
 	})
-	client.On("UpdateTask", mock.Anything, mock.Anything).Return(func(_ context.Context, _ *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
-		return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+	client.On("UpdateTask", mock.Anything, mock.Anything).Return(func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+		return &runnerv1.UpdateTaskResponse{}, nil
 	}).Maybe()
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -1059,16 +1058,16 @@ func TestReporter_CloseWithStuckDaemon(t *testing.T) {
 func TestReporter_ServerFailureResultIsReportedAsFailure(t *testing.T) {
 	var lastState *runnerv1.TaskState
 	client := mocks.NewClient(t)
-	client.On("UpdateTask", mock.Anything, mock.Anything).Return(func(_ context.Context, req *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
-		lastState = req.Msg.State
-		return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{
+	client.On("UpdateTask", mock.Anything, mock.Anything).Return(func(_ context.Context, req *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+		lastState = req.State
+		return &runnerv1.UpdateTaskResponse{
 			State: &runnerv1.TaskState{Result: runnerv1.Result_RESULT_FAILURE},
-		}), nil
+		}, nil
 	})
-	client.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-		return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-			AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-		}), nil
+	client.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+		return &runnerv1.UpdateLogResponse{
+			AckIndex: req.Index + int64(len(req.Rows)),
+		}, nil
 	}).Maybe()
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -1115,16 +1114,16 @@ func TestReporter_CloseMasksLastWords(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateLog", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-			rows = append(rows, req.Msg.Rows...)
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-				AckIndex: req.Msg.Index + int64(len(req.Msg.Rows)),
-			}), nil
+		func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+			rows = append(rows, req.Rows...)
+			return &runnerv1.UpdateLogResponse{
+				AckIndex: req.Index + int64(len(req.Rows)),
+			}, nil
 		},
 	)
 	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+		func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -1184,16 +1183,16 @@ func TestReporter_StepRangeCoversAckedRows(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateLog", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{
-				AckIndex: server.appendRows(len(req.Msg.Rows)),
-			}), nil
+		func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+			return &runnerv1.UpdateLogResponse{
+				AckIndex: server.appendRows(len(req.Rows)),
+			}, nil
 		},
 	)
 	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, req *connect_go.Request[runnerv1.UpdateTaskRequest]) (*connect_go.Response[runnerv1.UpdateTaskResponse], error) {
-			server.applyState(req.Msg.State)
-			return connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil
+		func(_ context.Context, req *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+			server.applyState(req.State)
+			return &runnerv1.UpdateTaskResponse{}, nil
 		},
 	)
 
@@ -1250,8 +1249,8 @@ func TestReporter_FlushWithoutAckedRowsSkipsState(t *testing.T) {
 
 	client := mocks.NewClient(t)
 	client.On("UpdateLog", mock.Anything, mock.Anything).Once().Return(
-		func(_ context.Context, _ *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{AckIndex: 0}), nil
+		func(_ context.Context, _ *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+			return &runnerv1.UpdateLogResponse{AckIndex: 0}, nil
 		},
 	)
 
@@ -1277,10 +1276,10 @@ func newTestSteps(n int) []*model.Step {
 func TestReporter_ReportedSteps(t *testing.T) {
 	newReporter := func(t *testing.T, steps []*model.Step) (*Reporter, context.CancelFunc) {
 		client := mocks.NewClient(t)
-		client.On("UpdateLog", mock.Anything, mock.Anything).Maybe().Return(func(_ context.Context, req *connect_go.Request[runnerv1.UpdateLogRequest]) (*connect_go.Response[runnerv1.UpdateLogResponse], error) {
-			return connect_go.NewResponse(&runnerv1.UpdateLogResponse{AckIndex: req.Msg.Index + int64(len(req.Msg.Rows))}), nil
+		client.On("UpdateLog", mock.Anything, mock.Anything).Maybe().Return(func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+			return &runnerv1.UpdateLogResponse{AckIndex: req.Index + int64(len(req.Rows))}, nil
 		})
-		client.On("UpdateTask", mock.Anything, mock.Anything).Maybe().Return(connect_go.NewResponse(&runnerv1.UpdateTaskResponse{}), nil)
+		client.On("UpdateTask", mock.Anything, mock.Anything).Maybe().Return(&runnerv1.UpdateTaskResponse{}, nil)
 		taskCtx, err := structpb.NewStruct(map[string]any{})
 		require.NoError(t, err)
 		cfg, _ := config.LoadDefault("")

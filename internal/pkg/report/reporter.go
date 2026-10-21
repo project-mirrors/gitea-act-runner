@@ -21,7 +21,7 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/config"
 	"gitea.com/gitea/runner/internal/pkg/metrics"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"gitea.dev/actionslib/pkg/model"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"google.golang.org/protobuf/proto"
@@ -823,12 +823,12 @@ func (r *Reporter) reportLog(noMore bool) (bool, error) {
 	defer rpcCancel()
 
 	start := time.Now()
-	resp, err := r.client.UpdateLog(rpcCtx, connect.NewRequest(&runnerv1.UpdateLogRequest{
+	resp, err := r.client.UpdateLog(rpcCtx, &runnerv1.UpdateLogRequest{
 		TaskId: r.state.Id,
 		Index:  int64(r.logOffset),
 		Rows:   rows,
 		NoMore: noMore,
-	}))
+	})
 	metrics.ReportLogDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
 		metrics.ReportLogTotal.WithLabelValues(metrics.LabelResultError).Inc()
@@ -837,7 +837,7 @@ func (r *Reporter) reportLog(noMore bool) (bool, error) {
 	}
 	metrics.ReportLogTotal.WithLabelValues(metrics.LabelResultSuccess).Inc()
 
-	ack := int(resp.Msg.AckIndex)
+	ack := int(resp.AckIndex)
 	if ack < r.logOffset {
 		return false, errors.New("submitted logs are lost")
 	}
@@ -902,10 +902,10 @@ func (r *Reporter) ReportState(reportResult bool) error {
 	defer rpcCancel()
 
 	start := time.Now()
-	resp, err := r.client.UpdateTask(rpcCtx, connect.NewRequest(&runnerv1.UpdateTaskRequest{
+	resp, err := r.client.UpdateTask(rpcCtx, &runnerv1.UpdateTaskRequest{
 		State:   state,
 		Outputs: outputs,
-	}))
+	})
 	metrics.ReportStateDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
 		metrics.ReportStateTotal.WithLabelValues(metrics.LabelResultError).Inc()
@@ -920,7 +920,7 @@ func (r *Reporter) ReportState(reportResult bool) error {
 
 	var noSent []string
 	r.outputsMu.Lock()
-	for _, k := range resp.Msg.SentOutputs {
+	for _, k := range resp.SentOutputs {
 		if _, ok := r.outputs[k]; ok {
 			r.outputs[k] = jobOutput{sent: true}
 		}
@@ -934,7 +934,7 @@ func (r *Reporter) ReportState(reportResult bool) error {
 
 	// A terminal result means the server is done with this task; keep running and
 	// the job holds a capacity slot until runner.timeout.
-	if state := resp.Msg.State; state != nil && state.Result != runnerv1.Result_RESULT_UNSPECIFIED {
+	if state := resp.State; state != nil && state.Result != runnerv1.Result_RESULT_UNSPECIFIED {
 		r.stateMu.Lock()
 		r.serverResult = state.Result
 		r.stateMu.Unlock()

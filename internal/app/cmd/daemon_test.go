@@ -6,7 +6,6 @@ package cmd
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,7 +18,8 @@ import (
 	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/config"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"gitea.dev/actionslib/runner/v1/runnerv1connect"
 	"github.com/stretchr/testify/require"
@@ -83,7 +83,7 @@ func TestInitLoggingSetsLevelAndCaller(t *testing.T) {
 	require.Contains(t, buf.String(), "[daemon_test.go:")
 }
 
-var errUnregisteredRunner = errors.New("rpc error: code = Unauthenticated desc = unregistered runner")
+var errUnregisteredRunner = connect.NewError(connect.CodeUnknown, "rpc error: code = Unauthenticated desc = unregistered runner")
 
 type daemonTestService struct {
 	runnerv1connect.UnimplementedRunnerServiceHandler
@@ -93,9 +93,9 @@ type daemonTestService struct {
 	cancel               context.CancelFunc
 }
 
-func (s *daemonTestService) Declare(context.Context, *connect.Request[runnerv1.DeclareRequest]) (*connect.Response[runnerv1.DeclareResponse], error) {
+func (s *daemonTestService) Declare(context.Context, *runnerv1.DeclareRequest) (*runnerv1.DeclareResponse, error) {
 	if s.declareCalls.Add(1) == 1 {
-		return nil, connect.NewError(connect.CodeUnavailable, errors.New("bad gateway"))
+		return nil, connect.NewError(connect.CodeUnavailable, "bad gateway")
 	}
 	if s.declareErr != nil {
 		if s.beforeTask {
@@ -103,10 +103,10 @@ func (s *daemonTestService) Declare(context.Context, *connect.Request[runnerv1.D
 		}
 		return nil, s.declareErr
 	}
-	return connect.NewResponse(&runnerv1.DeclareResponse{Runner: &runnerv1.Runner{Name: "test"}}), nil
+	return &runnerv1.DeclareResponse{Runner: &runnerv1.Runner{Name: "test"}}, nil
 }
 
-func (s *daemonTestService) FetchTask(context.Context, *connect.Request[runnerv1.FetchTaskRequest]) (*connect.Response[runnerv1.FetchTaskResponse], error) {
+func (s *daemonTestService) FetchTask(context.Context, *runnerv1.FetchTaskRequest) (*runnerv1.FetchTaskResponse, error) {
 	if s.fetchErr != nil {
 		return nil, s.fetchErr
 	}
@@ -114,15 +114,15 @@ func (s *daemonTestService) FetchTask(context.Context, *connect.Request[runnerv1
 		s.cancel()
 		return nil, context.Canceled
 	}
-	return connect.NewResponse(&runnerv1.FetchTaskResponse{Task: &runnerv1.Task{Id: 1, Context: &structpb.Struct{}, WorkflowPayload: []byte("invalid: [")}}), nil
+	return &runnerv1.FetchTaskResponse{Task: &runnerv1.Task{Id: 1, Context: &structpb.Struct{}, WorkflowPayload: []byte("invalid: [")}}, nil
 }
 
-func (*daemonTestService) UpdateTask(_ context.Context, req *connect.Request[runnerv1.UpdateTaskRequest]) (*connect.Response[runnerv1.UpdateTaskResponse], error) {
-	return connect.NewResponse(&runnerv1.UpdateTaskResponse{State: req.Msg.State}), nil
+func (*daemonTestService) UpdateTask(_ context.Context, req *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+	return &runnerv1.UpdateTaskResponse{State: req.State}, nil
 }
 
-func (*daemonTestService) UpdateLog(_ context.Context, req *connect.Request[runnerv1.UpdateLogRequest]) (*connect.Response[runnerv1.UpdateLogResponse], error) {
-	return connect.NewResponse(&runnerv1.UpdateLogResponse{AckIndex: req.Msg.Index + int64(len(req.Msg.Rows))}), nil
+func (*daemonTestService) UpdateLog(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+	return &runnerv1.UpdateLogResponse{AckIndex: req.Index + int64(len(req.Rows))}, nil
 }
 
 func TestDaemonRetriesDeclareOutagesAndRemovesOnlyConsumedEphemeralRegistration(t *testing.T) {
@@ -138,18 +138,21 @@ func TestDaemonRetriesDeclareOutagesAndRemovesOnlyConsumedEphemeralRegistration(
 		{"ephemeral interrupted before task", true, true, nil, nil, false},
 		{"persistent once", false, false, nil, nil, false},
 		{"ephemeral rejected on fetch", true, false, nil, errUnregisteredRunner, true},
-		{"ephemeral rejected on fetch with 401", true, false, nil, connect.NewError(connect.CodeUnauthenticated, errors.New("unregistered runner")), true},
-		{"ephemeral proxy 401 on fetch", true, false, nil, connect.NewError(connect.CodeUnauthenticated, errors.New("HTTP status 401 Unauthorized")), false},
+		{"ephemeral rejected on fetch with 401", true, false, nil, connect.NewError(connect.CodeUnauthenticated, "unregistered runner"), true},
+		{"ephemeral proxy 401 on fetch", true, false, nil, connect.NewError(connect.CodeUnauthenticated, "HTTP status 401 Unauthorized"), false},
 		{"ephemeral rejected on declare", true, false, errUnregisteredRunner, nil, true},
 		{"persistent rejected on declare", false, false, errUnregisteredRunner, nil, false},
-		{"ephemeral stopped during declare outage", true, true, connect.NewError(connect.CodeUnavailable, errors.New("bad gateway")), nil, false},
+		{"ephemeral stopped during declare outage", true, true, connect.NewError(connect.CodeUnavailable, "bad gateway"), nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			service := &daemonTestService{declareErr: tc.declareErr, fetchErr: tc.fetchErr, beforeTask: tc.beforeTask, cancel: cancel}
-			_, handler := runnerv1connect.NewRunnerServiceHandler(service)
-			server := httptest.NewServer(http.StripPrefix("/api/actions", handler))
+			rpcServer := connect.NewServer()
+			runnerv1connect.RegisterRunnerServiceHandler(rpcServer, service)
+			mux := http.NewServeMux()
+			connecthttp.Mount(mux, rpcServer, connecthttp.WithReadMaxBytes(0))
+			server := httptest.NewServer(http.StripPrefix("/api/actions", mux))
 			defer server.Close()
 			dir := t.TempDir()
 			regFile := filepath.Join(dir, "registration.json")
@@ -177,13 +180,13 @@ func TestShouldRetryDeclare(t *testing.T) {
 		err   error
 		retry bool
 	}{
-		{connect.NewError(connect.CodeUnavailable, errors.New("bad gateway")), true},
-		{connect.NewWireError(connect.CodeInternal, errors.New("update runner")), true},
-		{connect.NewError(connect.CodeUnavailable, &tls.CertificateVerificationError{Err: errors.New("unknown authority")}), false},
-		{connect.NewError(connect.CodeUnavailable, http.ErrSchemeMismatch), false},
-		{connect.NewError(connect.CodeUnavailable, tls.AlertError(42)), false},
-		{connect.NewError(connect.CodePermissionDenied, errors.New("forbidden")), false},
-		{connect.NewWireError(connect.CodeUnknown, errors.New("unregistered runner")), false},
+		{connect.NewError(connect.CodeUnavailable, "bad gateway"), true},
+		{connect.NewError(connect.CodeInternal, "update runner").WithRemote(), true},
+		{connect.NewError(connect.CodeUnavailable, "certificate verification").WithCause(&tls.CertificateVerificationError{}), false},
+		{connect.NewError(connect.CodeUnavailable, "scheme mismatch").WithCause(http.ErrSchemeMismatch), false},
+		{connect.NewError(connect.CodeUnavailable, "TLS alert").WithCause(tls.AlertError(42)), false},
+		{connect.NewError(connect.CodePermissionDenied, "forbidden"), false},
+		{connect.NewError(connect.CodeUnknown, "unregistered runner").WithRemote(), false},
 	} {
 		require.Equal(t, tc.retry, shouldRetryDeclare(tc.err), tc.err.Error())
 	}

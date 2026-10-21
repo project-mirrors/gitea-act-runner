@@ -21,7 +21,6 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/lock"
 	"gitea.com/gitea/runner/internal/pkg/ver"
 
-	"connectrpc.com/connect"
 	pingv1 "gitea.dev/actionslib/ping/v1"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"github.com/spf13/cobra"
@@ -371,9 +370,9 @@ func doRegister(ctx context.Context, cfg *config.Config, inputs *registerInputs)
 		cfg.Runner.ExtraHeaders,
 	)
 
-	if _, err := cli.Ping(ctx, connect.NewRequest(&pingv1.PingRequest{
+	if _, err := cli.Ping(ctx, &pingv1.PingRequest{
 		Data: inputs.RunnerName,
-	})); err != nil {
+	}); err != nil {
 		return fmt.Errorf("cannot ping the Gitea instance server: %w", err)
 	}
 	logging.Debug("Successfully pinged the Gitea instance server")
@@ -395,25 +394,25 @@ func doRegister(ctx context.Context, cfg *config.Config, inputs *registerInputs)
 		ls[i] = l.Name
 	}
 	// register new runner.
-	resp, err := cli.Register(ctx, connect.NewRequest(&runnerv1.RegisterRequest{
+	resp, err := cli.Register(ctx, &runnerv1.RegisterRequest{
 		Name:         reg.Name,
 		Token:        reg.Token,
 		Version:      ver.Version(),
 		Labels:       ls,
 		Ephemeral:    reg.Ephemeral,
 		Capabilities: run.RunnerCapabilities(),
-	}))
+	})
 	if err != nil {
 		logging.WithError(err).Error("poller: cannot register new runner")
 		return err
 	}
 
-	reg.ID = resp.Msg.Runner.Id
-	reg.UUID = resp.Msg.Runner.Uuid
-	reg.Name = resp.Msg.Runner.Name
-	reg.Token = resp.Msg.Runner.Token
+	reg.ID = resp.Runner.Id
+	reg.UUID = resp.Runner.Uuid
+	reg.Name = resp.Runner.Name
+	reg.Token = resp.Runner.Token
 
-	if inputs.Ephemeral != resp.Msg.Runner.Ephemeral {
+	if inputs.Ephemeral != resp.Runner.Ephemeral {
 		// TODO we cannot remove the configuration via runner api, if we return an error here we just fill the database
 		logging.Error("poller: cannot register new runner as ephemeral upgrade Gitea to gain security, run-once will be used automatically")
 	}

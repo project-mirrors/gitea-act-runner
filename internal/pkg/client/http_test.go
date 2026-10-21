@@ -12,10 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"gitea.com/gitea/runner/internal/pkg/ver"
+
 	pingv1 "gitea.dev/actionslib/ping/v1"
 	"gitea.dev/actionslib/pkg/protocol"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestGetHTTPClientUsesProxyFromEnvironment(t *testing.T) {
@@ -44,10 +46,14 @@ func TestGetHTTPClientAppliesTLSConfigOnlyToHTTPS(t *testing.T) {
 func TestNewSetsBaseURLAndHeaders(t *testing.T) {
 	var gotPath string
 	gotHeaders := make(http.Header)
+	data := strings.Repeat("x", 4<<20)
+	body, err := proto.Marshal(&pingv1.PingResponse{Data: data})
+	require.NoError(t, err)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotHeaders = r.Header.Clone()
-		w.WriteHeader(http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/proto")
+		_, _ = w.Write(body)
 	}))
 	defer server.Close()
 
@@ -61,14 +67,19 @@ func TestNewSetsBaseURLAndHeaders(t *testing.T) {
 	// Address returns the endpoint as supplied (untrimmed)
 	require.Equal(t, server.URL+"/", c.Address())
 
-	// the call is expected to fail (server returns 500), we only assert what was sent
-	_, _ = c.Ping(t.Context(), connect.NewRequest(&pingv1.PingRequest{Data: "hi"}))
+	resp, err := c.Ping(t.Context(), &pingv1.PingRequest{Data: "hi"})
+	require.NoError(t, err)
+	require.Equal(t, data, resp.Data)
 
 	require.True(t, strings.HasPrefix(gotPath, "/api/actions/"), "unexpected path %q", gotPath)
 	require.Equal(t, "the-uuid", gotHeaders.Get(protocol.UUIDHeader))
 	require.Equal(t, "the-token", gotHeaders.Get(protocol.TokenHeader))
 	require.Equal(t, "proxy-token", gotHeaders.Get("X-Proxy-Token"))
 	require.Equal(t, "application/proto", gotHeaders.Get("Content-Type"))
+	require.Equal(t, "gitea-runner/"+ver.Version(), gotHeaders.Get("User-Agent"))
+	require.Equal(t, "1", gotHeaders.Get("Connect-Protocol-Version"))
+	require.Equal(t, "gzip", gotHeaders.Get("Accept-Encoding"))
+	require.Empty(t, gotHeaders.Get("Content-Encoding"))
 }
 
 func TestNewOmitsEmptyHeaders(t *testing.T) {
@@ -80,7 +91,7 @@ func TestNewOmitsEmptyHeaders(t *testing.T) {
 	defer server.Close()
 
 	c := New(server.URL, nil, "", "", time.Minute, nil)
-	_, _ = c.Ping(t.Context(), connect.NewRequest(&pingv1.PingRequest{Data: "hi"}))
+	_, _ = c.Ping(t.Context(), &pingv1.PingRequest{Data: "hi"})
 
 	require.Empty(t, gotHeaders.Get(protocol.UUIDHeader))
 	require.Empty(t, gotHeaders.Get(protocol.TokenHeader))
@@ -93,7 +104,7 @@ func TestNewStopsRedirectLoop(t *testing.T) {
 	defer server.Close()
 
 	c := New(server.URL, nil, "", "", time.Minute, nil)
-	_, err := c.Ping(t.Context(), connect.NewRequest(&pingv1.PingRequest{Data: "hi"}))
+	_, err := c.Ping(t.Context(), &pingv1.PingRequest{Data: "hi"})
 	require.ErrorContains(t, err, "stopped after 10 redirects")
 }
 
@@ -119,7 +130,7 @@ func TestNewRedirectKeepsExtraHeadersOnlyOnSameHost(t *testing.T) {
 		gotHeaders = nil
 		origin := tc.newOrigin(http.RedirectHandler("http://"+net.JoinHostPort(tc.host, port), http.StatusPermanentRedirect))
 		c := New(origin.URL, &tls.Config{InsecureSkipVerify: true}, "the-uuid", "the-token", time.Minute, map[string]string{"X-Proxy-Token": "proxy-token", "Content-Type": "text/plain"})
-		_, _ = c.Ping(t.Context(), connect.NewRequest(&pingv1.PingRequest{Data: "hi"}))
+		_, _ = c.Ping(t.Context(), &pingv1.PingRequest{Data: "hi"})
 		origin.Close()
 
 		require.NotNil(t, gotHeaders, origin.URL)

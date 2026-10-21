@@ -31,7 +31,7 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/telemetry"
 	"gitea.com/gitea/runner/internal/pkg/ver"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -188,7 +188,7 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 		}()
 
 		// declare the labels of the runner before fetching tasks
-		var resp *connect.Response[runnerv1.DeclareResponse]
+		var resp *runnerv1.DeclareResponse
 		for attempt := 0; ; attempt++ {
 			resp, err = runner.Declare(ctx, ls.Names())
 			if err == nil || !shouldRetryDeclare(err) || ctx.Err() != nil {
@@ -218,14 +218,13 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 			return err
 		default:
 			logging.Infof("runner: %s, with version: %s, with labels: %v, declare successfully",
-				resp.Msg.Runner.Name, resp.Msg.Runner.Version, resp.Msg.Runner.Labels)
+				resp.Runner.Name, resp.Runner.Version, resp.Runner.Labels)
 		}
-		runner.SetCapabilitiesFromDeclare(resp)
 
 		poller := poll.New(cfg, cli, runner)
 
 		metrics.Init() // OTLP exports the registry even without the server
-		metrics.RunnerInfo.WithLabelValues(ver.Version(), resp.Msg.Runner.Name).Set(1)
+		metrics.RunnerInfo.WithLabelValues(ver.Version(), resp.Runner.Name).Set(1)
 		metrics.RunnerCapacity.Set(float64(cfg.Runner.Capacity))
 		metrics.RegisterUptimeFunc(time.Now())
 		metrics.RegisterRunningJobsFunc(runner.RunningCount, cfg.Runner.Capacity)
@@ -267,14 +266,14 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 			}
 		}
 
-		logging.Infof("runner: %s shutdown initiated, waiting %s for running jobs to complete before shutting down", resp.Msg.Runner.Name, cfg.Runner.ShutdownTimeout)
+		logging.Infof("runner: %s shutdown initiated, waiting %s for running jobs to complete before shutting down", resp.Runner.Name, cfg.Runner.ShutdownTimeout)
 
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.Runner.ShutdownTimeout)
 		defer cancel()
 
 		err = poller.Shutdown(ctx)
 		if err != nil {
-			logging.Warnf("runner: %s cancelled in progress jobs during shutdown", resp.Msg.Runner.Name)
+			logging.Warnf("runner: %s cancelled in progress jobs during shutdown", resp.Runner.Name)
 		}
 
 		if poller.RegistrationRejected() {

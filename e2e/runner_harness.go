@@ -19,7 +19,6 @@ import (
 	"gitea.com/gitea/runner/internal/pkg/config"
 	"gitea.com/gitea/runner/internal/pkg/labels"
 
-	"connectrpc.com/connect"
 	pingv1 "gitea.dev/actionslib/ping/v1"
 	runnerv1 "gitea.dev/actionslib/runner/v1"
 )
@@ -76,44 +75,42 @@ func startRunner(t *testing.T, repo, labelName string, options runnerOptions) *p
 	labelNames := []string{label.Name}
 
 	pingCli := client.New(fixture.baseURL, cfg.Runner.TLSConfig(), "", "", config.RequestTimeout, cfg.Runner.ExtraHeaders)
-	if _, err := pingCli.Ping(ctx, connect.NewRequest(&pingv1.PingRequest{Data: t.Name()})); err != nil {
+	if _, err := pingCli.Ping(ctx, &pingv1.PingRequest{Data: t.Name()}); err != nil {
 		t.Fatalf("ping %s: %v", fixture.baseURL, err)
 	}
 
-	regResp, err := pingCli.Register(ctx, connect.NewRequest(&runnerv1.RegisterRequest{
+	regResp, err := pingCli.Register(ctx, &runnerv1.RegisterRequest{
 		Name:         t.Name(),
 		Token:        token,
 		Version:      "e2e",
 		Labels:       labelNames,
 		Ephemeral:    options.ephemeral,
 		Capabilities: run.RunnerCapabilities(),
-	}))
+	})
 	if err != nil {
 		t.Fatalf("register runner: %v", err)
 	}
-	if options.ephemeral && !regResp.Msg.Runner.Ephemeral {
+	if options.ephemeral && !regResp.Runner.Ephemeral {
 		t.Fatal("gitea did not grant ephemeral registration")
 	}
 
 	reg := &config.Registration{
-		ID:        regResp.Msg.Runner.Id,
-		UUID:      regResp.Msg.Runner.Uuid,
-		Name:      regResp.Msg.Runner.Name,
-		Token:     regResp.Msg.Runner.Token,
+		ID:        regResp.Runner.Id,
+		UUID:      regResp.Runner.Uuid,
+		Name:      regResp.Runner.Name,
+		Token:     regResp.Runner.Token,
 		Address:   fixture.baseURL,
 		Labels:    []string{rawLabel},
-		Ephemeral: regResp.Msg.Runner.Ephemeral,
+		Ephemeral: regResp.Runner.Ephemeral,
 	}
 
 	cli := client.New(fixture.baseURL, cfg.Runner.TLSConfig(), reg.UUID, reg.Token, config.RequestTimeout, cfg.Runner.ExtraHeaders)
 
 	runner := run.NewRunner(cfg, reg, cli)
-	declResp, err := runner.Declare(ctx, labelNames)
-	if err != nil {
+	if _, err := runner.Declare(ctx, labelNames); err != nil {
 		_ = runner.Close()
 		t.Fatalf("declare runner: %v", err)
 	}
-	runner.SetCapabilitiesFromDeclare(declResp)
 
 	poller := poll.New(cfg, cli, runner)
 	go poller.Poll()
