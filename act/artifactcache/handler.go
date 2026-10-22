@@ -32,7 +32,6 @@ import (
 	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/disk"
 
-	"github.com/timshannon/bolthold"
 	"go.etcd.io/bbolt"
 	berrors "go.etcd.io/bbolt/errors"
 )
@@ -88,7 +87,8 @@ type Handler struct {
 	server   *http.Server
 	logger   *logging.Logger
 
-	dbLock chan struct{} // queues store openers without polling bolt's file lock
+	dbLock  chan struct{} // queues store openers without polling bolt's file lock
+	entries cacheEntries  // guarded by dbLock
 
 	gcing atomic.Bool
 	gcAt  time.Time
@@ -424,13 +424,145 @@ func (h *Handler) Close() error {
 	return retErr
 }
 
+// cacheBucket holds each entry as JSON under its decimal ID, the layout bolthold wrote, so older stores stay readable.
+var cacheBucket = []byte("Cache")
+
+var errCacheNotFound = errors.New("cache not found")
+
 type cacheDB struct {
-	*bolthold.Store
-	close func() error
+	bolt    *bbolt.DB
+	close   func() error
+	entries *cacheEntries
+}
+
+// cacheEntries mirrors the bucket as of transaction tx, so queries decode it again only after another process wrote.
+type cacheEntries struct {
+	tx   int
+	byID map[uint64]*Cache
 }
 
 func (db *cacheDB) Close() error {
 	return db.close()
+}
+
+func cacheKey(id uint64) []byte {
+	return strconv.AppendUint(nil, id, 10)
+}
+
+func (db *cacheDB) get(id uint64) (*Cache, error) {
+	if err := db.bolt.View(db.load); err != nil {
+		return nil, err
+	}
+	cache, ok := db.entries.byID[id]
+	if !ok {
+		return nil, errCacheNotFound
+	}
+	copied := *cache
+	return &copied, nil
+}
+
+// find returns copies of the matching entries in ID order, so ties break the same way every time.
+func (db *cacheDB) find(match func(*Cache) bool) ([]*Cache, error) {
+	if err := db.bolt.View(db.load); err != nil {
+		return nil, err
+	}
+	var caches []*Cache
+	for _, cache := range db.entries.byID {
+		if match(cache) {
+			copied := *cache
+			caches = append(caches, &copied)
+		}
+	}
+	slices.SortFunc(caches, func(left, right *Cache) int { return cmp.Compare(left.ID, right.ID) })
+	return caches, nil
+}
+
+func (db *cacheDB) load(tx *bbolt.Tx) error {
+	if db.entries.byID != nil && db.entries.tx == tx.ID() {
+		return nil
+	}
+	byID := make(map[uint64]*Cache)
+	if bucket := tx.Bucket(cacheBucket); bucket != nil {
+		if err := bucket.ForEach(func(key, data []byte) (err error) {
+			cache := &Cache{}
+			if err := json.Unmarshal(data, cache); err != nil {
+				return err
+			}
+			cache.ID, err = strconv.ParseUint(string(key), 10, 64) // an interrupted legacy insert left "id":0 in the value
+			byID[cache.ID] = cache
+			return err
+		}); err != nil {
+			return err
+		}
+	}
+	db.entries.byID, db.entries.tx = byID, tx.ID()
+	return nil
+}
+
+// update keeps the mirror in step with its own write, and drops it when another process wrote in between or the write rolled back.
+func (db *cacheDB) update(fn func(*bbolt.Bucket) error) error {
+	err := db.bolt.Update(func(tx *bbolt.Tx) error {
+		if db.entries.tx != tx.ID()-1 {
+			db.entries.byID = nil
+		}
+		db.entries.tx = tx.ID()
+		bucket, err := tx.CreateBucketIfNotExists(cacheBucket)
+		if err != nil {
+			return err
+		}
+		return fn(bucket)
+	})
+	if err != nil {
+		db.entries.byID = nil
+	}
+	return err
+}
+
+func (db *cacheDB) put(bucket *bbolt.Bucket, cache *Cache) error {
+	data, err := json.Marshal(cache)
+	if err != nil {
+		return err
+	}
+	if db.entries.byID != nil {
+		copied := *cache
+		db.entries.byID[cache.ID] = &copied
+	}
+	return bucket.Put(cacheKey(cache.ID), data)
+}
+
+func (db *cacheDB) delete(bucket *bbolt.Bucket, id uint64) error {
+	delete(db.entries.byID, id)
+	return bucket.Delete(cacheKey(id))
+}
+
+// dropLegacyIndexes deletes the index buckets bolthold kept, all created together and never recreated, checking first so later runs do not write.
+func (db *cacheDB) dropLegacyIndexes() error {
+	var found bool
+	_ = db.bolt.View(func(tx *bbolt.Tx) error {
+		found = tx.Bucket([]byte("_index:Cache:Key")) != nil
+		return nil
+	})
+	if !found {
+		return nil
+	}
+	return db.bolt.Update(func(tx *bbolt.Tx) error {
+		for _, field := range []string{"Repo", "Key", "Version", "Complete", "UsedAt", "CreatedAt"} {
+			if err := tx.DeleteBucket([]byte("_index:Cache:" + field)); err != nil && !errors.Is(err, berrors.ErrBucketNotFound) {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// save rewrites a stored entry, failing once a sweep has removed it so a late commit cannot resurrect it.
+func (db *cacheDB) save(cache *Cache) error {
+	return db.update(func(bucket *bbolt.Bucket) error {
+		if bucket.Get(cacheKey(cache.ID)) == nil {
+			return errCacheNotFound
+		}
+		return db.put(bucket, cache)
+	})
 }
 
 func (h *Handler) openDB() (store *cacheDB, err error) {
@@ -444,19 +576,15 @@ func (h *Handler) openDB() (store *cacheDB, err error) {
 			<-h.dbLock
 		}
 	}()
-	db, err := bolthold.Open(filepath.Join(h.dir, "bolt.db"), 0o644, &bolthold.Options{
-		Encoder: func(value any) ([]byte, error) { return json.Marshal(value) },
-		Decoder: func(data []byte, value any) error { return json.Unmarshal(data, value) },
-		Options: &bbolt.Options{
-			Timeout:      dbOpenTimeout,
-			NoGrowSync:   bbolt.DefaultOptions.NoGrowSync,
-			FreelistType: bbolt.DefaultOptions.FreelistType,
-		},
+	db, err := bbolt.Open(filepath.Join(h.dir, "bolt.db"), 0o644, &bbolt.Options{
+		Timeout:      dbOpenTimeout,
+		NoGrowSync:   bbolt.DefaultOptions.NoGrowSync,
+		FreelistType: bbolt.DefaultOptions.FreelistType,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &cacheDB{Store: db, close: sync.OnceValue(func() error {
+	return &cacheDB{bolt: db, entries: &h.entries, close: sync.OnceValue(func() error {
 		defer func() { <-h.dbLock }()
 		return db.Close()
 	})}, nil
@@ -484,7 +612,7 @@ func (h *Handler) importMetadata(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	local := h.caches(db, bolthold.Where("Complete").Eq(true).Index("Complete"))
+	local := h.caches(db, func(cache *Cache) bool { return cache.Complete })
 	db.Close()
 
 	published, err := h.s3.published(ctx)
@@ -512,15 +640,15 @@ func (h *Handler) importMetadata(ctx context.Context) error {
 		return err
 	}
 	defer db.Close()
-	return db.Bolt().Update(func(tx *bbolt.Tx) error {
+	return db.update(func(bucket *bbolt.Bucket) error {
 		for _, cache := range added {
-			if err := db.TxUpsert(tx, cache.ID, cache); err != nil {
+			if err := db.put(bucket, cache); err != nil {
 				return err
 			}
 		}
 		for _, cache := range gone {
 			_ = h.s3.Storage.Remove(cache.ID) // a blob kept on disk before the runner used S3
-			if err := db.TxDelete(tx, cache.ID, cache); err != nil && !errors.Is(err, bolthold.ErrNotFound) {
+			if err := db.delete(bucket, cache.ID); err != nil {
 				return err
 			}
 		}
@@ -620,15 +748,15 @@ func (h *Handler) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cache := &Cache{}
 	db, err := h.openDB()
 	if err != nil {
 		h.responseJSON(w, r, 500, err)
 		return
 	}
 	defer db.Close()
-	if err := db.Get(id, cache); err != nil {
-		if errors.Is(err, bolthold.ErrNotFound) {
+	cache, err := db.get(uint64(id))
+	if err != nil {
+		if errors.Is(err, errCacheNotFound) {
 			h.responseJSON(w, r, 400, fmt.Errorf("cache %d: not reserved", id))
 			return
 		}
@@ -668,15 +796,15 @@ func (h *Handler) commit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cache := &Cache{}
 	db, err := h.openDB()
 	if err != nil {
 		h.responseJSON(w, r, 500, err)
 		return
 	}
 	defer db.Close()
-	if err := db.Get(id, cache); err != nil {
-		if errors.Is(err, bolthold.ErrNotFound) {
+	cache, err := db.get(uint64(id))
+	if err != nil {
+		if errors.Is(err, errCacheNotFound) {
 			h.responseJSON(w, r, 400, fmt.Errorf("cache %d: not reserved", id))
 			return
 		}
@@ -728,7 +856,7 @@ func (h *Handler) commitCache(cache *Cache) error {
 		return err
 	}
 	defer db.Close()
-	if err := db.Update(cache.ID, cache); err != nil {
+	if err := db.save(cache); err != nil {
 		return err
 	}
 	if h.s3 != nil {
@@ -943,7 +1071,6 @@ func (h *Handler) signedArtifactURL(cred JobCredential, cacheID uint64, exp time
 
 // if not found, return (nil, nil) instead of an error.
 func findCache(db *cacheDB, repo string, keys []string, version string) (*Cache, error) {
-	cache := &Cache{}
 	for _, prefix := range keys {
 		// if a key in the list matches exactly, don't return partial matches
 		exact, err := findExactCache(db, repo, prefix, version, true)
@@ -953,20 +1080,24 @@ func findCache(db *cacheDB, repo string, keys []string, version string) (*Cache,
 		if exact != nil {
 			return exact, nil
 		}
-		if err := db.FindOne(cache,
-			bolthold.Where("Repo").Eq(repo).Index("Repo").
-				And("Key").MatchFunc(func(key string) (bool, error) { return strings.HasPrefix(key, prefix), nil }).
-				And("Version").Eq(version).
-				And("Complete").Eq(true).
-				SortBy("CreatedAt").Reverse()); err != nil {
-			if errors.Is(err, bolthold.ErrNotFound) {
-				continue
-			}
+		caches, err := db.find(func(cache *Cache) bool {
+			return cache.Repo == repo && strings.HasPrefix(cache.Key, prefix) && cache.Version == version && cache.Complete
+		})
+		if err != nil {
 			return nil, fmt.Errorf("find cache: %w", err)
 		}
-		return cache, nil
+		if cache := latest(caches, func(cache *Cache) int64 { return cache.CreatedAt }); cache != nil {
+			return cache, nil
+		}
 	}
 	return nil, nil //nolint:nilnil // pre-existing issue from nektos/act
+}
+
+func latest(caches []*Cache, stamp func(*Cache) int64) *Cache {
+	if len(caches) == 0 {
+		return nil
+	}
+	return slices.MaxFunc(caches, func(left, right *Cache) int { return cmp.Compare(stamp(left), stamp(right)) })
 }
 
 // findExactCache returns the entry for exactly this key and version, or (nil, nil) if there is
@@ -977,42 +1108,32 @@ func findCache(db *cacheDB, repo string, keys []string, version string) (*Cache,
 // reservation being uploaded to, sorted by when it was last written to, because the upload route
 // touches UsedAt on every part.
 func findExactCache(db *cacheDB, repo, key, version string, complete bool) (*Cache, error) {
-	sortBy := "UsedAt"
-	if complete {
-		sortBy = "CreatedAt"
-	}
-	cache := &Cache{}
-	err := db.FindOne(cache,
-		bolthold.Where("Key").Eq(key).Index("Key").
-			And("Repo").Eq(repo).
-			And("Version").Eq(version).
-			And("Complete").Eq(complete).
-			SortBy(sortBy).Reverse())
-	if errors.Is(err, bolthold.ErrNotFound) {
-		return nil, nil //nolint:nilnil // absence is not an error here
-	}
+	caches, err := db.find(func(cache *Cache) bool {
+		return cache.Key == key && cache.Repo == repo && cache.Version == version && cache.Complete == complete
+	})
 	if err != nil {
 		return nil, fmt.Errorf("find cache: %w", err)
 	}
-	return cache, nil
+	stamp := func(cache *Cache) int64 { return cache.UsedAt }
+	if complete {
+		stamp = func(cache *Cache) int64 { return cache.CreatedAt }
+	}
+	return latest(caches, stamp), nil
 }
 
 func (h *Handler) insertCache(db *cacheDB, cache *Cache) error {
-	if h.s3 != nil {
-		var id [8]byte
-		_, _ = rand.Read(id[:])
-		cache.ID = binary.BigEndian.Uint64(id[:]) >> 11 // IDs must be unique across runners, and v1 clients parse an ID as a JS number
-		return db.Insert(cache.ID, cache)
-	}
-	return db.Bolt().Update(func(tx *bbolt.Tx) error {
-		if err := db.TxInsert(tx, bolthold.NextSequence(), cache); err != nil {
+	return db.update(func(bucket *bbolt.Bucket) (err error) {
+		if h.s3 != nil {
+			var id [8]byte
+			_, _ = rand.Read(id[:])
+			cache.ID = binary.BigEndian.Uint64(id[:]) >> 11 // IDs must be unique across runners, and v1 clients parse an ID as a JS number
+		} else if cache.ID, err = bucket.NextSequence(); err != nil {
 			return fmt.Errorf("insert cache: %w", err)
 		}
-		// write back id to db
-		if err := db.TxUpdate(tx, cache.ID, cache); err != nil {
-			return fmt.Errorf("write back id to db: %w", err)
+		if bucket.Get(cacheKey(cache.ID)) != nil {
+			return fmt.Errorf("insert cache: id %d is taken", cache.ID)
 		}
-		return nil
+		return db.put(bucket, cache)
 	})
 }
 
@@ -1028,11 +1149,11 @@ func (h *Handler) touchCache(id uint64, requireIncomplete bool) error {
 	}
 	defer db.Close()
 
-	cache := &Cache{}
-	if err := db.Get(id, cache); err != nil {
-		if errors.Is(err, bolthold.ErrNotFound) {
-			return nil
-		}
+	cache, err := db.get(id)
+	if errors.Is(err, errCacheNotFound) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
 	if requireIncomplete && cache.Complete {
@@ -1042,7 +1163,7 @@ func (h *Handler) touchCache(id uint64, requireIncomplete bool) error {
 		return nil
 	}
 	cache.UsedAt = time.Now().Unix()
-	return db.Update(cache.ID, cache)
+	return db.save(cache)
 }
 
 const (
@@ -1109,6 +1230,9 @@ func (h *Handler) gcCache() {
 	}
 	defer db.Close()
 
+	if err := db.dropLegacyIndexes(); err != nil {
+		h.logger.Warnf("drop legacy indexes: %v", err)
+	}
 	h.evictIncomplete(db)
 	if h.s3 != nil {
 		return // lifecycle rules on the bucket expire its entries
@@ -1142,10 +1266,8 @@ func (h *Handler) evictForFreeSpace(db *cacheDB) {
 
 // evictIncomplete removes uploads that stopped part way, which are most likely broken.
 func (h *Handler) evictIncomplete(db *cacheDB) {
-	h.sweep(db, bolthold.
-		Where("UsedAt").Lt(time.Now().Add(-uploadStallTimeout).Unix()).
-		And("Complete").Eq(false).
-		Index("UsedAt"))
+	stalled := time.Now().Add(-uploadStallTimeout).Unix()
+	h.sweep(db, func(cache *Cache) bool { return cache.UsedAt < stalled && !cache.Complete })
 }
 
 func (h *Handler) evictExpired(db *cacheDB) {
@@ -1153,26 +1275,21 @@ func (h *Handler) evictExpired(db *cacheDB) {
 		return
 	}
 	// Never below inUseGrace, or a short retention would outrun a signed URL already issued.
-	window := max(h.policy.Retention+touchStale, inUseGrace)
-	h.sweep(db, bolthold.Where("UsedAt").Lt(time.Now().Add(-window).Unix()).Index("UsedAt"))
+	expired := time.Now().Add(-max(h.policy.Retention+touchStale, inUseGrace)).Unix()
+	h.sweep(db, func(cache *Cache) bool { return cache.UsedAt < expired })
 }
 
 // evictSuperseded removes entries a newer one with the same key and version replaced. The
-// aggregation includes Repo so two repos sharing a (key, version) do not evict each other.
+// grouping includes Repo so two repos sharing a (key, version) do not evict each other.
 func (h *Handler) evictSuperseded(db *cacheDB) {
-	results, err := db.FindAggregate(&Cache{}, bolthold.Where("Complete").Eq(true).Index("Complete"), "Repo", "Key", "Version")
-	if err != nil {
-		h.logger.Warnf("find aggregate caches: %v", err)
-		return
+	type entry struct{ repo, key, version string }
+	groups := make(map[entry][]*Cache)
+	for _, cache := range h.caches(db, func(cache *Cache) bool { return cache.Complete }) {
+		group := entry{cache.Repo, cache.Key, cache.Version}
+		groups[group] = append(groups[group], cache)
 	}
-	var caches []*Cache
-	for _, result := range results {
-		if result.Count() <= 1 {
-			continue
-		}
-		result.Sort("CreatedAt")
-		caches = caches[:0]
-		result.Reduction(&caches)
+	for _, caches := range groups {
+		slices.SortFunc(caches, func(left, right *Cache) int { return cmp.Compare(left.CreatedAt, right.CreatedAt) })
 		for _, cache := range caches[:len(caches)-1] {
 			if inUse(cache) {
 				continue
@@ -1211,7 +1328,7 @@ func (h *Handler) evictRepo(db *cacheDB, repo string) {
 	if h.policy.RepoSizeLimit <= 0 {
 		return
 	}
-	h.evictTo(db, h.cachesByUse(db, bolthold.Where("Repo").Eq(repo).And("Complete").Eq(true).Index("Repo")), h.policy.RepoSizeLimit, "repository "+repo)
+	h.evictTo(db, h.cachesByUse(db, func(cache *Cache) bool { return cache.Repo == repo && cache.Complete }), h.policy.RepoSizeLimit, "repository "+repo)
 }
 
 // evictTo deletes until caches fit limit. caches must be ordered by UsedAt ascending.
@@ -1267,36 +1384,34 @@ func (h *Handler) touch(db *cacheDB, cache *Cache) {
 		return
 	}
 	cache.UsedAt = time.Now().Unix()
-	if err := db.Update(cache.ID, cache); err != nil {
+	if err := db.save(cache); err != nil {
 		h.logger.Warnf("touch cache: %v", err)
 	}
 }
 
-func (h *Handler) sweep(db *cacheDB, query *bolthold.Query) {
-	for _, cache := range h.caches(db, query) {
+func (h *Handler) sweep(db *cacheDB, match func(*Cache) bool) {
+	for _, cache := range h.caches(db, match) {
 		h.deleteCache(db, cache)
 	}
 }
 
-func (h *Handler) caches(db *cacheDB, query *bolthold.Query) []*Cache {
-	var caches []*Cache
-	if err := db.Find(&caches, query); err != nil {
+func (h *Handler) caches(db *cacheDB, match func(*Cache) bool) []*Cache {
+	caches, err := db.find(match)
+	if err != nil {
 		h.logger.Warnf("find caches: %v", err)
 	}
 	return caches
 }
 
-// cachesByUse returns matches least recently accessed first, sorting here rather than with
-// bolthold's SortBy, which reflects over every field it compares.
-func (h *Handler) cachesByUse(db *cacheDB, query *bolthold.Query) []*Cache {
-	caches := h.caches(db, query)
+func (h *Handler) cachesByUse(db *cacheDB, match func(*Cache) bool) []*Cache {
+	caches := h.caches(db, match)
 	slices.SortFunc(caches, func(a, b *Cache) int { return cmp.Compare(a.UsedAt, b.UsedAt) })
 	return caches
 }
 
 // completedByUse returns every entry the size limits count, least recently accessed first.
 func (h *Handler) completedByUse(db *cacheDB) []*Cache {
-	return h.cachesByUse(db, bolthold.Where("Complete").Eq(true).Index("Complete"))
+	return h.cachesByUse(db, func(cache *Cache) bool { return cache.Complete })
 }
 
 func totalSize(caches []*Cache) int64 {
@@ -1318,7 +1433,7 @@ func (h *Handler) deleteCache(db *cacheDB, cache *Cache) bool {
 		h.logger.Warnf("remove cache blob: %v", err)
 		return false
 	}
-	if err := db.Delete(cache.ID, cache); err != nil {
+	if err := db.update(func(bucket *bbolt.Bucket) error { return db.delete(bucket, cache.ID) }); err != nil {
 		h.logger.Warnf("delete cache: %v", err)
 		return false
 	}

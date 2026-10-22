@@ -11,13 +11,13 @@ type Request struct {
 }
 
 type Cache struct {
-	ID        uint64 `json:"id" boltholdKey:"ID"`
-	Repo      string `json:"repo" boltholdIndex:"Repo"`
-	Key       string `json:"key" boltholdIndex:"Key"`
-	Version   string `json:"version" boltholdIndex:"Version"`
+	ID        uint64 `json:"id"`
+	Repo      string `json:"repo"`
+	Key       string `json:"key"`
+	Version   string `json:"version"`
 	Size      int64  `json:"cacheSize"`
 	Owner     string `json:"owner"` // hashed bearer, so a job's own retry is not another job's reservation
-	Complete  bool   `json:"complete" boltholdIndex:"Complete"`
-	UsedAt    int64  `json:"usedAt" boltholdIndex:"UsedAt"`
-	CreatedAt int64  `json:"createdAt" boltholdIndex:"CreatedAt"`
+	Complete  bool   `json:"complete"`
+	UsedAt    int64  `json:"usedAt"`
+	CreatedAt int64  `json:"createdAt"`
 }

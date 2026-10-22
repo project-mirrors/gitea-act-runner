@@ -22,7 +22,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/timshannon/bolthold"
 	"go.etcd.io/bbolt"
 	berrors "go.etcd.io/bbolt/errors"
 )
@@ -141,7 +140,7 @@ func TestHandler(t *testing.T) {
 			db, err := handler.openDB()
 			require.NoError(t, err)
 			defer db.Close()
-			require.NoError(t, db.Bolt().View(func(tx *bbolt.Tx) error {
+			require.NoError(t, db.bolt.View(func(tx *bbolt.Tx) error {
 				return tx.Bucket([]byte("Cache")).ForEach(func(k, v []byte) error {
 					t.Logf("%s: %s", k, v)
 					return nil
@@ -729,11 +728,11 @@ func backdateCache(t *testing.T, handler *Handler, key string, age time.Duration
 	require.NoError(t, err)
 	defer db.Close()
 
-	var caches []*Cache
-	require.NoError(t, db.Find(&caches, bolthold.Where("Key").Eq(key)))
+	caches, err := db.find(func(cache *Cache) bool { return cache.Key == key })
+	require.NoError(t, err)
 	require.Len(t, caches, 1)
 	caches[0].CreatedAt = time.Now().Add(-age).Unix()
-	require.NoError(t, db.Update(caches[0].ID, caches[0]))
+	require.NoError(t, db.save(caches[0]))
 }
 
 func uploadCacheNormally(t *testing.T, base, key, version string, content []byte) {
@@ -897,12 +896,11 @@ func TestHandler_gcCache(t *testing.T) {
 	require.NoError(t, err)
 	for i, v := range cases {
 		t.Run(fmt.Sprintf("%d_%s", i, v.Cache.Key), func(t *testing.T) {
-			cache := &Cache{}
-			err = db.Get(v.Cache.ID, cache)
+			_, err = db.get(v.Cache.ID)
 			if v.Kept {
 				assert.NoError(t, err)
 			} else {
-				assert.ErrorIs(t, err, bolthold.ErrNotFound)
+				assert.ErrorIs(t, err, errCacheNotFound)
 			}
 		})
 	}
@@ -1088,11 +1086,10 @@ func TestHandler_FindProtectsFromEviction(t *testing.T) {
 	// to drive gcCache would race its read.
 	db, err := handler.openDB()
 	require.NoError(t, err)
-	defer func() { require.NoError(t, db.Close()) }()
 	handler.evictOversized(db)
+	require.NoError(t, db.Close())
 
-	require.NoError(t, db.Get(wanted.ID, &Cache{}), "the entry just promised to a job must survive")
-	assert.ErrorIs(t, db.Get(other.ID, &Cache{}), bolthold.ErrNotFound, "the next least recently used goes instead")
+	assert.Equal(t, []string{wanted.Key}, keptKeys(t, handler, []*Cache{wanted, other}), "the entry just promised to a job survives, the next least recently used goes instead")
 }
 
 // TestHandler_evictOnCommit proves a repository that goes over its limit gets space back at
@@ -1127,7 +1124,7 @@ func TestHandler_touchCacheSkipsFreshCompletedEntries(t *testing.T) {
 		require.NoError(t, err)
 		defer db.Close()
 		var id int
-		require.NoError(t, db.Bolt().View(func(tx *bbolt.Tx) error { id = tx.ID(); return nil }))
+		require.NoError(t, db.bolt.View(func(tx *bbolt.Tx) error { id = tx.ID(); return nil }))
 		return id
 	}
 
@@ -1172,7 +1169,7 @@ func keptKeys(t *testing.T, handler *Handler, entries []*Cache) []string {
 
 	var kept []string
 	for _, e := range entries {
-		if err := db.Get(e.ID, &Cache{}); err == nil {
+		if _, err := db.get(e.ID); err == nil {
 			kept = append(kept, e.Key)
 		}
 	}
@@ -1409,6 +1406,23 @@ func TestHandler_SecretPersistsAcrossRestarts(t *testing.T) {
 	assert.Equal(t, sig, second.computeSignature("", 42, exp))
 }
 
+func TestHandler_SeesWritesOfOtherProcesses(t *testing.T) {
+	handler := newTestHandler(t, Policy{})
+	insert := func(by *Handler, cache *Cache) {
+		db, err := by.openDB()
+		require.NoError(t, err)
+		require.NoError(t, by.insertCache(db, cache))
+		require.NoError(t, db.Close())
+	}
+	other := &Handler{dir: handler.dir, dbLock: make(chan struct{}, 1)}
+	theirs, later, ours := &Cache{Key: "theirs"}, &Cache{Key: "later"}, &Cache{Key: "ours"}
+	insert(other, theirs)
+	assert.Equal(t, []string{"theirs"}, keptKeys(t, handler, []*Cache{theirs}))
+	insert(other, later)
+	insert(handler, ours)
+	assert.Equal(t, []string{"theirs", "later", "ours"}, keptKeys(t, handler, []*Cache{theirs, later, ours}))
+}
+
 // TestHandler_ArtifactSignatureDownload is a happy-path round trip that
 // ensures a real reserve/upload/commit/find/download flow still works after
 // the auth refactor.
@@ -1521,8 +1535,8 @@ func TestHandler_GC_PerRepoDedup(t *testing.T) {
 	db, err = handler.openDB()
 	require.NoError(t, err)
 	defer db.Close()
-	var after []Cache
-	require.NoError(t, db.Find(&after, bolthold.Where("Key").Eq(key).And("Version").Eq(version)))
+	after, err := db.find(func(cache *Cache) bool { return cache.Key == key && cache.Version == version })
+	require.NoError(t, err)
 
 	repos := make(map[string]bool)
 	for _, c := range after {
