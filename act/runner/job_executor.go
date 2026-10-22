@@ -7,6 +7,7 @@ package runner
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json/v2"
@@ -155,10 +156,7 @@ func (e setupError) Unwrap() error { return e.error }
 func printCompleteJobName(rc *RunContext) common.Executor {
 	return func(ctx context.Context) error {
 		// Name holds a matrix combination; JobName is the shared name GitHub reports.
-		name := rc.JobName
-		if name == "" {
-			name = rc.Name
-		}
+		name := cmp.Or(rc.JobName, rc.Name)
 		if name == "" && rc.Run != nil {
 			name = rc.Run.JobID
 		}
@@ -358,10 +356,7 @@ func newStepsExecutor(rc *RunContext, preSteps, steps []common.Executor) common.
 			return preErr // as on GitHub, no step runs after the job setup failed
 		}
 		mainErr := mainExecutor(ctx)
-		if preErr != nil {
-			return preErr
-		}
-		return mainErr
+		return cmp.Or(preErr, mainErr)
 	}
 }
 
@@ -547,8 +542,7 @@ func tryUploadJobSummary(ctx context.Context, rc *RunContext) {
 	ctx, cancel := context.WithTimeout(ctx, jobSummaryUploadPhaseTimeout)
 	defer cancel()
 	env := rc.GetEnv()
-	caps := strings.TrimSpace(env["GITEA_ACTIONS_CAPABILITIES"])
-	if !hasJobSummaryCapability(caps) {
+	if !hasJobSummaryCapability(env["GITEA_ACTIONS_CAPABILITIES"]) {
 		// Server did not advertise support. Do not attempt upload.
 		return
 	}
@@ -681,19 +675,18 @@ func readSingleFileFromContainerArchive(ctx context.Context, env container.Execu
 	}
 	defer rc.Close()
 
+	requestedPath := path.Clean(strings.TrimPrefix(p, "/"))
 	tr := tar.NewReader(rc)
 	for {
 		header, err := tr.Next()
-		if err == io.EOF {
-			return nil, false
-		}
 		if err != nil {
 			return nil, false
 		}
 		if header.Typeflag != tar.TypeReg {
 			continue
 		}
-		if !archiveEntryMatchesPath(header.Name, p) {
+		entryName := path.Clean(strings.TrimPrefix(header.Name, "/"))
+		if entryName != requestedPath && entryName != path.Base(requestedPath) {
 			continue
 		}
 		// Summaries larger than the limit are truncated rather than dropped, so the
@@ -714,12 +707,6 @@ func readSingleFileFromContainerArchive(ctx context.Context, env container.Execu
 		}
 		return b, true
 	}
-}
-
-func archiveEntryMatchesPath(entryName, requestedPath string) bool {
-	entryName = path.Clean(strings.TrimPrefix(entryName, "/"))
-	requestedPath = path.Clean(strings.TrimPrefix(requestedPath, "/"))
-	return entryName == requestedPath || entryName == path.Base(requestedPath)
 }
 
 // useJobStageLogger tags the log entries of a job level executor with the stage they belong to.

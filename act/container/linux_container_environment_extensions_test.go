@@ -5,15 +5,13 @@
 package container
 
 import (
-	"fmt"
 	"os"
 	"runtime"
 	"strings"
 	"testing"
 
-	"gitea.com/gitea/runner/act/common/logging"
-
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestContainerPath(t *testing.T) {
@@ -23,42 +21,27 @@ func TestContainerPath(t *testing.T) {
 		workDir         string
 	}
 
-	linuxcontainerext := &LinuxContainerEnvironmentExtensions{}
-
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	tests := []containerPathJob{
+		{"/home/act/go/src/github.com/nektos/act", "/home/act/go/src/github.com/nektos/act", ""},
+		{"/home/act", `/home/act/`, ""},
+		{cwd, ".", ""},
+	}
 	if runtime.GOOS == "windows" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			logging.Error(err)
-		}
-
 		rootDrive := os.Getenv("SystemDrive")
-		rootDriveLetter := strings.ReplaceAll(strings.ToLower(rootDrive), `:`, "")
-		for _, v := range []containerPathJob{
+		tests = []containerPathJob{
 			{"/mnt/c/Users/act/go/src/github.com/nektos/act", "C:\\Users\\act\\go\\src\\github.com\\nektos\\act\\", ""},
 			{"/mnt/f/work/dir", `F:\work\dir`, ""},
 			{"/mnt/c/windows/to/unix", "windows\\to\\unix", rootDrive + "\\"},
-			{fmt.Sprintf("/mnt/%v/act", rootDriveLetter), "act", rootDrive + "\\"},
-		} {
-			if v.workDir != "" {
-				t.Chdir(v.workDir)
-			}
-
-			assert.Equal(t, v.destinationPath, linuxcontainerext.ToContainerPath(v.sourcePath))
+			{"/mnt/" + strings.ReplaceAll(strings.ToLower(rootDrive), `:`, "") + "/act", "act", rootDrive + "\\"},
 		}
-
-		t.Chdir(cwd)
-	} else {
-		cwd, err := os.Getwd()
-		if err != nil {
-			logging.Error(err)
+	}
+	for _, test := range tests {
+		if test.workDir != "" {
+			t.Chdir(test.workDir)
 		}
-		for _, v := range []containerPathJob{
-			{"/home/act/go/src/github.com/nektos/act", "/home/act/go/src/github.com/nektos/act", ""},
-			{"/home/act", `/home/act/`, ""},
-			{cwd, ".", ""},
-		} {
-			assert.Equal(t, v.destinationPath, linuxcontainerext.ToContainerPath(v.sourcePath))
-		}
+		assert.Equal(t, test.destinationPath, (&LinuxContainerEnvironmentExtensions{}).ToContainerPath(test.sourcePath))
 	}
 }
 
@@ -67,5 +50,4 @@ type typeAssertMockContainer struct {
 	LinuxContainerEnvironmentExtensions
 }
 
-// Type assert Container + LinuxContainerEnvironmentExtensions implements ExecutionsEnvironment
 var _ ExecutionsEnvironment = &typeAssertMockContainer{}

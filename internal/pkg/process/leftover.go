@@ -8,22 +8,14 @@ import (
 	"strings"
 )
 
-// pathWithin is the OS-agnostic core of dirContainsPath: dir and target must
-// already be cleaned, and fold folds case.
-func pathWithin(dir, target string, fold bool) bool {
-	if dir == "" || target == "" || dir == "." || target == "." {
+func dirContainsPath(dir, target string) bool {
+	dir = strings.ToLower(filepath.Clean(dir))
+	target = strings.ToLower(filepath.Clean(target))
+	if dir == "." || target == "." {
 		return false
-	}
-	if fold {
-		dir = strings.ToLower(dir)
-		target = strings.ToLower(target)
 	}
 	if dir == target {
 		return true
 	}
-	sep := string(filepath.Separator)
-	if !strings.HasSuffix(dir, sep) {
-		dir += sep
-	}
-	return strings.HasPrefix(target, dir)
+	return strings.HasPrefix(target, strings.TrimSuffix(dir, string(filepath.Separator))+string(filepath.Separator))
 }

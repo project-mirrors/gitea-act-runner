@@ -47,10 +47,7 @@ func startRunner(t *testing.T, repo, labelName string, options runnerOptions) *p
 	if options.cacheV2 != nil {
 		cfg.Cache.V2 = options.cacheV2
 	}
-	cfg.Container.DockerHost = os.Getenv("DOCKER_HOST")
-	if cfg.Container.DockerHost == "" {
-		cfg.Container.DockerHost = "unix:///var/run/docker.sock"
-	}
+	cfg.Container.DockerHost = cmp.Or(os.Getenv("DOCKER_HOST"), "unix:///var/run/docker.sock")
 	cfg.Cache.Dir = t.TempDir() + "/cache"
 	cfg.Cache.Host = options.cacheHost
 	cfg.Runner.Insecure = true

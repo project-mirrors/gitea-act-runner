@@ -7,6 +7,7 @@ package container
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -64,15 +65,11 @@ func (e *HostEnvironment) processGroup(ctx context.Context) *process.Group {
 }
 
 func (e *HostEnvironment) Create(_, _ []string) common.Executor {
-	return func(ctx context.Context) error {
-		return nil
-	}
+	return common.NewPipelineExecutor()
 }
 
 func (e *HostEnvironment) Close() common.Executor {
-	return func(ctx context.Context) error {
-		return nil
-	}
+	return common.NewPipelineExecutor()
 }
 
 func (e *HostEnvironment) Copy(destPath string, files ...*FileEntry) common.Executor {
@@ -168,15 +165,11 @@ func (e *HostEnvironment) GetContainerArchive(ctx context.Context, srcPath strin
 }
 
 func (e *HostEnvironment) Pull(_ bool) common.Executor {
-	return func(ctx context.Context) error {
-		return nil
-	}
+	return common.NewPipelineExecutor()
 }
 
 func (e *HostEnvironment) Start(_ bool) common.Executor {
-	return func(ctx context.Context) error {
-		return nil
-	}
+	return common.NewPipelineExecutor()
 }
 
 type ptyWriter struct {
@@ -193,7 +186,6 @@ func (w *ptyWriter) Write(buf []byte) (int, error) {
 		}
 		if w.dirtyLine || len(buf) > 1 && buf[len(buf)-2] != '\n' {
 			_, _ = w.Out.Write([]byte("\n"))
-			return n, io.EOF
 		}
 		return n, io.EOF
 	}
@@ -242,40 +234,25 @@ func writeKeepAlive(ppty io.Writer) {
 	}
 }
 
-func copyPtyOutput(writer io.Writer, ppty io.Reader, finishLog context.CancelFunc) {
-	defer func() {
-		finishLog()
-	}()
-	if _, err := io.Copy(writer, ppty); err != nil {
-		return
-	}
-}
-
 func (e *HostEnvironment) UpdateFromImageEnv(_ *map[string]string) common.Executor {
-	return func(ctx context.Context) error {
-		return nil
-	}
+	return common.NewPipelineExecutor()
 }
 
 func getEnvListFromMap(env map[string]string) []string {
-	envList := make([]string, 0)
-	for k, v := range env {
-		envList = append(envList, fmt.Sprintf("%s=%s", k, v))
+	envList := make([]string, 0, len(env))
+	for key, value := range env {
+		envList = append(envList, key+"="+value)
 	}
 	return envList
 }
 
-func (e *HostEnvironment) exec(ctx context.Context, command []string, cmdline string, env map[string]string, _, workdir string) error {
-	envList := getEnvListFromMap(env)
-	var wd string
+func (e *HostEnvironment) exec(ctx context.Context, command []string, cmdline string, env map[string]string, workdir string) error {
+	wd := e.Path
 	if workdir != "" {
-		if filepath.IsAbs(workdir) {
-			wd = workdir
-		} else {
+		wd = workdir
+		if !filepath.IsAbs(workdir) {
 			wd = filepath.Join(e.Path, workdir)
 		}
-	} else {
-		wd = e.Path
 	}
 	// Flush any buffered, not-yet-newline-terminated trailing line, as the docker backend
 	// does in waitForCommand, so the final line of a command's output is not lost.
@@ -288,9 +265,8 @@ func (e *HostEnvironment) exec(ctx context.Context, command []string, cmdline st
 	cmd := exec.CommandContext(ctx, f)
 	cmd.Path = f
 	cmd.Args = command
-	cmd.Stdin = nil
 	cmd.Stdout = e.StdOut
-	cmd.Env = envList
+	cmd.Env = getEnvListFromMap(env)
 	cmd.Stderr = e.StdOut
 	cmd.Dir = wd
 	cmd.SysProcAttr = process.SysProcAttr(cmdline, false)
@@ -322,7 +298,10 @@ func (e *HostEnvironment) exec(ctx context.Context, command []string, cmdline st
 		writer = &ptyWriter{Out: e.StdOut}
 		var finishLog context.CancelFunc
 		logctx, finishLog = context.WithCancel(context.Background())
-		go copyPtyOutput(writer, ppty, finishLog)
+		go func() {
+			defer finishLog()
+			_, _ = io.Copy(writer, ppty)
+		}()
 		go writeKeepAlive(ppty)
 	}
 	if err := cmd.Start(); err != nil {
@@ -357,13 +336,13 @@ func (e *HostEnvironment) exec(ctx context.Context, command []string, cmdline st
 	return err
 }
 
-func (e *HostEnvironment) Exec(command []string /*cmdline string, */, env map[string]string, user, workdir string) common.Executor {
-	return e.ExecWithCmdLine(command, "", env, user, workdir)
+func (e *HostEnvironment) Exec(command []string, env map[string]string, _user, workdir string) common.Executor {
+	return e.ExecWithCmdLine(command, "", env, workdir)
 }
 
-func (e *HostEnvironment) ExecWithCmdLine(command []string, cmdline string, env map[string]string, user, workdir string) common.Executor {
+func (e *HostEnvironment) ExecWithCmdLine(command []string, cmdline string, env map[string]string, workdir string) common.Executor {
 	return func(ctx context.Context) error {
-		if err := e.exec(ctx, command, cmdline, env, user, workdir); err != nil {
+		if err := e.exec(ctx, command, cmdline, env, workdir); err != nil {
 			select {
 			case <-ctx.Done():
 				return fmt.Errorf("this step has been cancelled: %w", err)
@@ -605,8 +584,7 @@ func (*HostEnvironment) GetPathVariableName() string {
 }
 
 func (e *HostEnvironment) DefaultPathVariable() string {
-	v, _ := os.LookupEnv(e.GetPathVariableName())
-	return v
+	return os.Getenv(e.GetPathVariableName())
 }
 
 func (*HostEnvironment) JoinPathVariable(paths ...string) string {
@@ -616,30 +594,22 @@ func (*HostEnvironment) JoinPathVariable(paths ...string) string {
 // Reference for Arch values for runner.arch
 // https://docs.github.com/en/actions/learn-github-actions/contexts#runner-context
 func goArchToActionArch(arch string) string {
-	archMapper := map[string]string{
+	return cmp.Or(map[string]string{
 		"x86_64":  "X64",
 		"amd64":   "X64",
 		"386":     "X86",
 		"arm":     "ARM",
 		"aarch64": "ARM64",
 		"arm64":   "ARM64",
-	}
-	if arch, ok := archMapper[arch]; ok {
-		return arch
-	}
-	return arch
+	}[arch], arch)
 }
 
 func goOsToActionOs(os string) string {
-	osMapper := map[string]string{
+	return cmp.Or(map[string]string{
 		"linux":   "Linux",
 		"darwin":  "macOS",
 		"windows": "Windows",
-	}
-	if os, ok := osMapper[os]; ok {
-		return os
-	}
-	return os
+	}[os], os)
 }
 
 func (e *HostEnvironment) GetRunnerContext(_ context.Context) map[string]any {

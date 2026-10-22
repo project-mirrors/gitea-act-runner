@@ -24,43 +24,42 @@ func TestParseActionCommand(t *testing.T) {
 		name, line, resumeCommand, command string
 		properties                         map[string]string
 		data                               string
-		legacy, ok                         bool
+		ok                                 bool
 	}{
-		{"plain", "plain output", "", "", nil, "", false, false},
-		{"unknown v2", "::unknown::v", "", "", nil, "", false, false},
-		{"missing v2 terminator", "::set-output name=x", "", "", nil, "", false, false},
-		{"empty command", "::::", "", "", nil, "", false, false},
-		{"text before v2", "debug ::set-output name=x::v", "", "", nil, "", false, false},
-		{"missing legacy terminator", "##[debug", "", "", nil, "", false, false},
-		{"tab is not a name separator", "::set-output\tname=x::v", "", "", nil, "", false, false},
-		{"v2 leading unicode whitespace and line endings", " \t\u2003::set-output name=tab::v\r\n\r\n", "", "set-output", map[string]string{"name": "tab"}, "v", false, true},
-		{"legacy prefix and casing", "prefix ##[SET-OUTPUT NAME=mid;]v\r\n", "", "set-output", map[string]string{"name": "mid"}, "v", true, true},
-		{"only first legacy prefix", "##[unknown]##[set-output name=x]v", "", "", nil, "", false, false},
-		{"v2 delimiter boundaries", "::set-output name=a:b,other=c:d:: a::b ", "", "set-output", map[string]string{"name": "a:b", "other": "c:d"}, " a::b ", false, true},
-		{"legacy first closing bracket", "##[set-output name=x]v]tail", "", "set-output", map[string]string{"name": "x"}, "v]tail", true, true},
-		{"v2 semicolons are literal", "::set-output name=x;y=z::v", "", "set-output", map[string]string{"name": "x;y=z"}, "v", false, true},
-		{"legacy commas are literal", "##[set-output name=x,y=z]v", "", "set-output", map[string]string{"name": "x,y=z"}, "v", true, true},
-		{"values keep their leading equals", "::set-output name==x=y,=key=v,empty=,=x,spaced= =x::v", "", "set-output", map[string]string{"name": "=x=y", "key": "v", "spaced": " =x"}, "v", false, true},
-		{"v2 trims whole list only", "::set-output  \tfile=x, line=2,name = value \t::v", "", "set-output", map[string]string{"file": "x", " line": "2", "name ": " value"}, "v", false, true},
-		{"legacy preserves list whitespace", "##[set-output  name=q ]v", "", "set-output", map[string]string{" name": "q "}, "v", true, true},
-		{"case insensitive duplicate keys", "::SET-OUTPUT NAME=first,Name=last::v", "", "set-output", map[string]string{"name": "last"}, "v", false, true},
-		{"keys stay escaped", "::set-output na%3Ame=x::v", "", "set-output", map[string]string{"na%3ame": "x"}, "v", false, true},
-		{"v2 decode table", "::set-output name=%0D%0A%3A%2C%25%253A%252C%250A%2525%3a%2c%0d%0a%3B%5D::%0D%0A%25%3A%2C%3B%5D%250A", "", "set-output", map[string]string{"name": "\r\n:,%%3A%2C%0A%25%3a%2c%0d%0a%3B%5D"}, "\r\n%%3A%2C%3B%5D%0A", false, true},
-		{"legacy decode table", "##[set-output name=%3B%0D%0A%5D%25%253B%255D%250A%2525%3b%5d%0d%0a%3A%2C]v%5Dw%3Bx", "", "set-output", map[string]string{"name": ";\r\n]%%3B%5D%0A%25%3b%5d%0d%0a%3A%2C"}, "v]w;x", true, true},
-		{"unknown v2 falls back to legacy", "::unknown::prefix ##[set-output name=x]v", "", "set-output", map[string]string{"name": "x"}, "v", true, true},
-		{"unterminated v2 falls back to legacy", "::debug ##[set-output name=x]v", "", "set-output", map[string]string{"name": "x"}, "v", true, true},
-		{"v2 wins over legacy", "::debug::##[set-output name=x]v", "", "debug", map[string]string{}, "##[set-output name=x]v", false, true},
-		{"internal line breaks are not commands", "::debug::hidden\rplain\r\n", "", "", nil, "", false, false},
-		{"v2 resume token", "::ReSuMe-ToKeN::", "RESUME-TOKEN", "resume-token", map[string]string{}, "", false, true},
-		{"legacy resume token", "prefix ##[RESUME-TOKEN]v", "resume-token", "resume-token", map[string]string{}, "v", true, true},
-		{"different resume token", "::other-token::", "resume-token", "", nil, "", false, false},
+		{"plain", "plain output", "", "", nil, "", false},
+		{"unknown v2", "::unknown::v", "", "", nil, "", false},
+		{"missing v2 terminator", "::set-output name=x", "", "", nil, "", false},
+		{"empty command", "::::", "", "", nil, "", false},
+		{"text before v2", "debug ::set-output name=x::v", "", "", nil, "", false},
+		{"missing legacy terminator", "##[debug", "", "", nil, "", false},
+		{"tab is not a name separator", "::set-output\tname=x::v", "", "", nil, "", false},
+		{"v2 leading unicode whitespace and line endings", " \t\u2003::set-output name=tab::v\r\n\r\n", "", "set-output", map[string]string{"name": "tab"}, "v", true},
+		{"legacy prefix and casing", "prefix ##[SET-OUTPUT NAME=mid;]v\r\n", "", "set-output", map[string]string{"name": "mid"}, "v", true},
+		{"only first legacy prefix", "##[unknown]##[set-output name=x]v", "", "", nil, "", false},
+		{"v2 delimiter boundaries", "::set-output name=a:b,other=c:d:: a::b ", "", "set-output", map[string]string{"name": "a:b", "other": "c:d"}, " a::b ", true},
+		{"legacy first closing bracket", "##[set-output name=x]v]tail", "", "set-output", map[string]string{"name": "x"}, "v]tail", true},
+		{"v2 semicolons are literal", "::set-output name=x;y=z::v", "", "set-output", map[string]string{"name": "x;y=z"}, "v", true},
+		{"legacy commas are literal", "##[set-output name=x,y=z]v", "", "set-output", map[string]string{"name": "x,y=z"}, "v", true},
+		{"values keep their leading equals", "::set-output name==x=y,=key=v,empty=,=x,spaced= =x::v", "", "set-output", map[string]string{"name": "=x=y", "key": "v", "spaced": " =x"}, "v", true},
+		{"v2 trims whole list only", "::set-output  \tfile=x, line=2,name = value \t::v", "", "set-output", map[string]string{"file": "x", " line": "2", "name ": " value"}, "v", true},
+		{"legacy preserves list whitespace", "##[set-output  name=q ]v", "", "set-output", map[string]string{" name": "q "}, "v", true},
+		{"case insensitive duplicate keys", "::SET-OUTPUT NAME=first,Name=last::v", "", "set-output", map[string]string{"name": "last"}, "v", true},
+		{"keys stay escaped", "::set-output na%3Ame=x::v", "", "set-output", map[string]string{"na%3ame": "x"}, "v", true},
+		{"v2 decode table", "::set-output name=%0D%0A%3A%2C%25%253A%252C%250A%2525%3a%2c%0d%0a%3B%5D::%0D%0A%25%3A%2C%3B%5D%250A", "", "set-output", map[string]string{"name": "\r\n:,%%3A%2C%0A%25%3a%2c%0d%0a%3B%5D"}, "\r\n%%3A%2C%3B%5D%0A", true},
+		{"legacy decode table", "##[set-output name=%3B%0D%0A%5D%25%253B%255D%250A%2525%3b%5d%0d%0a%3A%2C]v%5Dw%3Bx", "", "set-output", map[string]string{"name": ";\r\n]%%3B%5D%0A%25%3b%5d%0d%0a%3A%2C"}, "v]w;x", true},
+		{"unknown v2 falls back to legacy", "::unknown::prefix ##[set-output name=x]v", "", "set-output", map[string]string{"name": "x"}, "v", true},
+		{"unterminated v2 falls back to legacy", "::debug ##[set-output name=x]v", "", "set-output", map[string]string{"name": "x"}, "v", true},
+		{"v2 wins over legacy", "::debug::##[set-output name=x]v", "", "debug", map[string]string{}, "##[set-output name=x]v", true},
+		{"internal line breaks are not commands", "::debug::hidden\rplain\r\n", "", "", nil, "", false},
+		{"v2 resume token", "::ReSuMe-ToKeN::", "RESUME-TOKEN", "resume-token", map[string]string{}, "", true},
+		{"legacy resume token", "prefix ##[RESUME-TOKEN]v", "resume-token", "resume-token", map[string]string{}, "v", true},
+		{"different resume token", "::other-token::", "resume-token", "", nil, "", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			command, properties, data, legacy, ok := parseActionCommand(test.line, test.resumeCommand)
+			command, properties, data, ok := parseActionCommand(test.line, test.resumeCommand)
 			assert.Equal(t, test.command, command)
 			assert.Equal(t, test.properties, properties)
 			assert.Equal(t, test.data, data)
-			assert.Equal(t, test.legacy, legacy)
 			assert.Equal(t, test.ok, ok)
 		})
 	}

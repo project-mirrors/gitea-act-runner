@@ -73,12 +73,10 @@ func Enabled(level Level) bool { return Default().Enabled(level) }
 
 func With(args ...any) *Logger          { return Default().With(args...) }
 func WithError(err error) *Logger       { return Default().WithError(err) }
-func Tracef(format string, args ...any) { Default().logf(LevelTrace, format, args) }
 func Debugf(format string, args ...any) { Default().logf(LevelDebug, format, args) }
 func Infof(format string, args ...any)  { Default().logf(LevelInfo, format, args) }
 func Warnf(format string, args ...any)  { Default().logf(LevelWarn, format, args) }
 func Errorf(format string, args ...any) { Default().logf(LevelError, format, args) }
-func Trace(args ...any)                 { Default().log(LevelTrace, args) }
 func Debug(args ...any)                 { Default().log(LevelDebug, args) }
 func Info(args ...any)                  { Default().log(LevelInfo, args) }
 func Warn(args ...any)                  { Default().log(LevelWarn, args) }

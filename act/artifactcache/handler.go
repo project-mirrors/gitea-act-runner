@@ -81,7 +81,6 @@ type Handler struct {
 	dir      string
 	storage  cacheStorage
 	s3       *s3Storage
-	router   *http.ServeMux
 	listener net.Listener
 	port     int
 	server   *http.Server
@@ -200,11 +199,9 @@ func StartHandler(opts Options) (*Handler, error) {
 		h.storage = h.s3
 	}
 
-	secret, err := loadOrCreateSecret(dir)
-	if err != nil {
+	if h.secret, err = loadOrCreateSecret(dir); err != nil {
 		return nil, err
 	}
-	h.secret = secret
 
 	router := http.NewServeMux()
 	router.HandleFunc("GET "+apiPath+"/cache", h.bearerAuth(h.find))
@@ -222,8 +219,6 @@ func StartHandler(opts Options) (*Handler, error) {
 	router.HandleFunc("POST "+internalPath+"/revoke", h.internalAuth(h.internalRevoke))
 	h.registerV2Routes(router)
 	router.HandleFunc(artifactServicePath, h.forwardOrNotFound)
-
-	h.router = router
 
 	h.gcCache()
 
@@ -333,16 +328,7 @@ func (h *Handler) RegisterJob(token string, cred JobCredential) func() {
 		}
 	}
 	h.credMu.Unlock()
-	return func() {
-		h.credMu.Lock()
-		if entry, ok := h.creds[token]; ok {
-			entry.refs--
-			if entry.refs <= 0 {
-				delete(h.creds, token)
-			}
-		}
-		h.credMu.Unlock()
-	}
+	return func() { h.RevokeJob(token) }
 }
 
 // RevokeJob explicitly revokes one registration of token, mirroring one call
@@ -405,10 +391,7 @@ func (h *Handler) Close() error {
 	}
 	var retErr error
 	if h.server != nil {
-		err := h.server.Close()
-		if err != nil {
-			retErr = err
-		}
+		retErr = h.server.Close()
 		h.server = nil
 	}
 	if h.listener != nil {
@@ -774,7 +757,7 @@ func (h *Handler) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	db.Close()
-	start, _, err := parseContentRange(r.Header.Get("Content-Range"))
+	start, err := parseContentRange(r.Header.Get("Content-Range"))
 	if err != nil {
 		h.responseJSON(w, r, 400, err)
 		return
@@ -1041,10 +1024,8 @@ func bearerToken(r *http.Request) string {
 }
 
 func credFromContext(ctx context.Context) JobCredential {
-	if cred, ok := ctx.Value(credKey{}).(JobCredential); ok {
-		return cred
-	}
-	return JobCredential{}
+	cred, _ := ctx.Value(credKey{}).(JobCredential)
+	return cred
 }
 
 // computeSignature signs a URL for one cache entry and expiry. purpose is mixed into the
@@ -1209,9 +1190,6 @@ func (p Policy) withDefaults() Policy {
 }
 
 func (h *Handler) gcCache() {
-	if h.gcing.Load() {
-		return
-	}
 	if !h.gcing.CompareAndSwap(false, true) {
 		return
 	}
@@ -1458,18 +1436,17 @@ func (h *Handler) responseJSON(w http.ResponseWriter, r *http.Request, code int,
 	_, _ = w.Write(data)
 }
 
-func parseContentRange(s string) (int64, int64, error) {
+func parseContentRange(s string) (int64, error) {
 	// support the format like "bytes 11-22/*" only
 	s, _, _ = strings.Cut(strings.TrimPrefix(s, "bytes "), "/")
 	s1, s2, _ := strings.Cut(s, "-")
 
 	start, err := strconv.ParseInt(s1, 10, 64)
 	if err != nil {
-		return 0, 0, fmt.Errorf("parse %q: %w", s, err)
+		return 0, fmt.Errorf("parse %q: %w", s, err)
 	}
-	stop, err := strconv.ParseInt(s2, 10, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("parse %q: %w", s, err)
+	if _, err := strconv.ParseInt(s2, 10, 64); err != nil {
+		return 0, fmt.Errorf("parse %q: %w", s, err)
 	}
-	return start, stop, nil
+	return start, nil
 }

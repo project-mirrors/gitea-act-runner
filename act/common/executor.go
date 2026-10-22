@@ -21,8 +21,7 @@ type Conditional func(ctx context.Context) bool
 // NewInfoExecutor is an executor that logs messages
 func NewInfoExecutor(format string, args ...any) Executor {
 	return func(ctx context.Context) error {
-		logger := Logger(ctx)
-		logger.Infof(format, args...)
+		Logger(ctx).Infof(format, args...)
 		return nil
 	}
 }
@@ -30,8 +29,7 @@ func NewInfoExecutor(format string, args ...any) Executor {
 // NewDebugExecutor is an executor that logs messages
 func NewDebugExecutor(format string, args ...any) Executor {
 	return func(ctx context.Context) error {
-		logger := Logger(ctx)
-		logger.Debugf(format, args...)
+		Logger(ctx).Debugf(format, args...)
 		return nil
 	}
 }
@@ -39,9 +37,7 @@ func NewDebugExecutor(format string, args ...any) Executor {
 // NewPipelineExecutor creates a new executor from a series of other executors
 func NewPipelineExecutor(executors ...Executor) Executor {
 	if len(executors) == 0 {
-		return func(ctx context.Context) error {
-			return nil
-		}
+		return NewErrorExecutor(nil)
 	}
 	var rtn Executor
 	for _, executor := range executors {
@@ -87,8 +83,8 @@ func NewParallelExecutor(parallel int, executors ...Executor) Executor {
 
 		logging.Infof("NewParallelExecutor: Creating %d workers for %d executors", parallel, len(executors))
 
-		for i := 0; i < parallel; i++ {
-			go func(workerID int, work <-chan Executor, errs chan<- error) {
+		for workerID := range parallel {
+			go func() {
 				logging.Debugf("Worker %d started", workerID)
 				taskCount := 0
 				for executor := range work {
@@ -103,7 +99,7 @@ func NewParallelExecutor(parallel int, executors ...Executor) Executor {
 					}()
 				}
 				logging.Debugf("Worker %d finished (%d tasks executed)", workerID, taskCount)
-			}(i, work, errs)
+			}()
 		}
 
 		for i := range executors {
@@ -152,12 +148,7 @@ func (e Executor) If(conditional Conditional) Executor {
 
 // IfNot only runs this executor if conditional is true
 func (e Executor) IfNot(conditional Conditional) Executor {
-	return func(ctx context.Context) error {
-		if !conditional(ctx) {
-			return e(ctx)
-		}
-		return nil
-	}
+	return e.If(func(ctx context.Context) bool { return !conditional(ctx) })
 }
 
 // IfBool only runs this executor if conditional is true

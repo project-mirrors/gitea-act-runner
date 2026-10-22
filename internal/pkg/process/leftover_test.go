@@ -8,33 +8,31 @@ import (
 	"testing"
 )
 
-func TestPathWithin(t *testing.T) {
+func TestDirContainsPath(t *testing.T) {
 	base := filepath.Join("base", "job1")
 
 	cases := []struct {
 		name   string
 		dir    string
 		target string
-		fold   bool
 		want   bool
 	}{
-		{"same dir", base, base, false, true},
-		{"direct child", base, filepath.Join(base, "app.exe"), false, true},
-		{"deep child", base, filepath.Join(base, "sub", "sub", "app.exe"), false, true},
-		{"parent is not within child", filepath.Join(base, "sub"), base, false, false},
-		{"name-prefix sibling spared", base, filepath.Join("base", "job10", "app.exe"), false, false},
-		{"unrelated", base, filepath.Join("other", "app.exe"), false, false},
-		{"empty dir", "", base, false, false},
-		{"empty target", base, "", false, false},
-		{"dot dir", ".", base, false, false},
-		{"case-sensitive miss", base, filepath.Join("base", "JOB1", "app.exe"), false, false},
-		{"case-insensitive hit", base, filepath.Join("base", "JOB1", "app.exe"), true, true},
+		{"same dir", base, base, true},
+		{"direct child", base, filepath.Join(base, "app.exe"), true},
+		{"deep child", base, filepath.Join(base, "sub", "sub", "app.exe"), true},
+		{"parent is not within child", filepath.Join(base, "sub"), base, false},
+		{"name-prefix sibling spared", base, filepath.Join("base", "job10", "app.exe"), false},
+		{"unrelated", base, filepath.Join("other", "app.exe"), false},
+		{"empty dir", "", base, false},
+		{"empty target", base, "", false},
+		{"dot dir", ".", base, false},
+		{"case-insensitive hit", base, filepath.Join("base", "JOB1", "app.exe"), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := pathWithin(filepath.Clean(tc.dir), filepath.Clean(tc.target), tc.fold)
+			got := dirContainsPath(tc.dir, tc.target)
 			if got != tc.want {
-				t.Fatalf("pathWithin(%q, %q, fold=%v) = %v, want %v", tc.dir, tc.target, tc.fold, got, tc.want)
+				t.Fatalf("dirContainsPath(%q, %q) = %v, want %v", tc.dir, tc.target, got, tc.want)
 			}
 		})
 	}

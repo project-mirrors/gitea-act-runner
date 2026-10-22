@@ -43,7 +43,6 @@ func (tc TarCollector) WriteFile(fpath string, fi fs.FileInfo, linkName string, 
 	// update the name to correctly reflect the desired destination when untaring
 	header.Name = path.Join(tc.DstDir, fpath)
 	header.Mode = int64(fi.Mode())
-	header.ModTime = fi.ModTime()
 	header.Uid = tc.UID
 	header.Gid = tc.GID
 
@@ -58,10 +57,8 @@ func (tc TarCollector) WriteFile(fpath string, fi fs.FileInfo, linkName string, 
 	}
 
 	// copy file data into tar writer
-	if _, err := io.Copy(tc.TarWriter, f); err != nil {
-		return err
-	}
-	return nil
+	_, err = io.Copy(tc.TarWriter, f)
+	return err
 }
 
 type CopyCollector struct {
@@ -87,10 +84,8 @@ func (cc *CopyCollector) WriteFile(fpath string, fi fs.FileInfo, linkName string
 		return err
 	}
 	defer df.Close()
-	if _, err := io.Copy(df, f); err != nil {
-		return err
-	}
-	return nil
+	_, err = io.Copy(df, f)
+	return err
 }
 
 type FileCollector struct {

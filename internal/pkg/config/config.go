@@ -246,7 +246,7 @@ type Config struct {
 func LoadDefault(file string) (*Config, error) {
 	// Seeded before the file is read, so a written 0 can mean off.
 	cfg := &Config{Cache: DefaultCache(), Log: Log{Job: LogJob{Retention: 7 * 24 * time.Hour, MaxSize: 1024 * 1024 * 1024}}}
-	definedRunnerKeys := map[string]bool{}
+	var definedRunnerKeys map[string]bool
 	if file != "" {
 		content, err := os.ReadFile(file)
 		if err != nil {
@@ -307,16 +307,13 @@ func LoadDefault(file string) (*Config, error) {
 		cfg.Runner.Timeout = 3 * time.Hour
 	}
 	if cfg.Runner.ActionShallowClone == nil {
-		b := true
-		cfg.Runner.ActionShallowClone = &b
+		cfg.Runner.ActionShallowClone = new(true)
 	}
 	if cfg.Runner.SetActEnv == nil {
-		b := true
-		cfg.Runner.SetActEnv = &b
+		cfg.Runner.SetActEnv = new(true)
 	}
 	if cfg.Cache.Enabled == nil {
-		b := true
-		cfg.Cache.Enabled = &b
+		cfg.Cache.Enabled = new(true)
 	}
 	// Resolved regardless of cache.enabled, because the `cache-server` command reads the secret from the same key without checking cache.enabled.
 	if err := resolveSecretFile("cache.external_secret", &cfg.Cache.ExternalSecret, cfg.Cache.ExternalSecretFile); err != nil {
@@ -435,12 +432,7 @@ func LoadDefault(file string) (*Config, error) {
 	// although `container.network_mode` will be deprecated, but we have to be compatible with it for now.
 	if cfg.Container.NetworkMode != "" && cfg.Container.Network == "" {
 		logging.Warn("You are trying to use deprecated configuration item of `container.network_mode`, please use `container.network` instead.")
-		if cfg.Container.NetworkMode == "bridge" {
-			// Previously, if the value of `container.network_mode` is `bridge`, we will create a new network for job.
-			// But “bridge” is easily confused with the bridge network created by Docker by default.
-			// So we set the value of `container.network` to empty string to make `runner` automatically create a new network for job.
-			cfg.Container.Network = ""
-		} else {
+		if cfg.Container.NetworkMode != "bridge" { // "bridge" meant a per-job network, which an empty container.network creates
 			cfg.Container.Network = cfg.Container.NetworkMode
 		}
 	}

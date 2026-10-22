@@ -79,8 +79,7 @@ func uploads(router *http.ServeMux, baseDir string) {
 			itemPath += gzipExtension
 		}
 
-		safeRunPath := safeResolve(baseDir, req.PathValue("runId"))
-		safePath := safeResolve(safeRunPath, itemPath)
+		safePath := safeResolve(safeResolve(baseDir, req.PathValue("runId")), itemPath)
 
 		if err := os.MkdirAll(filepath.Dir(safePath), os.ModePerm); err != nil {
 			panic(err)
@@ -120,9 +119,7 @@ func downloads(router *http.ServeMux, baseDir string) {
 	router.HandleFunc("GET /_apis/pipelines/workflows/{runId}/artifacts", func(w http.ResponseWriter, req *http.Request) {
 		runID := req.PathValue("runId")
 
-		safePath := safeResolve(baseDir, runID)
-
-		entries, err := os.ReadDir(safePath)
+		entries, err := os.ReadDir(safeResolve(baseDir, runID))
 		if err != nil {
 			panic(err)
 		}
@@ -156,15 +153,11 @@ func downloads(router *http.ServeMux, baseDir string) {
 
 				// if it was upload as gzip
 				rel = strings.TrimSuffix(rel, gzipExtension)
-				path := filepath.Join(itemPath, rel)
-
-				rel = filepath.ToSlash(rel)
-				path = filepath.ToSlash(path)
 
 				files = append(files, ContainerItem{
-					Path:            path,
+					Path:            filepath.ToSlash(filepath.Join(itemPath, rel)),
 					ItemType:        "file",
-					ContentLocation: fmt.Sprintf("http://%s/artifact/%s/%s/%s", req.Host, container, itemPath, rel),
+					ContentLocation: fmt.Sprintf("http://%s/artifact/%s/%s/%s", req.Host, container, itemPath, filepath.ToSlash(rel)),
 				})
 			}
 			return nil

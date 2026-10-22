@@ -75,7 +75,6 @@ func parseEnvFile(e Container, srcPath string, env *map[string]string) common.Ex
 		if err := s.Err(); err != nil {
 			return fmt.Errorf("reading env file: %w", err)
 		}
-		env = &localEnv
 		return nil
 	}
 }

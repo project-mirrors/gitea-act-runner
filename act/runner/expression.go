@@ -58,8 +58,6 @@ func (rc *RunContext) NewExpressionEvaluatorWithEnv(ctx context.Context, env map
 	}
 
 	ghc := rc.getGithubContext(ctx)
-	inputs := getEvaluatorInputs(rc, rc.actionInputs, ghc)
-
 	ee := &exprparser.EvaluationEnvironment{
 		Github: ghc,
 		Env:    env,
@@ -67,13 +65,13 @@ func (rc *RunContext) NewExpressionEvaluatorWithEnv(ctx context.Context, env map
 		Jobs:   &workflowCallResult,
 		// todo: should be unavailable
 		// but required to interpolate/evaluate the step outputs on the job
-		Steps:     rc.getStepsContext(),
+		Steps:     rc.StepResults,
 		Secrets:   getWorkflowSecrets(rc),
-		Vars:      getWorkflowVars(ctx, rc),
+		Vars:      rc.Config.Vars,
 		Strategy:  strategy,
 		Matrix:    rc.Matrix,
 		Needs:     exprparser.NeedsContext(rc.Run),
-		Inputs:    inputs,
+		Inputs:    getEvaluatorInputs(rc, rc.actionInputs, ghc),
 		HashFiles: getHashFilesFunction(ctx, rc),
 	}
 	ee.Runner = rc.getRunnerContext(ctx)
@@ -105,9 +103,9 @@ func (rc *RunContext) newStepExpressionEvaluator(ctx context.Context, step step,
 		Github:   step.getGithubContext(ctx),
 		Env:      *step.getEnv(),
 		Job:      jobContext,
-		Steps:    rc.getStepsContext(),
+		Steps:    rc.StepResults,
 		Secrets:  getWorkflowSecrets(rc),
-		Vars:     getWorkflowVars(ctx, rc),
+		Vars:     rc.Config.Vars,
 		Strategy: exprparser.StrategyContext(rc.Run.Job().Strategy, rc.jobIndex, rc.jobTotal),
 		Matrix:   rc.Matrix,
 		Needs:    exprparser.NeedsContext(rc.Run),
@@ -127,7 +125,7 @@ func (rc *RunContext) newStepExpressionEvaluator(ctx context.Context, step step,
 }
 
 func getHashFilesFunction(ctx context.Context, rc *RunContext) func(v []reflect.Value) (any, error) {
-	hashFiles := func(v []reflect.Value) (any, error) {
+	return func(v []reflect.Value) (any, error) {
 		if rc.JobContainer != nil {
 			timeed, cancel := context.WithTimeout(ctx, time.Minute)
 			defer cancel()
@@ -139,14 +137,12 @@ func getHashFilesFunction(ctx context.Context, rc *RunContext) func(v []reflect.
 
 			for i, p := range v {
 				s := p.String()
-				if i == 0 {
-					if strings.HasPrefix(s, "--") {
-						if strings.EqualFold(s, "--follow-symbolic-links") {
-							followSymlink = true
-							continue
-						}
-						return "", fmt.Errorf("invalid glob option %s, available option: '--follow-symbolic-links'", s)
+				if i == 0 && strings.HasPrefix(s, "--") {
+					if strings.EqualFold(s, "--follow-symbolic-links") {
+						followSymlink = true
+						continue
 					}
+					return "", fmt.Errorf("invalid glob option %s, available option: '--follow-symbolic-links'", s)
 				}
 				patterns = append(patterns, s)
 			}
@@ -169,20 +165,14 @@ func getHashFilesFunction(ctx context.Context, rc *RunContext) func(v []reflect.
 					rc.JobContainer.ReplaceLogWriter(stdout, stderr)
 					return nil
 				})(timeed)
-			output := hout.String() + "\n" + herr.String()
-			guard := "__OUTPUT__"
-			outstart := strings.Index(output, guard)
-			if outstart != -1 {
-				outstart += len(guard)
-				outend := strings.Index(output[outstart:], guard)
-				if outend != -1 {
-					return output[outstart : outstart+outend], nil
+			if _, output, found := strings.Cut(hout.String()+"\n"+herr.String(), "__OUTPUT__"); found {
+				if hash, _, found := strings.Cut(output, "__OUTPUT__"); found {
+					return hash, nil
 				}
 			}
 		}
 		return "", nil
 	}
-	return hashFiles
 }
 
 type expressionEvaluator struct {
@@ -191,14 +181,15 @@ type expressionEvaluator struct {
 
 type ExpressionEvaluator = expressionEvaluator
 
+var addMaskExpression = regexp.MustCompile(`::add-mask::.*`)
+
 func (ee expressionEvaluator) evaluate(ctx context.Context, in string, defaultStatusCheck exprparser.DefaultStatusCheck) (any, error) {
 	logger := common.Logger(ctx)
 	logger.Debugf("evaluating expression '%s'", in)
 	evaluated, err := ee.interpreter.Evaluate(in, defaultStatusCheck)
 
 	// evaluated is an any: %t renders everything but a bool as "%!t(string=...)"
-	printable := regexp.MustCompile(`::add-mask::.*`).ReplaceAllString(fmt.Sprintf("%v", evaluated), "::add-mask::***)")
-	logger.Debugf("expression '%s' evaluated to '%s'", in, printable)
+	logger.Debugf("expression '%s' evaluated to '%s'", in, addMaskExpression.ReplaceAllString(fmt.Sprintf("%v", evaluated), "::add-mask::***)"))
 
 	return evaluated, err
 }
@@ -251,15 +242,13 @@ func getEvaluatorInputs(rc *RunContext, stepInputs map[string]any, ghc *model.Gi
 	if stepInputs != nil { // an action's own inputs, which workflow inputs must not shadow
 		return maps.Clone(stepInputs)
 	}
-	inputs := map[string]any{}
-
 	// only a called workflow's job itself takes the inputs Gitea resolved,
 	// composite actions copy its Config but have their own `inputs`
 	if rc.Config.WorkflowCallInputs != nil && rc.Parent == nil {
-		maps.Copy(inputs, rc.Config.WorkflowCallInputs)
-		return inputs
+		return maps.Clone(rc.Config.WorkflowCallInputs)
 	}
 
+	inputs := map[string]any{}
 	maps.Copy(inputs, rc.workflowCallInputs)
 
 	switch ghc.EventName {
@@ -328,8 +317,4 @@ func getWorkflowSecrets(rc *RunContext) map[string]string {
 		return rc.workflowCallSecrets
 	}
 	return rc.Config.Secrets
-}
-
-func getWorkflowVars(_ context.Context, rc *RunContext) map[string]string {
-	return rc.Config.Vars
 }

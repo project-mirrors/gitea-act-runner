@@ -14,13 +14,8 @@ const dryrunContextKeyVal = dryrunContextKey("dryrun")
 
 // Dryrun returns true if the current context is dryrun
 func Dryrun(ctx context.Context) bool {
-	val := ctx.Value(dryrunContextKeyVal)
-	if val != nil {
-		if dryrun, ok := val.(bool); ok {
-			return dryrun
-		}
-	}
-	return false
+	dryrun, _ := ctx.Value(dryrunContextKeyVal).(bool)
+	return dryrun
 }
 
 // WithDryrun adds a value to the context for dryrun

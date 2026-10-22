@@ -186,11 +186,9 @@ func TestDockerExecAbort(t *testing.T) {
 	}, nil)
 
 	cr := &containerReference{
-		id:  "123",
-		cli: client,
-		input: &NewContainerInput{
-			Image: "image",
-		},
+		id:    "123",
+		cli:   client,
+		input: &NewContainerInput{},
 	}
 
 	channel := make(chan error)
@@ -213,12 +211,10 @@ func TestDockerExecAbort(t *testing.T) {
 func TestDockerExecFailure(t *testing.T) {
 	ctx := t.Context()
 
-	conn := &mockConn{}
-
 	client := &mockDockerClient{}
 	client.On("ExecCreate", ctx, "123", mock.AnythingOfType("client.ExecCreateOptions")).Return(mobyclient.ExecCreateResult{ID: "id"}, nil)
 	client.On("ExecAttach", ctx, "id", mock.AnythingOfType("client.ExecAttachOptions")).Return(mobyclient.ExecAttachResult{
-		Conn:   conn,
+		Conn:   &mockConn{},
 		Reader: bufio.NewReader(strings.NewReader("output")),
 	}, nil)
 	client.On("ExecInspect", ctx, "id", mobyclient.ExecInspectOptions{}).Return(mobyclient.ExecInspectResult{
@@ -226,11 +222,9 @@ func TestDockerExecFailure(t *testing.T) {
 	}, nil)
 
 	cr := &containerReference{
-		id:  "123",
-		cli: client,
-		input: &NewContainerInput{
-			Image: "image",
-		},
+		id:    "123",
+		cli:   client,
+		input: &NewContainerInput{},
 	}
 
 	err := cr.exec([]string{""}, map[string]string{}, "user", "workdir")(ctx)
@@ -239,7 +233,6 @@ func TestDockerExecFailure(t *testing.T) {
 	assert.Equal(t, ExitCodeError(1), exitErr)
 	assert.Equal(t, "Process completed with exit code 1.", err.Error())
 
-	conn.AssertExpectations(t)
 	client.AssertExpectations(t)
 }
 
@@ -254,9 +247,6 @@ func stdcopyFrame(stream stdcopy.StdType, payload string) []byte {
 	return b
 }
 
-// TestDockerAttachFlushesTrailingLine verifies that wait() blocks until the
-// attach() streaming goroutine has drained and flushed the container's output,
-// so a final line without a trailing newline is not lost.
 func TestDockerAttachFlushesTrailingLine(t *testing.T) {
 	ctx := t.Context()
 
@@ -277,18 +267,13 @@ func TestDockerAttachFlushesTrailingLine(t *testing.T) {
 
 	statusCh := make(chan container.WaitResponse, 1)
 	statusCh <- container.WaitResponse{StatusCode: 0}
-	errCh := make(chan error, 1)
 	client.On("ContainerWait", ctx, "123", mobyclient.ContainerWaitOptions{Condition: container.WaitConditionNotRunning}).
-		Return(mobyclient.ContainerWaitResult{
-			Result: (<-chan container.WaitResponse)(statusCh),
-			Error:  (<-chan error)(errCh),
-		})
+		Return(mobyclient.ContainerWaitResult{Result: statusCh})
 
 	cr := &containerReference{
 		id:  "123",
 		cli: client,
 		input: &NewContainerInput{
-			Image:  "image",
 			Stdout: logWriter,
 			Stderr: logWriter,
 		},
@@ -297,10 +282,6 @@ func TestDockerAttachFlushesTrailingLine(t *testing.T) {
 	require.NoError(t, cr.attach()(ctx))
 	require.NoError(t, cr.wait()(ctx))
 
-	// wait() must have blocked until the goroutine drained AND flushed; the
-	// trailing, non-newline-terminated line must therefore be present. Reading
-	// lines here is race-free because wait() synchronizes on attachDone, which
-	// the goroutine closes after the final append.
 	assert.Equal(t, []string{"line one\n", "last line without newline"}, lines)
 
 	client.AssertExpectations(t)
@@ -311,24 +292,11 @@ func TestDockerWaitFailure(t *testing.T) {
 
 	statusCh := make(chan container.WaitResponse, 1)
 	statusCh <- container.WaitResponse{StatusCode: 2}
-	errCh := make(chan error, 1)
-
 	client := &mockDockerClient{}
 	client.On("ContainerWait", ctx, "123", mobyclient.ContainerWaitOptions{Condition: container.WaitConditionNotRunning}).
-		Return(mobyclient.ContainerWaitResult{
-			Result: (<-chan container.WaitResponse)(statusCh),
-			Error:  (<-chan error)(errCh),
-		})
+		Return(mobyclient.ContainerWaitResult{Result: statusCh})
 
-	cr := &containerReference{
-		id:  "123",
-		cli: client,
-		input: &NewContainerInput{
-			Image: "image",
-		},
-	}
-
-	err := cr.wait()(ctx)
+	err := (&containerReference{id: "123", cli: client}).wait()(ctx)
 	var exitErr ExitCodeError
 	require.ErrorAs(t, err, &exitErr)
 	assert.Equal(t, ExitCodeError(2), exitErr)
@@ -402,79 +370,49 @@ func TestRemoveWithoutIDUsesName(t *testing.T) {
 	client.AssertExpectations(t)
 }
 
-// find() must drop a stale cached id so later Copy/Exec don't hit the
-// daemon with a torn-down container.
 func TestFindRevalidatesStaleID(t *testing.T) {
 	ctx := t.Context()
+	inspectOpts := mobyclient.ContainerInspectOptions{}
 	notFound := cerrdefs.ErrNotFound.WithMessage("No such container")
 	boom := errors.New("daemon unreachable")
-	newCR := func(id string) (*containerReference, *mockDockerClient) {
-		client := &mockDockerClient{}
-		return &containerReference{id: id, cli: client, input: &NewContainerInput{Name: "job-1"}}, client
+	for _, tc := range []struct {
+		name, cachedID string
+		cachedErr      error
+		lookup         container.InspectResponse
+		lookupErr      error
+		listed         []container.Summary
+		wantID         string
+		retryList      bool
+	}{
+		{name: "stale id cleared, name lookup empty", cachedID: "stale", cachedErr: notFound, lookupErr: notFound},
+		{name: "stale id cleared, name lookup repopulates", cachedID: "stale", cachedErr: notFound, lookup: container.InspectResponse{ID: "fresh", Name: "/job-1"}, wantID: "fresh"},
+		{name: "id match falls back to listing", lookup: container.InspectResponse{ID: "job-1abc", Name: "/somebody-else"}, listed: []container.Summary{{ID: "fresh", Names: []string{"/job-1"}}}, wantID: "fresh"},
+		{name: "live id kept", cachedID: "live", wantID: "live"},
+		{name: "transient inspect error trusts cache", cachedID: "live", cachedErr: boom, wantID: "live"},
+		{name: "name lookup error falls back to listing", lookupErr: boom, listed: []container.Summary{{ID: "other", Names: []string{"/somebody-else"}}, {ID: "fresh", Names: []string{"/job-1"}}}, wantID: "fresh", retryList: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &mockDockerClient{}
+			cr := &containerReference{id: tc.cachedID, cli: client, input: &NewContainerInput{Name: "job-1"}}
+			if tc.cachedID != "" {
+				client.On("ContainerInspect", ctx, tc.cachedID, inspectOpts).Return(mobyclient.ContainerInspectResult{}, tc.cachedErr)
+			}
+			if tc.cachedID == "" || cerrdefs.IsNotFound(tc.cachedErr) {
+				client.On("ContainerInspect", ctx, "job-1", inspectOpts).Return(mobyclient.ContainerInspectResult{Container: tc.lookup}, tc.lookupErr)
+			}
+			if tc.listed != nil {
+				client.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true}).Return(mobyclient.ContainerListResult{Items: tc.listed}, nil).Once()
+			}
+			require.NoError(t, cr.find()(ctx))
+			assert.Equal(t, tc.wantID, cr.id)
+			if tc.retryList {
+				client.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true}).Return(mobyclient.ContainerListResult{}, boom)
+				cr.id = ""
+				require.ErrorIs(t, cr.find()(ctx), boom)
+			}
+			client.AssertExpectations(t)
+		})
 	}
-	inspectOpts := mobyclient.ContainerInspectOptions{}
-
-	t.Run("stale id cleared, name lookup empty", func(t *testing.T) {
-		cr, client := newCR("stale")
-		client.On("ContainerInspect", ctx, "stale", inspectOpts).Return(mobyclient.ContainerInspectResult{}, notFound)
-		client.On("ContainerInspect", ctx, "job-1", inspectOpts).Return(mobyclient.ContainerInspectResult{}, notFound)
-		require.NoError(t, cr.find()(ctx))
-		assert.Empty(t, cr.id)
-		client.AssertExpectations(t)
-	})
-
-	t.Run("stale id cleared, name lookup repopulates", func(t *testing.T) {
-		cr, client := newCR("stale")
-		client.On("ContainerInspect", ctx, "stale", inspectOpts).Return(mobyclient.ContainerInspectResult{}, notFound)
-		client.On("ContainerInspect", ctx, "job-1", inspectOpts).
-			Return(mobyclient.ContainerInspectResult{Container: container.InspectResponse{ID: "fresh", Name: "/job-1"}}, nil)
-		require.NoError(t, cr.find()(ctx))
-		assert.Equal(t, "fresh", cr.id)
-		client.AssertExpectations(t)
-	})
-
-	t.Run("id match falls back to listing", func(t *testing.T) {
-		cr, client := newCR("")
-		client.On("ContainerInspect", ctx, "job-1", inspectOpts).
-			Return(mobyclient.ContainerInspectResult{Container: container.InspectResponse{ID: "job-1abc", Name: "/somebody-else"}}, nil)
-		client.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true}).Return(mobyclient.ContainerListResult{Items: []container.Summary{
-			{ID: "fresh", Names: []string{"/job-1"}},
-		}}, nil)
-		require.NoError(t, cr.find()(ctx))
-		assert.Equal(t, "fresh", cr.id)
-		client.AssertExpectations(t)
-	})
-
-	t.Run("live id kept", func(t *testing.T) {
-		cr, client := newCR("live")
-		client.On("ContainerInspect", ctx, "live", inspectOpts).Return(mobyclient.ContainerInspectResult{}, nil)
-		require.NoError(t, cr.find()(ctx))
-		assert.Equal(t, "live", cr.id)
-		client.AssertExpectations(t)
-	})
-
-	t.Run("transient inspect error trusts cache", func(t *testing.T) {
-		cr, client := newCR("live")
-		client.On("ContainerInspect", ctx, "live", inspectOpts).Return(mobyclient.ContainerInspectResult{}, boom)
-		require.NoError(t, cr.find()(ctx))
-		assert.Equal(t, "live", cr.id)
-		client.AssertExpectations(t)
-	})
-
-	t.Run("name lookup error falls back to listing", func(t *testing.T) {
-		cr, client := newCR("")
-		client.On("ContainerInspect", ctx, "job-1", inspectOpts).Return(mobyclient.ContainerInspectResult{}, boom)
-		client.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true}).Return(mobyclient.ContainerListResult{Items: []container.Summary{
-			{ID: "other", Names: []string{"/somebody-else"}},
-			{ID: "fresh", Names: []string{"/job-1"}},
-		}}, nil).Once()
-		require.NoError(t, cr.find()(ctx))
-		assert.Equal(t, "fresh", cr.id)
-		client.On("ContainerList", ctx, mobyclient.ContainerListOptions{All: true}).Return(mobyclient.ContainerListResult{}, boom)
-		cr.id = ""
-		require.ErrorIs(t, cr.find()(ctx), boom)
-		client.AssertExpectations(t)
-	})
 }
 
 func TestRunnerArchCachedPerRun(t *testing.T) {
@@ -567,9 +505,6 @@ func TestPublicCopyPipelineHandlesStaleID(t *testing.T) {
 		})
 	}
 }
-
-// Type assert containerReference implements ExecutionsEnvironment
-var _ ExecutionsEnvironment = &containerReference{}
 
 func TestCheckVolumes(t *testing.T) {
 	testCases := []struct {
@@ -665,10 +600,11 @@ func TestCheckVolumes(t *testing.T) {
 					ValidVolumes: tc.validVolumes,
 				},
 			}
-			_, hostConf := cr.sanitizeConfig(ctx, &container.Config{}, &container.HostConfig{Binds: tc.binds, Mounts: tc.mounts})
+			hostConf := &container.HostConfig{Binds: tc.binds, Mounts: tc.mounts}
+			cr.sanitizeConfig(ctx, hostConf)
 			assert.Equal(t, tc.expectedBinds, hostConf.Binds)
 			assert.ElementsMatch(t, tc.expectedMounts, hostConf.Mounts)
-			assert.Len(t, hook.AllRecords(), len(tc.binds)+len(tc.mounts)-len(tc.expectedBinds)-len(tc.expectedMounts)) // every drop is warned about
+			assert.Len(t, hook.AllRecords(), len(tc.binds)+len(tc.mounts)-len(tc.expectedBinds)-len(tc.expectedMounts))
 		})
 	}
 }
@@ -688,8 +624,6 @@ func TestMergeContainerConfigsDropsVolumeDriversFromWorkflows(t *testing.T) {
 	assert.Equal(t, "job-escape", hostConfig.Mounts[0].Source)
 }
 
-// Both of these are read here, on the runner, so a workflow could read the runner's files
-// and environment with them.
 func TestMergeContainerConfigsKeepsTheRunnersFilesAndEnvToItself(t *testing.T) {
 	hostFile := filepath.Join(t.TempDir(), "host.env")
 	require.NoError(t, os.WriteFile(hostFile, []byte("STOLEN=from-the-host\n"), 0o600))
@@ -699,16 +633,12 @@ func TestMergeContainerConfigsKeepsTheRunnersFilesAndEnvToItself(t *testing.T) {
 		logger := logging.New(logtest.New())
 		cr := &containerReference{input: &NewContainerInput{NetworkMode: "bridge", WorkflowOptions: option}}
 
-		_, _, err := cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{})
-		require.ErrorContains(t, err, "not allowed in a workflow")
+		require.ErrorContains(t, cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{}), "not allowed in a workflow")
 
-		// the runner reading its own files is what those options are for
 		cr = &containerReference{input: &NewContainerInput{NetworkMode: "bridge", RunnerOptions: option}}
-		_, _, err = cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{})
-		require.NoError(t, err)
+		require.NoError(t, cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{}))
 	}
 
-	// a bare name is no longer resolved from the runner's environment, for either source
 	logger := logging.New(logtest.New())
 	cr := &containerReference{input: &NewContainerInput{
 		NetworkMode:     "bridge",
@@ -716,8 +646,8 @@ func TestMergeContainerConfigsKeepsTheRunnersFilesAndEnvToItself(t *testing.T) {
 		WorkflowOptions: "--env RUNNER_SECRET --env GIVEN=value",
 	}}
 
-	config, _, err := cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{})
-	require.NoError(t, err)
+	config := &container.Config{}
+	require.NoError(t, cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), config, &container.HostConfig{}))
 	assert.Equal(t, []string{"RUNNER_SECRET", "RUNNER_SECRET", "GIVEN=value"}, config.Env)
 }
 
@@ -754,7 +684,6 @@ func TestSanitizeOptionsHostConfig(t *testing.T) {
 	assert.Equal(t, &container.HostConfig{}, hostConfig)
 }
 
-// mergeOptions merges both option sources into a bare container, returning the result and its log.
 func mergeOptions(t *testing.T, runnerOptions, workflowOptions string, privileged bool) (*container.HostConfig, *logtest.Handler) {
 	t.Helper()
 	logger, hook := logtest.NewLogger()
@@ -766,12 +695,12 @@ func mergeOptions(t *testing.T, runnerOptions, workflowOptions string, privilege
 		ValidVolumes:    []string{"**"},
 	}}
 
-	_, hostConfig, err := cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{
+	hostConfig := &container.HostConfig{
 		Privileged:  privileged,
 		UsernsMode:  container.UsernsMode("private"),
 		NetworkMode: container.NetworkMode("bridge"),
-	})
-	require.NoError(t, err)
+	}
+	require.NoError(t, cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), &container.Config{}, hostConfig))
 	return hostConfig, hook
 }
 
@@ -825,23 +754,26 @@ func TestCheckVolumesRejectsEscapingHostPaths(t *testing.T) {
 	}
 
 	escapingPath := allowed + string(filepath.Separator) + ".." + string(filepath.Separator) + "denied"
-	_, hostConf := cr.sanitizeConfig(ctx, &container.Config{}, &container.HostConfig{
+	hostConf := &container.HostConfig{
 		Binds: []string{escapingPath + ":/mnt"},
-	})
+	}
+	cr.sanitizeConfig(ctx, hostConf)
 	assert.Empty(t, hostConf.Binds)
 
 	linkPath := filepath.Join(allowed, "link")
 	if err := os.Symlink(denied, linkPath); err != nil {
 		t.Skipf("cannot create symlink: %v", err)
 	}
-	_, hostConf = cr.sanitizeConfig(ctx, &container.Config{}, &container.HostConfig{
+	hostConf = &container.HostConfig{
 		Binds: []string{linkPath + ":/mnt"},
-	})
+	}
+	cr.sanitizeConfig(ctx, hostConf)
 	assert.Empty(t, hostConf.Binds)
 
-	_, hostConf = cr.sanitizeConfig(ctx, &container.Config{}, &container.HostConfig{
+	hostConf = &container.HostConfig{
 		Binds: []string{filepath.Join(linkPath, "missing") + ":/mnt"},
-	})
+	}
+	cr.sanitizeConfig(ctx, hostConf)
 	assert.Empty(t, hostConf.Binds)
 }
 
@@ -851,11 +783,12 @@ func TestSanitizeConfigKeepsTmpfsMounts(t *testing.T) {
 
 	for _, validVolumes := range [][]string{nil, {"data"}, {"**:ro"}} {
 		logger, hook := logtest.NewLogger()
-		_, sanitized := (&containerReference{input: &NewContainerInput{ValidVolumes: validVolumes}}).sanitizeConfig(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{Mounts: []mount.Mount{
+		sanitized := &container.HostConfig{Mounts: []mount.Mount{
 			hostConfig.Mounts[0],
 			{Type: mount.TypeVolume, Target: "/anonymous"},
 			{Type: mount.TypeTmpfs, Source: "/etc", Target: "/etc-copy"},
-		}})
+		}}
+		(&containerReference{input: &NewContainerInput{ValidVolumes: validVolumes}}).sanitizeConfig(common.WithLogger(t.Context(), logger), sanitized)
 		assert.Equal(t, hostConfig.Mounts, sanitized.Mounts)
 		assert.Len(t, hook.AllRecords(), 2)
 	}
@@ -951,11 +884,11 @@ func TestMergeContainerConfigsVolumesReplaceRunnerMounts(t *testing.T) {
 		},
 	}
 
-	_, hostConf, err := cr.mergeContainerConfigs(ctx, &container.Config{}, &container.HostConfig{
+	hostConf := &container.HostConfig{
 		Binds:  []string{"/var/run/docker.sock:/var/run/docker.sock"},
 		Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: "act-toolcache", Target: "/opt/hostedtoolcache"}},
-	})
-	require.NoError(t, err)
+	}
+	require.NoError(t, cr.mergeContainerConfigs(ctx, &container.Config{}, hostConf))
 	assert.Equal(t, []string{"/var/run/docker.sock:/var/run/docker.sock", "/host/tools:/opt/hostedtoolcache"}, hostConf.Binds)
 	assert.Empty(t, hostConf.Mounts)
 }
@@ -1007,8 +940,7 @@ func TestMergeContainerConfigsKeepsNetworkAliasesFromOptions(t *testing.T) {
 		NetworkMode: "job-network", NetworkAliases: []string{"redis"}, WorkflowOptions: "--network-alias redis-primary",
 	}}
 
-	_, _, err := cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{})
-	require.NoError(t, err)
+	require.NoError(t, cr.mergeContainerConfigs(common.WithLogger(t.Context(), logger), &container.Config{}, &container.HostConfig{}))
 	assert.Equal(t, []string{"redis", "redis-primary"}, cr.input.NetworkAliases)
 }
 

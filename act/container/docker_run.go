@@ -50,15 +50,12 @@ const drainGracePeriod = 2 * time.Second
 
 // NewContainer creates a reference to a container
 func NewContainer(input *NewContainerInput) ExecutionsEnvironment {
-	cr := new(containerReference)
-	cr.input = input
 	// Resolved up front because the image pull runs before the container is created.
 	cf := createFlagsFromOptions(input.allOptions())
 	if cf.platform != "" {
-		cr.input.Platform = cf.platform
+		input.Platform = cf.platform
 	}
-	cr.pullPolicy = cf.pull
-	return cr
+	return &containerReference{input: input, pullPolicy: cf.pull}
 }
 
 // supportsContainerImagePlatform reports whether the Docker server API version
@@ -394,17 +391,16 @@ func GetDockerClient(ctx context.Context) (cli client.APIClient, err error) {
 	return cli, nil
 }
 
-func GetHostInfo(ctx context.Context) (info system.Info, err error) {
-	var cli client.APIClient
-	cli, err = GetDockerClient(ctx)
+func GetHostInfo(ctx context.Context) (system.Info, error) {
+	cli, err := GetDockerClient(ctx)
 	if err != nil {
-		return info, err
+		return system.Info{}, err
 	}
 	defer cli.Close()
 
 	result, err := cli.Info(ctx, client.InfoOptions{})
 	if err != nil {
-		return info, err
+		return system.Info{}, err
 	}
 
 	return result.Info, nil
@@ -559,32 +555,32 @@ func (input *NewContainerInput) allOptions() string {
 	return strings.TrimSpace(input.RunnerOptions + " " + input.WorkflowOptions)
 }
 
-func (cr *containerReference) mergeContainerConfigs(ctx context.Context, config *container.Config, hostConfig *container.HostConfig) (*container.Config, *container.HostConfig, error) {
+func (cr *containerReference) mergeContainerConfigs(ctx context.Context, config *container.Config, hostConfig *container.HostConfig) error {
 	logger := common.Logger(ctx)
 	options := cr.input.allOptions()
 
 	if options == "" {
-		return config, hostConfig, nil
+		return nil
 	}
 
 	// For Gitea, checked here because the parse below is what would read those files
 	if err := rejectHostReadingOptions(cr.input.WorkflowOptions); err != nil {
-		return nil, nil, err
+		return err
 	}
 
 	// parse configuration from CLI container.options
 	flags, copts, cf, err := parseContainerOptions(options)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 
 	if err := cf.validate(); err != nil {
-		return nil, nil, fmt.Errorf("cannot process container options: '%s': '%w'", options, err)
+		return fmt.Errorf("cannot process container options: '%s': '%w'", options, err)
 	}
 
 	if len(copts.netMode.Value()) == 0 {
 		if err = copts.netMode.Set(cr.input.NetworkMode); err != nil {
-			return nil, nil, fmt.Errorf("cannot parse networkmode=%s. This is an internal error and should not happen: '%w'", cr.input.NetworkMode, err)
+			return fmt.Errorf("cannot parse networkmode=%s. This is an internal error and should not happen: '%w'", cr.input.NetworkMode, err)
 		}
 	}
 
@@ -597,7 +593,7 @@ func (cr *containerReference) mergeContainerConfigs(ctx context.Context, config 
 
 	containerConfig, err := parse(flags, copts, runtime.GOOS)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot process container options: '%s': '%w'", options, err)
+		return fmt.Errorf("cannot process container options: '%s': '%w'", options, err)
 	}
 	// workflow aliases join the runner's own, deduped so a re-create cannot grow the input
 	for _, endpoint := range containerConfig.NetworkingConfig.EndpointsConfig {
@@ -612,7 +608,7 @@ func (cr *containerReference) mergeContainerConfigs(ctx context.Context, config 
 	if !hostConfig.Privileged {
 		trusted, err := parseOptionsHostConfig(cr.input.RunnerOptions)
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
 		sanitizeOptionsHostConfig(logger, containerConfig.HostConfig, trusted)
 	}
@@ -624,7 +620,7 @@ func (cr *containerReference) mergeContainerConfigs(ctx context.Context, config 
 
 	logger.Debugf("Custom container.HostConfig from options ==> %+v", containerConfig.HostConfig)
 
-	cr.sanitizeConfig(ctx, nil, containerConfig.HostConfig) // a dropped volume must not displace the runner's own
+	cr.sanitizeConfig(ctx, containerConfig.HostConfig) // a dropped volume must not displace the runner's own
 	overlayVolumes(hostConfig, containerConfig.HostConfig)
 	binds := hostConfig.Binds
 	mounts := hostConfig.Mounts
@@ -645,7 +641,7 @@ func (cr *containerReference) mergeContainerConfigs(ctx context.Context, config 
 	hostConfig.NetworkMode = networkMode
 	logger.Debugf("Merged container.HostConfig ==> %+v", hostConfig)
 
-	return config, hostConfig, nil
+	return nil
 }
 
 func (cr *containerReference) create(capAdd, capDrop []string) common.Executor {
@@ -711,8 +707,7 @@ func (cr *containerReference) create(capAdd, capDrop []string) common.Executor {
 			AutoRemove:   input.AutoRemove,
 		}
 
-		config, hostConfig, err = cr.mergeContainerConfigs(ctx, config, hostConfig)
-		if err != nil {
+		if err := cr.mergeContainerConfigs(ctx, config, hostConfig); err != nil {
 			return err
 		}
 
@@ -721,18 +716,15 @@ func (cr *containerReference) create(capAdd, capDrop []string) common.Executor {
 		}
 
 		// For Gitea
-		config, hostConfig = cr.sanitizeConfig(ctx, config, hostConfig)
+		cr.sanitizeConfig(ctx, hostConfig)
 
 		var networkingConfig *network.NetworkingConfig
 		n := hostConfig.NetworkMode
 		// IsUserDefined and IsHost are broken on windows
 		if n.IsUserDefined() && n != "host" && len(input.NetworkAliases) > 0 {
-			endpointConfig := &network.EndpointSettings{
-				Aliases: input.NetworkAliases,
-			}
 			networkingConfig = &network.NetworkingConfig{
 				EndpointsConfig: map[string]*network.EndpointSettings{
-					input.NetworkMode: endpointConfig,
+					input.NetworkMode: {Aliases: input.NetworkAliases},
 				},
 			}
 		}
@@ -773,15 +765,11 @@ func (cr *containerReference) exec(cmd []string, env map[string]string, user, wo
 
 		logger.Debugf("Exec command '%s'", cmd)
 		isTerminal := cr.input.AllocatePTY
-		var wd string
-		if workdir != "" {
-			if strings.HasPrefix(workdir, "/") {
-				wd = workdir
-			} else {
-				wd = fmt.Sprintf("%s/%s", cr.input.WorkingDir, workdir)
-			}
-		} else {
-			wd = cr.input.WorkingDir
+		wd := cr.input.WorkingDir
+		if strings.HasPrefix(workdir, "/") {
+			wd = workdir
+		} else if workdir != "" {
+			wd = fmt.Sprintf("%s/%s", cr.input.WorkingDir, workdir)
 		}
 		logger.Debugf("Working directory '%s'", wd)
 
@@ -806,8 +794,7 @@ func (cr *containerReference) exec(cmd []string, env map[string]string, user, wo
 		}
 		defer resp.Close()
 
-		err = cr.waitForCommand(ctx, resp.HijackedResponse)
-		if err != nil {
+		if err := cr.waitForCommand(ctx, resp.HijackedResponse); err != nil {
 			return err
 		}
 
@@ -909,17 +896,14 @@ func (cr *containerReference) copyDir(dstPath, srcPath string, useGitIgnore, ski
 			return err
 		}
 		logger.Debugf("Writing tarball %s from %s", tarFile.Name(), srcPath)
-		defer func(tarFile *os.File) {
-			name := tarFile.Name()
-			err := tarFile.Close()
-			if !errors.Is(err, os.ErrClosed) {
+		defer func() {
+			if err := tarFile.Close(); !errors.Is(err, os.ErrClosed) {
 				logger.Error(err)
 			}
-			err = os.Remove(name)
-			if err != nil {
+			if err := os.Remove(tarFile.Name()); err != nil {
 				logger.Error(err)
 			}
-		}(tarFile)
+		}()
 		extractionRoot := "/"
 		if actPath := cr.GetActPath(); strings.HasPrefix(dstPath+"/", actPath+"/") {
 			extractionRoot = actPath // keeps tar entries from crossing the image's /var/run symlink
@@ -929,8 +913,7 @@ func (cr *containerReference) copyDir(dstPath, srcPath string, useGitIgnore, ski
 		}
 
 		logger.Debugf("Extracting content from '%s' to '%s'", tarFile.Name(), dstPath)
-		_, err = tarFile.Seek(0, 0)
-		if err != nil {
+		if _, err := tarFile.Seek(0, 0); err != nil {
 			return fmt.Errorf("failed to seek tar archive: %w", err)
 		}
 		return cr.upload(ctx, extractionRoot, tarFile)
@@ -1098,9 +1081,7 @@ func parseOptionsHostConfig(options string) (*container.HostConfig, error) {
 	return containerConfig.HostConfig, nil
 }
 
-// For Gitea
-// sanitizeConfig remove the invalid configurations from `config` and `hostConfig`
-func (cr *containerReference) sanitizeConfig(ctx context.Context, config *container.Config, hostConfig *container.HostConfig) (*container.Config, *container.HostConfig) {
+func (cr *containerReference) sanitizeConfig(ctx context.Context, hostConfig *container.HostConfig) {
 	logger := common.Logger(ctx)
 	matcher := newValidVolumeMatcher(ctx, cr.input.ValidVolumes)
 
@@ -1149,13 +1130,12 @@ func (cr *containerReference) sanitizeConfig(ctx context.Context, config *contai
 		}
 	}
 	hostConfig.Mounts = sanitizedMounts
-
-	return config, hostConfig
 }
 
 func SanitizeBinds(ctx context.Context, validVolumes, binds []string) []string {
 	cr := &containerReference{input: &NewContainerInput{ValidVolumes: validVolumes}}
-	_, hostConfig := cr.sanitizeConfig(ctx, nil, &container.HostConfig{Binds: binds})
+	hostConfig := &container.HostConfig{Binds: binds}
+	cr.sanitizeConfig(ctx, hostConfig)
 	return hostConfig.Binds
 }
 

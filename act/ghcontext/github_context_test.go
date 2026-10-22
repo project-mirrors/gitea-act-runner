@@ -9,26 +9,16 @@ import (
 	"errors"
 	"testing"
 
-	"gitea.com/gitea/runner/act/common/logging"
-
 	"gitea.dev/actionslib/pkg/model"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestSetRef(t *testing.T) {
-	logging.SetLevel(logging.LevelDebug)
-
 	oldFindGitRef := findGitRef
-	oldFindGitRevision := findGitRevision
 	defer func() { findGitRef = oldFindGitRef }()
-	defer func() { findGitRevision = oldFindGitRevision }()
 
-	findGitRef = func(ctx context.Context, file string) (string, error) {
+	findGitRef = func(_ctx context.Context, _file string) (string, error) {
 		return "refs/heads/master", nil
-	}
-
-	findGitRevision = func(ctx context.Context, file string) (string, string, error) {
-		return "", "1234fakesha", nil
 	}
 
 	tables := []struct {
@@ -114,7 +104,7 @@ func TestSetRef(t *testing.T) {
 	}
 
 	t.Run("no-default-branch", func(t *testing.T) {
-		findGitRef = func(ctx context.Context, file string) (string, error) {
+		findGitRef = func(_ctx context.Context, _file string) (string, error) {
 			return "", errors.New("no default branch")
 		}
 
@@ -130,19 +120,13 @@ func TestSetRef(t *testing.T) {
 }
 
 func TestSetSha(t *testing.T) {
-	logging.SetLevel(logging.LevelDebug)
-
 	oldFindGitRef := findGitRef
 	oldFindGitRevision := findGitRevision
 	defer func() { findGitRef = oldFindGitRef }()
 	defer func() { findGitRevision = oldFindGitRevision }()
 
-	findGitRef = func(ctx context.Context, file string) (string, error) {
-		return "refs/heads/master", nil
-	}
-
-	findGitRevision = func(ctx context.Context, file string) (string, string, error) {
-		return "", "1234fakesha", nil
+	findGitRevision = func(_ctx context.Context, _file string) (string, error) {
+		return "1234fakesha", nil
 	}
 
 	tables := []struct {
@@ -178,11 +162,6 @@ func TestSetSha(t *testing.T) {
 			sha: "deployment-sha",
 		},
 		{
-			eventName: "release",
-			event:     map[string]any{},
-			sha:       "1234fakesha",
-		},
-		{
 			eventName: "push",
 			event: map[string]any{
 				"after":   "push-sha",
@@ -195,18 +174,12 @@ func TestSetSha(t *testing.T) {
 			event:     map[string]any{},
 			sha:       "1234fakesha",
 		},
-		{
-			eventName: "no-event",
-			event:     map[string]any{},
-			sha:       "1234fakesha",
-		},
 	}
 
 	for _, table := range tables {
 		t.Run(table.eventName, func(t *testing.T) {
 			ghc := &model.GithubContext{
 				EventName: table.eventName,
-				BaseRef:   "master",
 				Event:     table.event,
 			}
 
@@ -219,7 +192,7 @@ func TestSetSha(t *testing.T) {
 	t.Run("pinned checkout keeps the first sha and ref", func(t *testing.T) {
 		ctx := WithPinnedCheckout(t.Context())
 		for _, head := range []string{"first", "moved"} {
-			findGitRevision = func(context.Context, string) (string, string, error) { return "", head, nil }
+			findGitRevision = func(context.Context, string) (string, error) { return head, nil }
 			findGitRef = func(context.Context, string) (string, error) { return "refs/heads/" + head, nil }
 			ghc := &model.GithubContext{Event: map[string]any{}}
 			SetSha(ctx, ghc, "/some/dir")

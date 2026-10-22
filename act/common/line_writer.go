@@ -26,9 +26,7 @@ type lineWriter struct {
 
 // NewLineWriter creates a new instance of a line writer
 func NewLineWriter(handlers ...LineHandler) io.Writer {
-	w := new(lineWriter)
-	w.handlers = handlers
-	return w
+	return &lineWriter{handlers: handlers}
 }
 
 // FlushWriter flushes w if it implements Flusher. It is a no-op otherwise, so
@@ -39,24 +37,15 @@ func FlushWriter(w io.Writer) {
 	}
 }
 
-func (lw *lineWriter) Write(p []byte) (n int, err error) {
-	pBuf := bytes.NewBuffer(p)
-	written := 0
-	for {
-		line, err := pBuf.ReadString('\n')
-		w, _ := lw.buffer.WriteString(line)
-		written += w
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return written, err
+func (lw *lineWriter) Write(p []byte) (int, error) {
+	for line := range bytes.SplitAfterSeq(p, []byte{'\n'}) {
+		_, _ = lw.buffer.Write(line)
+		if len(line) > 0 && line[len(line)-1] == '\n' {
+			lw.handleLine(lw.buffer.String())
+			lw.buffer.Reset()
 		}
-		lw.handleLine(lw.buffer.String())
-		lw.buffer.Reset()
 	}
-
-	return written, nil
+	return len(p), nil
 }
 
 // Flush emits any buffered, not-yet-newline-terminated content as a final line.
@@ -72,8 +61,7 @@ func (lw *lineWriter) Flush() {
 
 func (lw *lineWriter) handleLine(line string) {
 	for _, h := range lw.handlers {
-		ok := h(line)
-		if !ok {
+		if !h(line) {
 			break
 		}
 	}

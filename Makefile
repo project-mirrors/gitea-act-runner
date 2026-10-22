@@ -14,7 +14,6 @@ GOFILES := $(shell find . -type f -name "*.go" -o -name "go.mod" ! -name "genera
 DOCKER_IMAGE ?= gitea/runner
 DOCKER_TAG ?= nightly
 DOCKER_REF := $(DOCKER_IMAGE):$(DOCKER_TAG)
-DOCKER_ROOTLESS_REF := $(DOCKER_IMAGE):$(DOCKER_TAG)-dind-rootless
 
 GOLANGCI_LINT_PACKAGE ?= github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 # renovate: datasource=go
 GOVULNCHECK_PACKAGE ?= golang.org/x/vuln/cmd/govulncheck@v1.8.0 # renovate: datasource=go
@@ -34,15 +33,12 @@ endif
 
 ifeq ($(OS), Windows_NT)
 	GOFLAGS := -v -buildmode=exe
-	EXECUTABLE ?= $(EXECUTABLE).exe
 	GO_ENV_WINDOWS := set GOOS=windows&&
 else ifeq ($(OS), Windows)
 	GOFLAGS := -v -buildmode=exe
-	EXECUTABLE ?= $(EXECUTABLE).exe
 	GO_ENV_WINDOWS := set GOOS=windows&&
 else
 	GOFLAGS := -v
-	EXECUTABLE ?= $(EXECUTABLE)
 	GO_ENV_WINDOWS := GOOS=windows
 endif
 

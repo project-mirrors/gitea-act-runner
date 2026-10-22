@@ -16,6 +16,8 @@ import (
 
 type LinuxContainerEnvironmentExtensions struct{}
 
+var windowsPathRegex = regexp.MustCompile(`^([a-zA-Z]):\\(.+)$`)
+
 // Resolves the equivalent host path inside the container
 // This is required for windows and WSL 2 to translate things like C:\Users\Myproject to /mnt/users/Myproject
 // For use in docker volumes and binds
@@ -31,8 +33,6 @@ func (*LinuxContainerEnvironmentExtensions) ToContainerPath(path string) string 
 		return ""
 	}
 
-	// Test if the path is a windows path
-	windowsPathRegex := regexp.MustCompile(`^([a-zA-Z]):\\(.+)$`)
 	windowsPathComponents := windowsPathRegex.FindStringSubmatch(abspath)
 
 	// Return as-is if no match
@@ -43,11 +43,7 @@ func (*LinuxContainerEnvironmentExtensions) ToContainerPath(path string) string 
 	// Convert to WSL2-compatible path if it is a windows path
 	// NOTE: Cannot use filepath because it will use the wrong path separators assuming we want the path to be windows
 	// based if running on Windows, and because we are feeding this to Docker, GoLang auto-path-translate doesn't work.
-	driveLetter := strings.ToLower(windowsPathComponents[1])
-	translatedPath := strings.ReplaceAll(windowsPathComponents[2], `\`, `/`)
-	// Should make something like /mnt/c/Users/person/My Folder/MyActProject
-	result := strings.Join([]string{"/mnt", driveLetter, translatedPath}, `/`)
-	return result
+	return "/mnt/" + strings.ToLower(windowsPathComponents[1]) + "/" + strings.ReplaceAll(windowsPathComponents[2], `\`, `/`)
 }
 
 func (*LinuxContainerEnvironmentExtensions) GetActPath() string {

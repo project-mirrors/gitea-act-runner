@@ -364,6 +364,7 @@ func TestNewJobExecutor(t *testing.T) {
 		output        string
 		startError    error
 		cancelOnStart bool
+		timeout       bool
 	}{
 		{
 			name:          "zeroSteps",
@@ -514,17 +515,28 @@ func TestNewJobExecutor(t *testing.T) {
 			result:        "cancelled",
 			cancelOnStart: true,
 		},
-	}
-
-	contains := func(needle string, haystack []string) bool {
-		return slices.Contains(haystack, needle)
+		{
+			name:          "post steps run after timeout",
+			steps:         []*model.Step{{ID: "1"}},
+			preSteps:      []bool{false},
+			postSteps:     []bool{true},
+			executedSteps: []string{"startContainer", "step1", "post1", "interpolateOutputs", "stopContainer", "closeContainer"},
+			result:        "failure",
+			timeout:       true,
+		},
 	}
 
 	for _, tt := range table {
 		t.Run(tt.name, func(t *testing.T) {
-			fmt.Printf("::group::%s\n", tt.name) //nolint:forbidigo // pre-existing issue from nektos/act
-
-			ctx, cancel := context.WithCancel(common.WithJobErrorContainer(t.Context()))
+			ctx := common.WithJobErrorContainer(t.Context())
+			cancel := func() {}
+			var expire func()
+			if tt.timeout {
+				deadline := newControllableDeadlineContext(ctx)
+				ctx, expire = deadline, deadline.expire
+			} else {
+				ctx, cancel = context.WithCancel(ctx)
+			}
 			defer cancel()
 			jim := &jobInfoMock{}
 			sfm := &stepFactoryMock{}
@@ -563,7 +575,7 @@ func TestNewJobExecutor(t *testing.T) {
 
 				sfm.On("newStep", stepModel, rc).Return(sm, nil)
 
-				sm.On("pre").Return(func(ctx context.Context) error {
+				sm.On("pre").Return(func(_ctx context.Context) error {
 					if tt.preSteps[i] {
 						executorOrder = append(executorOrder, "pre"+stepModel.ID)
 					}
@@ -572,6 +584,10 @@ func TestNewJobExecutor(t *testing.T) {
 
 				sm.On("main").Return(func(ctx context.Context) error {
 					executorOrder = append(executorOrder, "step"+stepModel.ID)
+					if tt.timeout {
+						expire()
+						return ctx.Err()
+					}
 					if tt.hasError {
 						return errors.New("error")
 					}
@@ -581,6 +597,9 @@ func TestNewJobExecutor(t *testing.T) {
 				sm.On("post").Return(func(ctx context.Context) error {
 					if tt.postSteps[i] {
 						executorOrder = append(executorOrder, "post"+stepModel.ID)
+					}
+					if tt.timeout {
+						require.NoError(t, ctx.Err(), "post step must run against a fresh, non-expired context")
 					}
 					return nil
 				})
@@ -599,7 +618,7 @@ func TestNewJobExecutor(t *testing.T) {
 					return nil
 				})
 
-				if contains("stopContainer", tt.executedSteps) {
+				if slices.Contains(tt.executedSteps, "stopContainer") {
 					jim.On("stopContainer").Return(func(ctx context.Context) error {
 						executorOrder = append(executorOrder, "stopContainer")
 						require.NoError(t, ctx.Err())
@@ -613,7 +632,7 @@ func TestNewJobExecutor(t *testing.T) {
 			}
 
 			if len(tt.steps) > 0 {
-				jim.On("closeContainer").Return(func(ctx context.Context) error {
+				jim.On("closeContainer").Return(func(_ctx context.Context) error {
 					executorOrder = append(executorOrder, "closeContainer")
 					return nil
 				})
@@ -634,8 +653,6 @@ func TestNewJobExecutor(t *testing.T) {
 
 			jim.AssertExpectations(t)
 			sfm.AssertExpectations(t)
-
-			fmt.Println("::endgroup::") //nolint:forbidigo // pre-existing issue from nektos/act
 		})
 	}
 }
@@ -666,123 +683,31 @@ func (ctx *controllableDeadlineContext) expire() {
 	close(ctx.done)
 }
 
-// TestNewJobExecutorRunsPostStepsAfterTimeout guards the timeout-minutes cleanup
-// path: when a job exceeds its timeout the job context is DeadlineExceeded, but
-// the post steps (cleanup hooks like actions/checkout post and cache save) must
-// still run against a fresh, non-expired context, and the job must still be
-// reported as failed.
-func TestNewJobExecutorRunsPostStepsAfterTimeout(t *testing.T) {
-	ctx := newControllableDeadlineContext(common.WithJobErrorContainer(t.Context()))
-
-	jim := &jobInfoMock{}
-	sfm := &stepFactoryMock{}
-	rc := &RunContext{
-		JobContainer: &jobContainerMock{},
-		Run: &model.Run{
-			JobID: "test",
-			Workflow: &model.Workflow{
-				Jobs: map[string]*model.Job{
-					"test": {},
-				},
-			},
-		},
-		Config: &Config{},
-	}
-	rc.ExprEval = rc.NewExpressionEvaluator(ctx)
-
-	stepModel := &model.Step{ID: "1"}
-	jim.On("steps").Return([]*model.Step{stepModel})
-	jim.On("matrix").Return(map[string]any{})
-	jim.On("startContainer").Return(func(ctx context.Context) error { return nil })
-	jim.On("interpolateOutputs").Return(func(ctx context.Context) error { return nil })
-	jim.On("closeContainer").Return(func(ctx context.Context) error { return nil })
-	// The job timed out, so it must be reported as failed and still cleaned up.
-	jim.On("stopContainer").Return(func(context.Context) error { return nil })
-	jim.On("result", "failure")
-
-	sm := &stepMock{}
-	sfm.On("newStep", stepModel, rc).Return(sm, nil)
-	sm.On("pre").Return(func(ctx context.Context) error { return nil })
-	sm.On("main").Return(func(stepCtx context.Context) error {
-		ctx.expire()
-		return stepCtx.Err()
-	})
-
-	var postRan bool
-	var postCtxErr error
-	sm.On("post").Return(func(ctx context.Context) error {
-		postRan = true
-		postCtxErr = ctx.Err()
-		return nil
-	})
-
-	executor := newJobExecutor(jim, sfm, rc)
-	// The executor itself returns nil on timeout: the failure is surfaced through
-	// the job result ("failure", asserted via the result mock below), not the
-	// return value.
-	require.NoError(t, executor(ctx))
-
-	assert.True(t, postRan, "post step must run after a job timeout")
-	require.NoError(t, postCtxErr, "post step must run against a fresh, non-expired context")
-
-	jim.AssertExpectations(t)
-	sfm.AssertExpectations(t)
-	sm.AssertExpectations(t)
-}
-
-// TestSetJobResultMatrixContinueOnError exercises the parallel-matrix path
-// end-to-end: two combinations share one *model.Job and continue-on-error is
-// keyed on matrix.experimental, so one combination tolerates its failure and the
-// other does not. The job is reported as continue-on-error only when EVERY failing
-// combination was tolerated; a single firm failure makes the whole job firm, and
-// handleFailure then fails the run.
 func TestSetJobResultMatrixContinueOnError(t *testing.T) {
-	const jobYAML = "continue-on-error: ${{ matrix.experimental }}\nruns-on: ubuntu-latest"
-
-	newSharedJob := func(t *testing.T) (*model.Job, *model.Workflow) {
-		t.Helper()
-		var job *model.Job
-		require.NoError(t, yaml.Unmarshal([]byte(jobYAML), &job))
-		return job, &model.Workflow{
-			Name: "workflow1",
-			Jobs: map[string]*model.Job{"job1": job},
-		}
-	}
-
-	planFor := func(wf *model.Workflow) *model.Plan {
-		return &model.Plan{Stages: []*model.Stage{{Runs: []*model.Run{{Workflow: wf, JobID: "job1"}}}}}
-	}
-
 	ctx := t.Context()
+	for name, tolerated := range map[string]bool{
+		"one tolerated and one firm failure fails the run": false,
+		"all tolerated failures do not fail the run":       true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var job *model.Job
+			require.NoError(t, yaml.Unmarshal([]byte("continue-on-error: ${{ matrix.experimental }}\nruns-on: ubuntu-latest"), &job))
+			workflow := &model.Workflow{Name: "workflow1", Jobs: map[string]*model.Job{"job1": job}}
+			for _, experimental := range []bool{true, tolerated} {
+				rc := newTestRC(workflow, map[string]any{"experimental": experimental})
+				setJobResult(ctx, rc, rc, false)
+			}
 
-	// fail drives a single matrix combination through the failure path; each
-	// RunContext is its own jobInfo (rc implements jobInfo) and shares the job.
-	fail := func(wf *model.Workflow, experimental bool) {
-		rc := newTestRC(wf, map[string]any{"experimental": experimental})
-		setJobResult(ctx, rc, rc, false)
+			assert.Equal(t, "failure", job.Result)
+			assert.Equal(t, tolerated, job.ContinueOnError)
+			err := handleFailure(&model.Plan{Stages: []*model.Stage{{Runs: []*model.Run{{Workflow: workflow, JobID: "job1"}}}}})(ctx)
+			if tolerated {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
 	}
-
-	t.Run("one tolerated and one firm failure fails the run", func(t *testing.T) {
-		job, wf := newSharedJob(t)
-		// Order is intentional: the tolerated combination finishes first, then the
-		// firm one. The firm-failure latch must still win regardless of order.
-		fail(wf, true)
-		fail(wf, false)
-
-		assert.Equal(t, "failure", job.Result)
-		assert.False(t, job.ContinueOnError, "a single firm failure must make the whole job firm")
-		assert.Error(t, handleFailure(planFor(wf))(ctx))
-	})
-
-	t.Run("all tolerated failures do not fail the run", func(t *testing.T) {
-		job, wf := newSharedJob(t)
-		fail(wf, true)
-		fail(wf, true)
-
-		assert.Equal(t, "failure", job.Result)
-		assert.True(t, job.ContinueOnError, "every failing combination was tolerated")
-		assert.NoError(t, handleFailure(planFor(wf))(ctx))
-	})
 }
 
 func TestHasJobSummaryCapability(t *testing.T) {
@@ -969,44 +894,34 @@ func TestTryUploadJobSummaryUploadsEachStepIndependentlyWithInstanceTransport(t 
 	cm.AssertExpectations(t)
 }
 
-func TestTryUploadJobSummaryRequiresExactCapability(t *testing.T) {
-	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer server.Close()
+func TestTryUploadJobSummarySkipsUnsupportedUploads(t *testing.T) {
+	for name, tt := range map[string]struct {
+		capabilities string
+		runtimeToken string
+	}{
+		"requires exact capability": {"not-job-summary,job-summary-v2", fakeRuntimeToken(34)},
+		"requires job ID":           {"job-summary", "not-a-jwt"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _r *http.Request) {
+				requests++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
 
-	rc := newJobSummaryRC(map[string]string{
-		"GITEA_ACTIONS_CAPABILITIES": "not-job-summary,job-summary-v2",
-		"ACTIONS_RUNTIME_URL":        server.URL,
-		"ACTIONS_RUNTIME_TOKEN":      fakeRuntimeToken(34),
-		"GITEA_RUN_ID":               "12",
-	}, &containerMock{}, 1)
+			rc := newJobSummaryRC(map[string]string{
+				"GITEA_ACTIONS_CAPABILITIES": tt.capabilities,
+				"ACTIONS_RUNTIME_URL":        server.URL,
+				"ACTIONS_RUNTIME_TOKEN":      tt.runtimeToken,
+				"GITEA_RUN_ID":               "12",
+			}, &containerMock{}, 1)
 
-	tryUploadJobSummary(t.Context(), rc)
+			tryUploadJobSummary(t.Context(), rc)
 
-	assert.Equal(t, 0, requests)
-}
-
-func TestTryUploadJobSummarySkipsWhenJobIDMissingFromToken(t *testing.T) {
-	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer server.Close()
-
-	rc := newJobSummaryRC(map[string]string{
-		"GITEA_ACTIONS_CAPABILITIES": "job-summary",
-		"ACTIONS_RUNTIME_URL":        server.URL,
-		"ACTIONS_RUNTIME_TOKEN":      "not-a-jwt",
-		"GITEA_RUN_ID":               "12",
-	}, &containerMock{}, 1)
-
-	tryUploadJobSummary(t.Context(), rc)
-
-	assert.Equal(t, 0, requests)
+			assert.Zero(t, requests)
+		})
+	}
 }
 
 func TestExtractJobIDFromRuntimeToken(t *testing.T) {
@@ -1035,47 +950,39 @@ func TestReadSingleFileFromContainerArchiveFindsMatchingRegularFile(t *testing.T
 	cm.AssertExpectations(t)
 }
 
-func TestReadSingleFileFromContainerArchiveTruncatesWhenTooLarge(t *testing.T) {
-	logger, hook := logtest.NewLogger()
-	ctx := common.WithLogger(t.Context(), logger)
-	cm := &containerMock{}
-	content := strings.Repeat("a", 300)
-	cm.On("GetContainerArchive", ctx, "/var/run/act/workflow/SUMMARY.md").Return(
-		io.NopCloser(bytes.NewReader(tarArchive(t, tarEntry{name: "SUMMARY.md", body: content}))),
-		nil,
-	).Once()
+func TestReadSingleFileFromContainerArchiveSizeLimit(t *testing.T) {
+	for name, tt := range map[string]struct {
+		content  string
+		maxBytes int64
+		want     string
+	}{
+		"truncates oversized summary": {strings.Repeat("a", 300), 200, strings.Repeat("a", 200-len(jobSummaryTruncationMarker)) + jobSummaryTruncationMarker},
+		"keeps exact limit":           {"abc", 3, "abc"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			logger, hook := logtest.NewLogger()
+			ctx := common.WithLogger(t.Context(), logger)
+			cm := &containerMock{}
+			cm.On("GetContainerArchive", ctx, "/var/run/act/workflow/SUMMARY.md").Return(
+				io.NopCloser(bytes.NewReader(tarArchive(t, tarEntry{name: "SUMMARY.md", body: tt.content}))),
+				nil,
+			).Once()
 
-	const maxBytes = 200
-	body, ok := readSingleFileFromContainerArchive(ctx, cm, "/var/run/act/workflow/SUMMARY.md", maxBytes)
+			body, ok := readSingleFileFromContainerArchive(ctx, cm, "/var/run/act/workflow/SUMMARY.md", tt.maxBytes)
 
-	// Oversized summaries are truncated to the limit (reserving room for the marker)
-	// rather than dropped entirely, and the truncation marker is appended.
-	assert.True(t, ok)
-	assert.LessOrEqual(t, len(body), maxBytes)
-	keep := maxBytes - len(jobSummaryTruncationMarker)
-	assert.Equal(t, []byte(content[:keep]+jobSummaryTruncationMarker), body)
-	if assert.Len(t, hook.AllRecords(), 1) {
-		assert.Contains(t, hook.AllRecords()[0].Message, "job summary truncated")
+			assert.True(t, ok)
+			assert.Equal(t, []byte(tt.want), body)
+			assert.LessOrEqual(t, int64(len(body)), tt.maxBytes)
+			if int64(len(tt.content)) > tt.maxBytes {
+				if assert.Len(t, hook.AllRecords(), 1) {
+					assert.Contains(t, hook.LastRecord().Message, "job summary truncated")
+				}
+			} else {
+				assert.Empty(t, hook.AllRecords())
+			}
+			cm.AssertExpectations(t)
+		})
 	}
-	cm.AssertExpectations(t)
-}
-
-func TestReadSingleFileFromContainerArchiveKeepsExactLimitWithoutWarning(t *testing.T) {
-	logger, hook := logtest.NewLogger()
-	ctx := common.WithLogger(t.Context(), logger)
-	cm := &containerMock{}
-	cm.On("GetContainerArchive", ctx, "/var/run/act/workflow/SUMMARY.md").Return(
-		io.NopCloser(bytes.NewReader(tarArchive(t, tarEntry{name: "SUMMARY.md", body: "abc"}))),
-		nil,
-	).Once()
-
-	body, ok := readSingleFileFromContainerArchive(ctx, cm, "/var/run/act/workflow/SUMMARY.md", 3)
-
-	// A summary that is exactly at the limit is kept whole and not flagged as truncated.
-	assert.True(t, ok)
-	assert.Equal(t, []byte("abc"), body)
-	assert.Empty(t, hook.AllRecords())
-	cm.AssertExpectations(t)
 }
 
 type tarEntry struct {
@@ -1181,34 +1088,24 @@ func TestEvaluateJobContinueOnError(t *testing.T) {
 }
 
 func TestJobSetContinueOnError(t *testing.T) {
-	t.Run("first call true", func(t *testing.T) {
-		j := &model.Job{}
-		j.SetContinueOnError(true)
-		assert.True(t, j.ContinueOnError)
-	})
-	t.Run("first call false", func(t *testing.T) {
-		j := &model.Job{}
-		j.SetContinueOnError(false)
-		assert.False(t, j.ContinueOnError)
-	})
-	t.Run("true then false locks to false", func(t *testing.T) {
-		j := &model.Job{}
-		j.SetContinueOnError(true)
-		j.SetContinueOnError(false)
-		assert.False(t, j.ContinueOnError)
-	})
-	t.Run("false then true stays false", func(t *testing.T) {
-		j := &model.Job{}
-		j.SetContinueOnError(false)
-		j.SetContinueOnError(true)
-		assert.False(t, j.ContinueOnError)
-	})
-	t.Run("true then true stays true", func(t *testing.T) {
-		j := &model.Job{}
-		j.SetContinueOnError(true)
-		j.SetContinueOnError(true)
-		assert.True(t, j.ContinueOnError)
-	})
+	for name, tt := range map[string]struct {
+		values []bool
+		want   bool
+	}{
+		"first call true":                {[]bool{true}, true},
+		"first call false":               {[]bool{false}, false},
+		"true then false locks to false": {[]bool{true, false}, false},
+		"false then true stays false":    {[]bool{false, true}, false},
+		"true then true stays true":      {[]bool{true, true}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			job := &model.Job{}
+			for _, value := range tt.values {
+				job.SetContinueOnError(value)
+			}
+			assert.Equal(t, tt.want, job.ContinueOnError)
+		})
+	}
 }
 
 func TestTryUploadJobSummaryMasksSecrets(t *testing.T) {

@@ -4,7 +4,6 @@
 package run
 
 import (
-	"bytes"
 	"encoding/json/v2"
 	"fmt"
 	"io"
@@ -22,53 +21,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func emptyCfg() *config.Config { return &config.Config{} }
-
 func TestRunner_registerCacheForTask_NoOps(t *testing.T) {
 	for token, handler := range map[string]*artifactcache.Handler{"tok": nil, "": {}} {
-		r := &Runner{cfg: emptyCfg(), cacheHandler: handler}
+		r := &Runner{cacheHandler: handler}
 		unregister, _ := r.registerCacheForTask(token, "owner/repo", "", nil)
 		require.NotNil(t, unregister, token)
 		unregister()
 	}
 }
 
-// Locks in @actions/cache's wire protocol: bearer on reserve/upload/commit
-// /find, no auth on the signed archiveLocation download.
 func TestRunner_CacheFullFlow_MatchesToolkit(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "artifactcache")
 	handler, err := artifactcache.StartHandler(artifactcache.Options{Dir: dir, OutboundIP: "127.0.0.1"})
 	require.NoError(t, err)
 	defer handler.Close()
 
-	r := &Runner{cfg: emptyCfg(), cacheHandler: handler, envs: map[string]string{"ACTIONS_RESULTS_URL": "https://gitea.example"}}
+	r := &Runner{cfg: &config.Config{}, cacheHandler: handler, envs: map[string]string{"ACTIONS_RESULTS_URL": "https://gitea.example"}}
 	const publicURL = "http://a1b2c3d4e5f6:8088"
 	token := "full-flow-token"
 	unregister, resultsURL := r.registerCacheForTask(token, "owner/repo", publicURL, nil)
 	assert.Equal(t, publicURL, resultsURL)
 
 	base := handler.ExternalURL() + "/_apis/artifactcache"
-	do := func(method, url, contentType, contentRange, body string) *http.Response {
-		req, err := http.NewRequest(method, url, strings.NewReader(body))
-		require.NoError(t, err)
-		req.Header.Set("Authorization", "Bearer "+token)
-		if contentType != "" {
-			req.Header.Set("Content-Type", contentType)
-		}
-		if contentRange != "" {
-			req.Header.Set("Content-Range", contentRange)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		require.NoError(t, err)
-		return resp
-	}
 
 	key := "toolkit-flow"
 	version := "c19da02a2bd7e77277f1ac29ab45c09b7d46a4ee758284e26bb3045ad11d9d20"
 	body := `hello-cache-body`
 
-	// reserve
-	resp := do(http.MethodPost, base+"/caches", "application/json", "",
+	resp := cacheRequest(t, token, http.MethodPost, base+"/caches", "application/json", "",
 		fmt.Sprintf(`{"key":"%s","version":"%s","cacheSize":%d}`, key, version, len(body)))
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	var reserved struct {
@@ -77,19 +57,16 @@ func TestRunner_CacheFullFlow_MatchesToolkit(t *testing.T) {
 	require.NoError(t, decodeJSON(resp, &reserved))
 	require.NotZero(t, reserved.CacheID)
 
-	// upload
-	resp = do(http.MethodPatch, fmt.Sprintf("%s/caches/%d", base, reserved.CacheID),
+	resp = cacheRequest(t, token, http.MethodPatch, fmt.Sprintf("%s/caches/%d", base, reserved.CacheID),
 		"application/octet-stream", fmt.Sprintf("bytes 0-%d/*", len(body)-1), body)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 
-	// commit
-	resp = do(http.MethodPost, fmt.Sprintf("%s/caches/%d", base, reserved.CacheID), "", "", "")
+	resp = cacheRequest(t, token, http.MethodPost, fmt.Sprintf("%s/caches/%d", base, reserved.CacheID), "", "", "")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 
-	// find — @actions/cache always sends comma-separated keys here
-	resp = do(http.MethodGet,
+	resp = cacheRequest(t, token, http.MethodGet,
 		fmt.Sprintf("%s/cache?keys=%s,fallback&version=%s", base, key, version), "", "", "")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	var hit struct {
@@ -100,8 +77,6 @@ func TestRunner_CacheFullFlow_MatchesToolkit(t *testing.T) {
 	require.Equal(t, key, hit.CacheKey)
 	require.True(t, strings.HasPrefix(hit.ArchiveLocation, publicURL+"/"), hit.ArchiveLocation)
 
-	// download — toolkit does NOT attach Authorization here; the signature
-	// in the URL must be enough.
 	dl, err := http.Get(strings.Replace(hit.ArchiveLocation, publicURL, handler.ExternalURL(), 1))
 	require.NoError(t, err)
 	defer dl.Body.Close()
@@ -111,9 +86,25 @@ func TestRunner_CacheFullFlow_MatchesToolkit(t *testing.T) {
 	assert.Equal(t, body, string(got[:n]))
 
 	unregister()
-	resp = do(http.MethodGet, fmt.Sprintf("%s/cache?keys=%s&version=%s", base, key, version), "", "", "")
+	resp = cacheRequest(t, token, http.MethodGet, fmt.Sprintf("%s/cache?keys=%s&version=%s", base, key, version), "", "", "")
 	resp.Body.Close()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func cacheRequest(t *testing.T, token, method, url, contentType, contentRange, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+token)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if contentRange != "" {
+		req.Header.Set("Content-Range", contentRange)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	return resp
 }
 
 func decodeJSON(resp *http.Response, v any) error {
@@ -121,8 +112,6 @@ func decodeJSON(resp *http.Response, v any) error {
 	return json.UnmarshalRead(resp.Body, v)
 }
 
-// End-to-end through a runner to a remote cache-server: token unknown → 401, register →
-// reserve/upload/commit/find/download all OK, revoke → 401 again.
 func TestRunner_ExternalCacheServer_RegisterRevoke(t *testing.T) {
 	const secret = "shared-secret-for-tests"
 	remote, err := artifactcache.StartHandler(artifactcache.Options{Dir: t.TempDir(), OutboundIP: "127.0.0.1", InternalSecret: secret})
@@ -154,10 +143,7 @@ func TestRunner_ExternalCacheServer_RegisterRevoke(t *testing.T) {
 	repo := "owner/repoX"
 	base := r.envs["ACTIONS_CACHE_URL"] + "_apis/artifactcache"
 	probe := func() int {
-		req, _ := http.NewRequest(http.MethodGet, base+"/cache?keys=k&version=v", nil)
-		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := http.DefaultClient.Do(req)
-		require.NoError(t, err)
+		resp := cacheRequest(t, token, http.MethodGet, base+"/cache?keys=k&version=v", "", "", "")
 		resp.Body.Close()
 		return resp.StatusCode
 	}
@@ -181,15 +167,9 @@ func TestRunner_ExternalCacheServer_RegisterRevoke(t *testing.T) {
 	require.NoError(t, decodeJSON(forwarded, &artifactResult))
 	assert.True(t, artifactResult["ok"])
 
-	// Full reserve→upload→commit→find→download cycle, identical to what
-	// @actions/cache does, through the runner to the remote server.
 	body := []byte("payload-from-task")
 	reserveBody, _ := json.Marshal(&artifactcache.Request{Key: "ext-key", Version: "v", Size: int64(len(body))})
-	req, _ := http.NewRequest(http.MethodPost, base+"/caches", bytes.NewReader(reserveBody))
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
+	resp := cacheRequest(t, token, http.MethodPost, base+"/caches", "application/json", "", string(reserveBody))
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	var reserved struct {
 		CacheID uint64 `json:"cacheId"`
@@ -197,25 +177,16 @@ func TestRunner_ExternalCacheServer_RegisterRevoke(t *testing.T) {
 	require.NoError(t, decodeJSON(resp, &reserved))
 	require.NotZero(t, reserved.CacheID)
 
-	req, _ = http.NewRequest(http.MethodPatch, fmt.Sprintf("%s/caches/%d", base, reserved.CacheID), bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Range", fmt.Sprintf("bytes 0-%d/*", len(body)-1))
-	resp, err = http.DefaultClient.Do(req)
-	require.NoError(t, err)
+	resp = cacheRequest(t, token, http.MethodPatch, fmt.Sprintf("%s/caches/%d", base, reserved.CacheID),
+		"", fmt.Sprintf("bytes 0-%d/*", len(body)-1), string(body))
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("%s/caches/%d", base, reserved.CacheID), nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err = http.DefaultClient.Do(req)
-	require.NoError(t, err)
+	resp = cacheRequest(t, token, http.MethodPost, fmt.Sprintf("%s/caches/%d", base, reserved.CacheID), "", "", "")
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	req, _ = http.NewRequest(http.MethodGet, base+"/cache?keys=ext-key&version=v", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err = http.DefaultClient.Do(req)
-	require.NoError(t, err)
+	resp = cacheRequest(t, token, http.MethodGet, base+"/cache?keys=ext-key&version=v", "", "", "")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	var hit struct {
 		ArchiveLocation string `json:"archiveLocation"`

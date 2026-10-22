@@ -8,17 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
-
-// dirContainsPath reports whether target is dir or lives beneath it,
-// case-insensitively, so a name-prefix sibling (job1 vs job10) is not a match.
-func dirContainsPath(dir, target string) bool {
-	return pathWithin(filepath.Clean(dir), filepath.Clean(target), true)
-}
 
 // KillProcessesWithCWDUnder terminates every process in the runner's session
 // whose cwd is one of dirs or below, catching leftovers the path scan misses

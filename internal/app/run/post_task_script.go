@@ -6,7 +6,6 @@ package run
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os/exec"
 	"strconv"
@@ -69,15 +68,9 @@ func (r *Runner) runPostTaskScript(ctx context.Context, reporter *report.Reporte
 	// copiers have finished (cmd.Wait, bounded by WaitDelay above, guarantees it).
 	common.FlushWriter(stdout)
 	common.FlushWriter(stderr)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			logging.Warnf("post-task script %q for task %d: %v", script, task.Id, err)
-			return
-		}
-		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-			logging.Warnf("post-task script %q for task %d exited with code %d", script, task.Id, exitErr.ExitCode())
-			return
-		}
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		logging.Warnf("post-task script %q for task %d exited with code %d", script, task.Id, exitErr.ExitCode())
+	} else if err != nil {
 		logging.Warnf("post-task script %q for task %d: %v", script, task.Id, err)
 	}
 }
@@ -111,8 +104,8 @@ func (r *Runner) postTaskScriptEnv(reporter *report.Reporter, task *runnerv1.Tas
 
 func envListFromMap(env map[string]string) []string {
 	envList := make([]string, 0, len(env))
-	for k, v := range env {
-		envList = append(envList, fmt.Sprintf("%s=%s", k, v))
+	for key, value := range env {
+		envList = append(envList, key+"="+value)
 	}
 	return envList
 }

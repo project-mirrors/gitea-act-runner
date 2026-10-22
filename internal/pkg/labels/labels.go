@@ -5,6 +5,7 @@ package labels
 
 import (
 	"errors"
+	"slices"
 	"strings"
 )
 
@@ -31,17 +32,10 @@ func Parse(str string) (*Label, error) {
 		return nil, errors.New("empty label")
 	}
 
-	splits := strings.SplitN(str, ":", 3)
-	label := &Label{
-		Name:   splits[0],
-		Schema: SchemeHost,
-		Arg:    "",
-	}
-	if len(splits) >= 2 {
-		label.Schema = splits[1]
-	}
-	if len(splits) >= 3 {
-		label.Arg = splits[2]
+	name, remainder, hasSchema := strings.Cut(str, ":")
+	label := &Label{Name: name, Schema: SchemeHost}
+	if hasSchema {
+		label.Schema, label.Arg, _ = strings.Cut(remainder, ":")
 	}
 	kubernetes := label.Schema == SchemeKubernetes && strings.HasPrefix(label.Arg, "//") && len(label.Arg) > 2
 	if label.Schema != SchemeHost && label.Schema != SchemeDocker && !kubernetes {
@@ -58,12 +52,7 @@ func Parse(str string) (*Label, error) {
 type Labels []*Label
 
 func (l Labels) RequireDocker() bool {
-	for _, label := range l {
-		if label.Schema == SchemeDocker {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(l, func(label *Label) bool { return label.Schema == SchemeDocker })
 }
 
 // PickPlatform returns the platform of the first runs-on entry this runner has a label for, or "".

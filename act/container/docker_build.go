@@ -46,9 +46,8 @@ func NewDockerBuildExecutor(input NewDockerBuildExecutorInput) common.Executor {
 
 		logger.Debugf("Building image from '%v'", input.ContextDir)
 
-		tags := []string{input.ImageTag}
 		options := client.ImageBuildOptions{
-			Tags:        tags,
+			Tags:        []string{input.ImageTag},
 			Remove:      true,
 			AuthConfigs: LoadDockerAuthConfigs(ctx),
 			Dockerfile:  input.Dockerfile,
@@ -76,11 +75,7 @@ func NewDockerBuildExecutor(input NewDockerBuildExecutorInput) common.Executor {
 		logger.Debugf("Creating image from context dir '%s' with tag '%s' and platform '%s'", input.ContextDir, input.ImageTag, input.Platform)
 		resp, err := cli.ImageBuild(ctx, buildContext, options)
 
-		err = logDockerResponse(logger, resp.Body, err != nil)
-		if err != nil {
-			return err
-		}
-		return nil
+		return logDockerResponse(logger, resp.Body, err != nil)
 	}
 }
 

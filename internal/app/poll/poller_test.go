@@ -22,14 +22,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPoller_WorkerStateCounters verifies that workerState correctly tracks
-// consecutive empty responses independently per state instance, and that
-// fetchTask increments only the relevant counter.
 func TestPoller_WorkerStateCounters(t *testing.T) {
 	client := mocks.NewClient(t)
 	client.On("FetchTask", mock.Anything, mock.Anything).Return(
 		func(_ context.Context, _ *runnerv1.FetchTaskRequest) (*runnerv1.FetchTaskResponse, error) {
-			// Always return an empty response.
 			return &runnerv1.FetchTaskResponse{}, nil
 		},
 	)
@@ -42,24 +38,17 @@ func TestPoller_WorkerStateCounters(t *testing.T) {
 	s1 := &workerState{}
 	s2 := &workerState{}
 
-	// Each worker independently observes one empty response.
-	_, ok := p.fetchTask(ctx, s1)
-	require.False(t, ok)
-	_, ok = p.fetchTask(ctx, s2)
-	require.False(t, ok)
+	require.Nil(t, p.fetchTask(ctx, s1))
+	require.Nil(t, p.fetchTask(ctx, s2))
 
 	assert.Equal(t, int64(1), s1.consecutiveEmpty, "worker 1 should only count its own empty response")
 	assert.Equal(t, int64(1), s2.consecutiveEmpty, "worker 2 should only count its own empty response")
 
-	// Worker 1 sees a second empty; worker 2 stays at 1.
-	_, ok = p.fetchTask(ctx, s1)
-	require.False(t, ok)
+	require.Nil(t, p.fetchTask(ctx, s1))
 	assert.Equal(t, int64(2), s1.consecutiveEmpty)
 	assert.Equal(t, int64(1), s2.consecutiveEmpty, "worker 2's counter must not be affected by worker 1's empty fetches")
 }
 
-// TestPoller_FetchErrorIncrementsErrorsOnly verifies that a fetch error
-// increments only the per-worker error counter, not the empty counter.
 func TestPoller_FetchErrorIncrementsErrorsOnly(t *testing.T) {
 	client := mocks.NewClient(t)
 	client.On("FetchTask", mock.Anything, mock.Anything).Return(nil, errors.New("network unreachable"))
@@ -69,15 +58,11 @@ func TestPoller_FetchErrorIncrementsErrorsOnly(t *testing.T) {
 	p := &Poller{client: client, cfg: cfg}
 
 	s := &workerState{}
-	_, ok := p.fetchTask(t.Context(), s)
-	require.False(t, ok)
+	require.Nil(t, p.fetchTask(t.Context(), s))
 	assert.Equal(t, int64(1), s.consecutiveErrors)
 	assert.Equal(t, int64(0), s.consecutiveEmpty)
 }
 
-// A deadline is the idle path once the server holds the request open, and a
-// symptom before then, so it must neither reset the error count nor assert that
-// the server is reachable.
 func TestPoller_FetchTimeoutIsNoSignal(t *testing.T) {
 	client := mocks.NewClient(t)
 	client.On("FetchTask", mock.Anything, mock.Anything).Return(nil, context.DeadlineExceeded)
@@ -90,20 +75,15 @@ func TestPoller_FetchTimeoutIsNoSignal(t *testing.T) {
 	hook := logtest.SetDefault(t)
 
 	s := &workerState{consecutiveErrors: 2}
-	_, ok := p.fetchTask(t.Context(), s)
-	require.False(t, ok)
+	require.Nil(t, p.fetchTask(t.Context(), s))
 	assert.Equal(t, int64(2), s.consecutiveErrors)
 	assert.Equal(t, int64(1), s.consecutiveEmpty)
 	assert.True(t, p.lastPollFailed.Load(), "a timeout must not clear a known failure")
 
-	// An idle runner against a server holding the request open must not flood.
-	_, _ = p.fetchTask(t.Context(), s)
+	p.fetchTask(t.Context(), s)
 	assert.Len(t, hook.AllRecords(), 1)
 }
 
-// TestPoller_FetchUnauthenticatedStopsPolling verifies that an Unauthenticated
-// response marks the runner as unregistered and cancels the polling context so
-// the daemon can exit instead of retrying forever.
 func TestPoller_FetchUnauthenticatedStopsPolling(t *testing.T) {
 	for name, tc := range map[string]struct {
 		fetchErr error
@@ -120,8 +100,7 @@ func TestPoller_FetchUnauthenticatedStopsPolling(t *testing.T) {
 			require.NoError(t, err)
 			p := New(cfg, client, nil)
 			s := &workerState{}
-			_, ok := p.fetchTask(t.Context(), s)
-			require.False(t, ok)
+			require.Nil(t, p.fetchTask(t.Context(), s))
 
 			assert.True(t, p.Unregistered(), "runner should be marked unregistered")
 			assert.Equal(t, tc.rejected, p.RegistrationRejected())
@@ -135,8 +114,6 @@ func TestPoller_FetchUnauthenticatedStopsPolling(t *testing.T) {
 	}
 }
 
-// TestPoller_CalculateInterval verifies the exponential backoff math is
-// correctly driven by the workerState counters.
 func TestPoller_CalculateInterval(t *testing.T) {
 	cfg, err := config.LoadDefault("")
 	require.NoError(t, err)
@@ -165,7 +142,6 @@ func TestPoller_CalculateInterval(t *testing.T) {
 	}
 }
 
-// atomicMax atomically updates target to max(target, val).
 func atomicMax(target *atomic.Int64, val int64) {
 	for {
 		old := target.Load()
@@ -205,7 +181,6 @@ func TestPollerReady(t *testing.T) {
 	require.NoError(t, err)
 	poller := New(cfg, nil, &availabilityRunner{})
 
-	// /readyz reuses the availability the poll loop last recorded.
 	ready, reason := poller.Ready(time.Second)
 	assert.True(t, ready)
 	assert.Equal(t, "ok", reason)
@@ -291,63 +266,45 @@ func (m *idleAwareRunner) OnIdle(_ context.Context) {
 	m.idleCalls.Add(1)
 }
 
-func TestPollerPollCallsOnIdle(t *testing.T) {
-	cli := mocks.NewClient(t)
-	cli.On("FetchTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *runnerv1.FetchTaskRequest) (*runnerv1.FetchTaskResponse, error) {
-			return &runnerv1.FetchTaskResponse{}, nil
-		},
-	)
+func TestPollerCallsOnIdle(t *testing.T) {
+	for _, pollOnce := range []bool{false, true} {
+		name := "Poll"
+		if pollOnce {
+			name = "PollOnce"
+		}
+		t.Run(name, func(t *testing.T) {
+			cli := mocks.NewClient(t)
+			cli.On("FetchTask", mock.Anything, mock.Anything).Return(&runnerv1.FetchTaskResponse{}, nil)
 
-	cfg, err := config.LoadDefault("")
-	require.NoError(t, err)
-	cfg.Runner.Capacity = 1
-	cfg.Runner.FetchInterval = 10 * time.Millisecond
-	cfg.Runner.FetchIntervalMax = 10 * time.Millisecond
+			cfg, err := config.LoadDefault("")
+			require.NoError(t, err)
+			if !pollOnce {
+				cfg.Runner.Capacity = 1
+			}
+			cfg.Runner.FetchInterval = 10 * time.Millisecond
+			cfg.Runner.FetchIntervalMax = 10 * time.Millisecond
 
-	runner := &idleAwareRunner{}
-	poller := New(cfg, cli, runner)
+			runner := &idleAwareRunner{}
+			poller := New(cfg, cli, runner)
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				if pollOnce {
+					poller.PollOnce(func() {})
+				} else {
+					poller.Poll()
+				}
+			})
 
-	var wg sync.WaitGroup
-	wg.Go(poller.Poll)
+			require.Eventually(t, func() bool {
+				return runner.idleCalls.Load() > 0
+			}, time.Second, 10*time.Millisecond)
 
-	require.Eventually(t, func() bool {
-		return runner.idleCalls.Load() > 0
-	}, time.Second, 10*time.Millisecond)
-
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-	require.NoError(t, poller.Shutdown(ctx))
-	wg.Wait()
-}
-
-func TestPollerPollOnceCallsOnIdle(t *testing.T) {
-	cli := mocks.NewClient(t)
-	cli.On("FetchTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *runnerv1.FetchTaskRequest) (*runnerv1.FetchTaskResponse, error) {
-			return &runnerv1.FetchTaskResponse{}, nil
-		},
-	)
-
-	cfg, err := config.LoadDefault("")
-	require.NoError(t, err)
-	cfg.Runner.FetchInterval = 10 * time.Millisecond
-	cfg.Runner.FetchIntervalMax = 10 * time.Millisecond
-
-	runner := &idleAwareRunner{}
-	poller := New(cfg, cli, runner)
-
-	var wg sync.WaitGroup
-	wg.Go(func() { poller.PollOnce(func() {}) })
-
-	require.Eventually(t, func() bool {
-		return runner.idleCalls.Load() > 0
-	}, time.Second, 10*time.Millisecond)
-
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-	require.NoError(t, poller.Shutdown(ctx))
-	wg.Wait()
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			require.NoError(t, poller.Shutdown(ctx))
+			wg.Wait()
+		})
+	}
 }
 
 func TestPollerPollOnceCallsOnTaskFetchedBeforeRunningIt(t *testing.T) {
@@ -362,9 +319,6 @@ func TestPollerPollOnceCallsOnTaskFetchedBeforeRunningIt(t *testing.T) {
 	assert.Equal(t, int64(1), runner.totalCompleted.Load())
 }
 
-// TestPoller_ConcurrencyLimitedByCapacity verifies that with capacity=3 and
-// 6 available tasks, at most 3 tasks run concurrently, and FetchTask is
-// never called concurrently (single poller).
 func TestPoller_ConcurrencyLimitedByCapacity(t *testing.T) {
 	const (
 		capacity   = 3
@@ -427,13 +381,6 @@ func TestPoller_ConcurrencyLimitedByCapacity(t *testing.T) {
 		"all tasks should have been executed")
 }
 
-// TestPoller_ShutdownForcesJobsOnTimeout locks in the fix for a
-// pre-existing bug where Shutdown's timeout branch used a blocking
-// `<-p.done` receive, leaving p.shutdownJobs() unreachable. With a
-// task parked on jobsCtx and a Shutdown deadline shorter than the
-// task's natural completion, Shutdown must force-cancel via
-// shutdownJobs() and return ctx.Err() promptly — not block until the
-// task would have finished on its own.
 func TestPoller_ShutdownForcesJobsOnTimeout(t *testing.T) {
 	var served atomic.Bool
 	cli := mocks.NewClient(t)
@@ -448,8 +395,6 @@ func TestPoller_ShutdownForcesJobsOnTimeout(t *testing.T) {
 		},
 	)
 
-	// delay >> Shutdown timeout: Run only returns when jobsCtx is
-	// cancelled by shutdownJobs().
 	runner := &mockRunner{delay: 30 * time.Second}
 
 	cfg, err := config.LoadDefault("")
@@ -474,9 +419,6 @@ func TestPoller_ShutdownForcesJobsOnTimeout(t *testing.T) {
 	elapsed := time.Since(start)
 
 	require.ErrorIs(t, err, context.DeadlineExceeded)
-	// With the fix, Shutdown returns shortly after the deadline once
-	// the forced job unwinds. Without the fix, the blocking <-p.done
-	// would hang for the full 30s mockRunner delay.
 	assert.Less(t, elapsed, 5*time.Second,
 		"Shutdown must not block on the parked task; shutdownJobs() must run on timeout")
 

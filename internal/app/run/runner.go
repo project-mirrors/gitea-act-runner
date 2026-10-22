@@ -99,7 +99,7 @@ func NewRunner(cfg *config.Config, reg *config.Registration, cli client.Client) 
 	envs := make(map[string]string, len(cfg.Runner.Envs))
 	maps.Copy(envs, cfg.Runner.Envs)
 	var cacheHandler *artifactcache.Handler
-	if cacheEnabled(cfg) {
+	if cfg.Cache.Enabled == nil || *cfg.Cache.Enabled {
 		warnIgnoredCachePolicy(cfg)
 		warnIgnoredCacheSecret(cfg)
 		handler, err := artifactcache.StartHandler(artifactcache.Options{
@@ -121,8 +121,7 @@ func NewRunner(cfg *config.Config, reg *config.Registration, cli client.Client) 
 	}
 
 	// set artifact gitea api
-	artifactGiteaAPI := strings.TrimSuffix(cli.Address(), "/") + "/api/actions_pipeline/"
-	envs["ACTIONS_RUNTIME_URL"] = artifactGiteaAPI
+	envs["ACTIONS_RUNTIME_URL"] = strings.TrimSuffix(cli.Address(), "/") + "/api/actions_pipeline/"
 	envs["ACTIONS_RESULTS_URL"] = strings.TrimSuffix(cli.Address(), "/")
 
 	// Set specific environments to distinguish between Gitea and GitHub
@@ -169,9 +168,7 @@ func (r *Runner) OnIdle(ctx context.Context) {
 	}
 	// Bind-workdir mode: reclaim stale per-task workspace dirs (numeric task IDs).
 	if r.cfg.Container.BindWorkdir {
-		workdirParent := strings.TrimLeft(r.cfg.Container.WorkdirParent, "/")
-		workdirRoot := filepath.FromSlash("/" + workdirParent)
-		r.cleanupStaleDirs(ctx, workdirRoot, isTaskIDDir)
+		r.cleanupStaleDirs(ctx, filepath.FromSlash("/"+strings.TrimLeft(r.cfg.Container.WorkdirParent, "/")), isTaskIDDir)
 	}
 	// Host mode: reclaim per-job scratch dirs left behind when HostEnvironment
 	// cleanup timed out (e.g. a delete stalled by an AV/EDR filter driver). They
@@ -270,10 +267,7 @@ func (r *Runner) cleanupStaleDirs(ctx context.Context, root string, match func(n
 		if err := ctx.Err(); err != nil {
 			return
 		}
-		if !entry.IsDir() {
-			continue
-		}
-		if !match(entry.Name()) {
+		if !entry.IsDir() || !match(entry.Name()) {
 			continue
 		}
 		info, err := entry.Info()
@@ -452,7 +446,9 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	}()
 
 	workflowCallInputs := restoreCalledWorkflowContext(task)
-	r.reportSetup(reporter, task)
+	for _, line := range r.setupLines(task) {
+		reporter.Logf("%s", line)
+	}
 
 	workflow, jobID, err := generateWorkflow(task)
 	if err != nil {
@@ -511,11 +507,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	telemetry.AddJobEnv(ctx, envs)
 
 	preset := model.GithubContextFromMap(task.Context.AsMap())
-	if t := task.Secrets["GITEA_TOKEN"]; t != "" {
-		preset.Token = t
-	} else if t := task.Secrets["GITHUB_TOKEN"]; t != "" {
-		preset.Token = t
-	}
+	preset.Token = cmp.Or(task.Secrets["GITEA_TOKEN"], task.Secrets["GITHUB_TOKEN"], preset.Token)
 
 	if actionsIDTokenRequestURL := taskContext["actions_id_token_request_url"].GetStringValue(); actionsIDTokenRequestURL != "" {
 		envs["ACTIONS_ID_TOKEN_REQUEST_URL"] = actionsIDTokenRequestURL
@@ -589,7 +581,6 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 
 		ForcePull:            r.cfg.Container.ForcePull,
 		ForceRebuild:         r.cfg.Container.ForceRebuild,
-		JSONLogger:           false,
 		Env:                  envs,
 		ProxyEnv:             proxyEnv,
 		Secrets:              task.Secrets,
@@ -672,18 +663,8 @@ func (r *Runner) builtInCacheURL() string {
 	return r.envs["ACTIONS_CACHE_URL"]
 }
 
-func cacheEnabled(cfg *config.Config) bool {
-	return cfg.Cache.Enabled == nil || *cfg.Cache.Enabled
-}
-
-// cacheServiceV2 reports whether jobs are told the cache service speaks v2. It is all cache.v2
-// turns off: the bundle edit that reaches it is what the artifact actions need too.
-func (r *Runner) cacheServiceV2() bool {
-	return r.cfg.Cache.V2 == nil || *r.cfg.Cache.V2
-}
-
 func (r *Runner) setResultsService(envs map[string]string, resultsURL string) {
-	v2 := resultsURL != "" && r.cacheServiceV2()
+	v2 := resultsURL != "" && (r.cfg.Cache.V2 == nil || *r.cfg.Cache.V2) // all cache.v2 turns off, the bundle edit reaching it is what the artifact actions need too
 	if v2 {
 		envs[runner.CacheServiceV2Env] = "true"
 	} else {
@@ -902,11 +883,7 @@ func warnIgnoredCachePolicy(cfg *config.Config) {
 
 // warnIgnoredCacheSecret flags an external cache server secret configured on a runner that uses the built-in cache server.
 func warnIgnoredCacheSecret(cfg *config.Config) {
-	if cfg.Cache.ExternalServer != "" {
-		return
-	}
-	// Not using an external cache server, so any configured secret is ignored.
-	if cfg.Cache.ExternalSecret == "" {
+	if cfg.Cache.ExternalServer != "" || cfg.Cache.ExternalSecret == "" {
 		return
 	}
 	// LoadDefault resolves external_secret_file into ExternalSecret, so report whichever key the operator actually wrote.

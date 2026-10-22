@@ -14,59 +14,25 @@ import (
 )
 
 func TestMaxParallelStrategy(t *testing.T) {
-	tests := []struct {
+	for _, tt := range []struct {
 		name                string
 		maxParallelString   string
 		expectedMaxParallel int
 	}{
-		{
-			name:                "max-parallel-1",
-			maxParallelString:   "1",
-			expectedMaxParallel: 1,
-		},
-		{
-			name:                "max-parallel-2",
-			maxParallelString:   "2",
-			expectedMaxParallel: 2,
-		},
-		{
-			name:                "max-parallel-default",
-			maxParallelString:   "",
-			expectedMaxParallel: 4,
-		},
-		{
-			name:                "max-parallel-10-clamped-to-combinations",
-			maxParallelString:   "10",
-			expectedMaxParallel: 5,
-		},
-		{
-			name:                "max-parallel-invalid-falls-back-to-default",
-			maxParallelString:   "tow",
-			expectedMaxParallel: 4,
-		},
-	}
-
-	for _, tt := range tests {
+		{"max-parallel-1", "1", 1},
+		{"max-parallel-2", "2", 2},
+		{"max-parallel-default", "", 4},
+		{"max-parallel-10-clamped-to-combinations", "10", 5},
+		{"max-parallel-invalid-falls-back-to-default", "tow", 4},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			matrix := map[string][]any{
-				"version": {1, 2, 3, 4, 5},
-			}
-
 			var rawMatrix yaml.Node
-			err := rawMatrix.Encode(matrix)
-			assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
-
-			job := &model.Job{
-				Strategy: &model.Strategy{
-					MaxParallelString: tt.maxParallelString,
-					RawMatrix:         rawMatrix,
-				},
-			}
+			require.NoError(t, rawMatrix.Encode(map[string][]any{"version": {1, 2, 3, 4, 5}}))
+			job := &model.Job{Strategy: &model.Strategy{MaxParallelString: tt.maxParallelString, RawMatrix: rawMatrix}}
 
 			matrixes, err := job.GetMatrixes()
-			assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
-			assert.NotNil(t, matrixes)
-			assert.Len(t, matrixes, 5)
+			require.NoError(t, err)
+			require.Len(t, matrixes, 5)
 			assert.Equal(t, tt.expectedMaxParallel, maxParallelFor(job.Strategy, len(matrixes)))
 		})
 	}

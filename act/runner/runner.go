@@ -101,11 +101,7 @@ func (c Config) RunnerDebug() bool {
 
 // GetToken: Adapt to Gitea
 func (c Config) GetToken() string {
-	token := c.Secrets["GITHUB_TOKEN"]
-	if c.Secrets["GITEA_TOKEN"] != "" {
-		token = c.Secrets["GITEA_TOKEN"]
-	}
-	return token
+	return cmp.Or(c.Secrets["GITEA_TOKEN"], c.Secrets["GITHUB_TOKEN"])
 }
 
 // DefaultActionURL returns the host used for implicit remote actions.
@@ -185,8 +181,7 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 	stagePipeline := make([]common.Executor, 0)
 	logging.Debugf("Plan Stages: %v", plan.Stages)
 
-	for i := range plan.Stages {
-		stage := plan.Stages[i]
+	for _, stage := range plan.Stages {
 		stagePipeline = append(stagePipeline, func(ctx context.Context) error {
 			pipeline := make([]common.Executor, 0)
 			for _, run := range stage.Runs {
@@ -268,9 +263,7 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 					if len(matrixes) > 1 {
 						rc.Name = fmt.Sprintf("%s-%d", rc.Name, i+1)
 					}
-					if len(rc.String()) > maxJobNameLen {
-						maxJobNameLen = len(rc.String())
-					}
+					maxJobNameLen = max(maxJobNameLen, len(rc.String()))
 					if rc.caller != nil { // For Gitea
 						rc.caller.setReusedWorkflowJobResult(rc.Run.JobID, "pending")
 					}
@@ -322,10 +315,7 @@ func (runner *runnerImpl) NewPlanExecutor(plan *model.Plan) common.Executor {
 				logging.Debugf("Using CPU count for parallelism: %d", parallelism)
 			}
 
-			// Don't exceed the number of pipeline elements
-			if parallelism > len(pipeline) {
-				parallelism = len(pipeline)
-			}
+			parallelism = min(parallelism, len(pipeline))
 
 			logging.Infof("Executing %d pipeline elements with parallelism %d", len(pipeline), parallelism)
 			return common.NewParallelExecutor(parallelism, pipeline...)(ctx)

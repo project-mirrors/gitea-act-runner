@@ -120,7 +120,7 @@ func proxyPasswords() []string {
 	var passwords []string
 	for _, raw := range []string{cfg.HTTPProxy, cfg.HTTPSProxy} {
 		parsed, err := url.Parse(raw)
-		if err != nil || parsed.User == nil {
+		if err != nil {
 			continue
 		}
 		if password, ok := parsed.User.Password(); ok && password != "" && !slices.Contains(passwords, password) {
@@ -152,11 +152,8 @@ func appendNoProxy(noProxy string, hosts ...string) string {
 // hostOf returns the host of a URL without its port, the form a no_proxy entry takes. It is
 // empty for anything without a network host, such as a unix socket.
 func hostOf(raw string) string {
-	if raw == "" {
-		return ""
-	}
 	parsed, err := url.Parse(strings.TrimSuffix(raw, "/"))
-	if err != nil || parsed.Hostname() == "" {
+	if err != nil {
 		return ""
 	}
 	return parsed.Hostname()

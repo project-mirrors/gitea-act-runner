@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"reflect"
 	"runtime"
 	"slices"
@@ -94,11 +95,7 @@ func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 	}
 	prefixFieldClashes(data, caller != nil)
 
-	keys := make([]string, 0, len(data))
-	for k := range data {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
+	keys := slices.Sorted(maps.Keys(data))
 
 	var b bytes.Buffer
 	if terminal && !opts.DisableColors {

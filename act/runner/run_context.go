@@ -229,8 +229,7 @@ func (rc *RunContext) networkNameForGitea() (string, bool) {
 }
 
 func getDockerDaemonSocketMountPath(daemonPath string) string {
-	if before, after, ok := strings.Cut(daemonPath, "://"); ok {
-		scheme := before
+	if scheme, after, ok := strings.Cut(daemonPath, "://"); ok {
 		switch {
 		case strings.EqualFold(scheme, "npipe"):
 			// linux container mount on windows, use the default socket path of the VM / wsl2
@@ -251,10 +250,7 @@ func getDockerDaemonSocketMountPath(daemonPath string) string {
 // without mutating the shared Config. Parallel jobs in a plan share one *Config, so a job
 // must never write to it.
 func (rc *RunContext) containerDaemonSocket() string {
-	if rc.Config.ContainerDaemonSocket == "" {
-		return "/var/run/docker.sock"
-	}
-	return rc.Config.ContainerDaemonSocket
+	return cmp.Or(rc.Config.ContainerDaemonSocket, "/var/run/docker.sock")
 }
 
 const sharedToolCacheVolume = "act-toolcache" // mounted only when the tool cache is shared
@@ -304,10 +300,7 @@ func (rc *RunContext) startDockerProxy(ctx context.Context) {
 
 // toolCache returns the tool cache path the job sees, relocatable through RUNNER_TOOL_CACHE.
 func (rc *RunContext) toolCache(fallback string) string {
-	if path := rc.GetEnv()["RUNNER_TOOL_CACHE"]; path != "" {
-		return path
-	}
-	return fallback
+	return cmp.Or(rc.GetEnv()["RUNNER_TOOL_CACHE"], fallback)
 }
 
 // runnerEnv returns a container's RUNNER_* variables, derived from the values runner.tool_cache
@@ -551,10 +544,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 		rc.Env["JOB_CONTAINER_NAME"] = name
 		delete(rc.jobEnv, "JOB_CONTAINER_NAME") // the runtime name wins over a workflow env of the same name
 
-		envList := make([]string, 0)
-
-		envList = append(envList, rc.runnerEnv(ctx)...)
-		envList = append(envList, fmt.Sprintf("%s=%s", "LANG", "C.UTF-8")) // Use same locale as GitHub Actions
+		envList := append(rc.runnerEnv(ctx), "LANG=C.UTF-8") // Use same locale as GitHub Actions
 
 		// specify the network to which the container will connect when `docker create` stage. (like execute command line: docker create --network <networkName> <image>)
 		// if using service containers, will create a new network for the containers.
@@ -571,12 +561,8 @@ func (rc *RunContext) startJobContainer() common.Executor {
 			rc.serviceContainers = append(rc.serviceContainers, &serviceContainer{name: serviceID, image: input.Image, container: newContainer(input)})
 		}
 
-		// For Gitea, `jobContainerNetwork` should be the same as `networkName`
-		jobContainerNetwork := networkName
-
 		ext := container.LinuxContainerEnvironmentExtensions{}
 		containerInput := &container.NewContainerInput{
-			Cmd:             nil,
 			Entrypoint:      []string{"sleep", strconv.FormatInt(int64(rc.Config.ContainerMaxLifetime.Round(time.Second).Seconds()), 10)},
 			WorkingDir:      ext.ToContainerPath(rc.Config.Workdir),
 			Image:           image,
@@ -584,7 +570,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 			Password:        password,
 			Name:            name,
 			Env:             envList,
-			NetworkMode:     jobContainerNetwork,
+			NetworkMode:     networkName,
 			NetworkAliases:  []string{rc.Name},
 			Stdout:          logWriter,
 			Stderr:          logWriter,
@@ -832,9 +818,7 @@ func (rc *RunContext) ApplyExtraPath(ctx context.Context, env *map[string]string
 			cenv := map[string]string{}
 			var cpath string
 			if err := rc.JobContainer.UpdateFromImageEnv(&cenv)(ctx); err == nil {
-				if p, ok := cenv[path]; ok {
-					cpath = p
-				}
+				cpath = cenv[path]
 			}
 			if len(cpath) == 0 {
 				cpath = rc.JobContainer.DefaultPathVariable()
@@ -875,7 +859,7 @@ func (rc *RunContext) UpdateExtraPath(ctx context.Context, githubEnvPath string)
 	return nil
 }
 
-func (rc *RunContext) stopJobContainer() common.Executor {
+func (rc *RunContext) stopContainer() common.Executor {
 	return func(ctx context.Context) error {
 		if rc.cleanUpJobContainer != nil {
 			return rc.cleanUpJobContainer(ctx)
@@ -1118,9 +1102,8 @@ func (rc *RunContext) ActionCacheDir() string {
 	if rc.Config.ActionCacheDir != "" {
 		return rc.Config.ActionCacheDir
 	}
-	var xdgCache string
-	var ok bool
-	if xdgCache, ok = os.LookupEnv("XDG_CACHE_HOME"); !ok || xdgCache == "" {
+	xdgCache := os.Getenv("XDG_CACHE_HOME")
+	if xdgCache == "" {
 		if home, err := os.UserHomeDir(); err == nil {
 			xdgCache = filepath.Join(home, ".cache")
 		} else if xdgCache, err = filepath.Abs("."); err != nil {
@@ -1190,10 +1173,6 @@ func (rc *RunContext) cleanupFailedStart(ctx context.Context) {
 
 func (rc *RunContext) IsHostEnv() bool {
 	return rc.containerSpec.Image == "" && strings.EqualFold(rc.platformImage, "-self-hosted")
-}
-
-func (rc *RunContext) stopContainer() common.Executor {
-	return rc.stopJobContainer()
 }
 
 func (rc *RunContext) closeContainer() common.Executor {
@@ -1417,27 +1396,18 @@ func mergeMaps(maps ...map[string]string) map[string]string {
 	return rtnMap
 }
 
+var containerNamePattern = regexp.MustCompile("[^a-zA-Z0-9]")
+
 func createContainerName(parts ...string) string {
 	name := strings.Join(parts, "-")
-	pattern := regexp.MustCompile("[^a-zA-Z0-9]")
-	name = pattern.ReplaceAllString(name, "-")
+	name = containerNamePattern.ReplaceAllString(name, "-")
 	name = strings.ReplaceAll(name, "--", "-")
 	hash := sha256.Sum256([]byte(name))
 
 	// SHA256 is 64 hex characters. So trim name to 63 characters to make room for the hash and separator
-	trimmedName := strings.Trim(trimToLen(name, 63), "-")
+	trimmedName := strings.Trim(name[:min(len(name), 63)], "-")
 
 	return fmt.Sprintf("%s-%x", trimmedName, hash)
-}
-
-func trimToLen(s string, l int) string {
-	if l < 0 {
-		l = 0
-	}
-	if len(s) > l {
-		return s[:l]
-	}
-	return s
 }
 
 // ownStatus is the result of this context's own steps, which for a composite action is its action status
@@ -1484,10 +1454,6 @@ func (rc *RunContext) getJobContext() *model.JobContext {
 	return jobContext
 }
 
-func (rc *RunContext) getStepsContext() map[string]*model.StepResult {
-	return rc.StepResults
-}
-
 // getRunnerContext returns the `runner` context: what the execution environment knows
 // (os, arch, temp, tool_cache) plus what only the runner process knows.
 func (rc *RunContext) getRunnerContext(ctx context.Context) map[string]any {
@@ -1521,9 +1487,9 @@ func (rc *RunContext) getGithubContext(ctx context.Context) *model.GithubContext
 	ghc := &model.GithubContext{
 		Event:            make(map[string]any),
 		Workflow:         rc.Run.Workflow.Name,
-		RunID:            rc.Config.Env["GITHUB_RUN_ID"],
-		RunNumber:        rc.Config.Env["GITHUB_RUN_NUMBER"],
-		Actor:            rc.Config.Actor,
+		RunID:            cmp.Or(rc.Config.Env["GITHUB_RUN_ID"], "1"),
+		RunNumber:        cmp.Or(rc.Config.Env["GITHUB_RUN_NUMBER"], "1"),
+		Actor:            cmp.Or(rc.Config.Actor, "nektos/act"), // for configs that require a default rather than being run as a cmd
 		EventName:        rc.Config.EventName,
 		Action:           rc.CurrentStep,
 		Token:            rc.Config.Token,
@@ -1532,8 +1498,8 @@ func (rc *RunContext) getGithubContext(ctx context.Context) *model.GithubContext
 		ActionRepository: rc.Env["GITHUB_ACTION_REPOSITORY"],
 		ActionRef:        rc.Env["GITHUB_ACTION_REF"],
 		RepositoryOwner:  rc.Config.Env["GITHUB_REPOSITORY_OWNER"],
-		RetentionDays:    rc.Config.Env["GITHUB_RETENTION_DAYS"],
-		RunnerPerflog:    rc.Config.Env["RUNNER_PERFLOG"],
+		RetentionDays:    cmp.Or(rc.Config.Env["GITHUB_RETENTION_DAYS"], "0"),
+		RunnerPerflog:    cmp.Or(rc.Config.Env["RUNNER_PERFLOG"], "/dev/null"),
 		RunnerTrackingID: rc.Config.Env["RUNNER_TRACKING_ID"],
 		Repository:       rc.Config.Env["GITHUB_REPOSITORY"],
 		Ref:              rc.Config.Env["GITHUB_REF"],
@@ -1548,40 +1514,16 @@ func (rc *RunContext) getGithubContext(ctx context.Context) *model.GithubContext
 		ghc.EventPath = rc.JobContainer.GetActPath() + "/workflow/event.json"
 	}
 
-	if ghc.RunID == "" {
-		ghc.RunID = "1"
-	}
+	if preset := rc.Config.PresetGitHubContext; preset != nil {
+		merged := *preset
+		merged.Workflow, merged.Job, merged.Workspace, merged.EventPath = ghc.Workflow, ghc.Job, ghc.Workspace, ghc.EventPath
+		merged.Action, merged.ActionPath, merged.ActionRepository, merged.ActionRef = ghc.Action, ghc.ActionPath, ghc.ActionRepository, ghc.ActionRef
+		merged.RunnerPerflog, merged.RunnerTrackingID = ghc.RunnerPerflog, ghc.RunnerTrackingID
+		*ghc = merged
 
-	if ghc.RunNumber == "" {
-		ghc.RunNumber = "1"
-	}
-
-	if ghc.RetentionDays == "" {
-		ghc.RetentionDays = "0"
-	}
-
-	if ghc.RunnerPerflog == "" {
-		ghc.RunnerPerflog = "/dev/null"
-	}
-
-	// Backwards compatibility for configs that require
-	// a default rather than being run as a cmd
-	if ghc.Actor == "" {
-		ghc.Actor = "nektos/act"
-	}
-
-	{ // Adapt to Gitea
-		if preset := rc.Config.PresetGitHubContext; preset != nil {
-			merged := *preset
-			merged.Workflow, merged.Job, merged.Workspace, merged.EventPath = ghc.Workflow, ghc.Job, ghc.Workspace, ghc.EventPath
-			merged.Action, merged.ActionPath, merged.ActionRepository, merged.ActionRef = ghc.Action, ghc.ActionPath, ghc.ActionRepository, ghc.ActionRef
-			merged.RunnerPerflog, merged.RunnerTrackingID = ghc.RunnerPerflog, ghc.RunnerTrackingID
-			*ghc = merged
-
-			rc.setInstanceURLs(ghc)
-			ghc.GraphQLURL = "" // Gitea doesn't support graphql
-			return ghc
-		}
+		rc.setInstanceURLs(ghc)
+		ghc.GraphQLURL = "" // Gitea doesn't support graphql
+		return ghc
 	}
 
 	if rc.EventJSON != "" {
@@ -1634,10 +1576,6 @@ func withHTTPS(u string) string {
 }
 
 func isLocalCheckout(ghc *model.GithubContext, step *model.Step) bool {
-	if step.Type() == model.StepTypeInvalid {
-		// This will be errored out by the executor later, we need this here to avoid a null panic though
-		return false
-	}
 	if step.Type() != model.StepTypeUsesActionRemote {
 		return false
 	}
@@ -1702,7 +1640,8 @@ func (rc *RunContext) withGithubEnv(ctx context.Context, github *model.GithubCon
 	}
 
 	if rc.Config.ArtifactServerPath != "" {
-		setActionRuntimeVars(rc, env)
+		env["ACTIONS_RUNTIME_URL"] = cmp.Or(os.Getenv("ACTIONS_RUNTIME_URL"), "http://"+net.JoinHostPort(rc.Config.ArtifactServerAddr, rc.Config.ArtifactServerPort)+"/")
+		env["ACTIONS_RUNTIME_TOKEN"] = cmp.Or(os.Getenv("ACTIONS_RUNTIME_TOKEN"), "token")
 	}
 
 	if imageOS := rc.imageOS(ctx); imageOS != "" {
@@ -1755,20 +1694,6 @@ func imageOSFromImage(image string) string {
 		return match[1] + match[2]
 	}
 	return ""
-}
-
-func setActionRuntimeVars(rc *RunContext, env map[string]string) {
-	actionsRuntimeURL := os.Getenv("ACTIONS_RUNTIME_URL")
-	if actionsRuntimeURL == "" {
-		actionsRuntimeURL = "http://" + net.JoinHostPort(rc.Config.ArtifactServerAddr, rc.Config.ArtifactServerPort) + "/"
-	}
-	env["ACTIONS_RUNTIME_URL"] = actionsRuntimeURL
-
-	actionsRuntimeToken := os.Getenv("ACTIONS_RUNTIME_TOKEN")
-	if actionsRuntimeToken == "" {
-		actionsRuntimeToken = "token"
-	}
-	env["ACTIONS_RUNTIME_TOKEN"] = actionsRuntimeToken
 }
 
 func registryCredentials(credentials map[string]string, prefix string) (string, string, error) {

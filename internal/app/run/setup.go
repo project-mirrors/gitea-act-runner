@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 
-	"gitea.com/gitea/runner/internal/pkg/report"
 	"gitea.com/gitea/runner/internal/pkg/ver"
 
 	runnerv1 "gitea.dev/actionslib/runner/v1"
@@ -22,14 +21,6 @@ import (
 // osReleasePath describes the host distribution on Linux; absent elsewhere, where the platform
 // falls back to the Go runtime alone. A var so tests can point it at a fixture.
 var osReleasePath = "/etc/os-release"
-
-// reportSetup opens the job log the way actions/runner opens its "Set up job" step. The action
-// downloads and the closing job name are written later, as the job starts.
-func (r *Runner) reportSetup(reporter *report.Reporter, task *runnerv1.Task) {
-	for _, line := range r.setupLines(task) {
-		reporter.Logf("%s", line)
-	}
-}
 
 // setupLines names the runner, then reports what it was asked to run and the host it runs on, each
 // in its own group.
@@ -52,8 +43,10 @@ func (r *Runner) setupLines(task *runnerv1.Task) []string {
 	)
 	lines = append(lines, inputLines(fields)...)
 	lines = append(lines, "::group::Operating System")
-	lines = append(lines, osInfo()...)
-	return append(lines, "::endgroup::")
+	if name := prettyOSName(); name != "" {
+		lines = append(lines, name)
+	}
+	return append(lines, fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH), "::endgroup::")
 }
 
 // inputLines lists the inputs of the job: those Gitea resolved for a called workflow's job,
@@ -73,15 +66,6 @@ func inputLines(fields map[string]*structpb.Value) []string {
 		lines = append(lines, fmt.Sprintf("%s: %v", name, inputs[name].AsInterface()))
 	}
 	return append(lines, "::endgroup::")
-}
-
-// osInfo describes the host the runner executes on.
-func osInfo() []string {
-	lines := make([]string, 0, 2)
-	if name := prettyOSName(); name != "" {
-		lines = append(lines, name)
-	}
-	return append(lines, fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH))
 }
 
 // prettyOSName reads PRETTY_NAME (e.g. "Ubuntu 24.04.4 LTS") from os-release, or "" when absent.

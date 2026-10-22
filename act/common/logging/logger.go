@@ -43,7 +43,6 @@ func (l *Logger) Enabled(level Level) bool {
 	return l.h.Enabled(l.ctx, level)
 }
 
-func (l *Logger) Tracef(format string, args ...any) { l.logf(LevelTrace, format, args) }
 func (l *Logger) Debugf(format string, args ...any) { l.logf(LevelDebug, format, args) }
 func (l *Logger) Infof(format string, args ...any)  { l.logf(LevelInfo, format, args) }
 func (l *Logger) Warnf(format string, args ...any)  { l.logf(LevelWarn, format, args) }

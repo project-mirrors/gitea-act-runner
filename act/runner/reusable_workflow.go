@@ -107,7 +107,13 @@ func newReusableWorkflowExecutor(rc *RunContext, directory, workflow string, cac
 			return err
 		}
 
-		runner, err := newReusableWorkflowRunner(rc)
+		runner, err := (&runnerImpl{
+			config: rc.Config,
+			caller: &caller{
+				runContext:               rc,
+				reusedWorkflowJobResults: map[string]string{},
+			},
+		}).configure()
 		if err != nil {
 			return err
 		}
@@ -117,20 +123,6 @@ func newReusableWorkflowExecutor(rc *RunContext, directory, workflow string, cac
 			setReusedWorkflowCallerResult(rc, runner),
 		)(ctx)
 	}
-}
-
-func newReusableWorkflowRunner(rc *RunContext) (*runnerImpl, error) {
-	runner := &runnerImpl{
-		config:    rc.Config,
-		eventJSON: rc.EventJSON,
-		caller: &caller{
-			runContext: rc,
-
-			reusedWorkflowJobResults: map[string]string{}, // For Gitea
-		},
-	}
-
-	return runner.configure()
 }
 
 type remoteReusableWorkflow struct {
@@ -163,38 +155,32 @@ func newRemoteReusableWorkflow(baseURL, uses string) (*remoteReusableWorkflow, e
 // For Gitea
 func setReusedWorkflowCallerResult(rc *RunContext, runner *runnerImpl) common.Executor {
 	return func(ctx context.Context) error {
-		caller := runner.caller
-
-		allJobDone := true
 		hasFailure := false
-		for _, result := range caller.reusedWorkflowJobResults {
+		for _, result := range runner.caller.reusedWorkflowJobResults {
 			if result == "pending" {
-				allJobDone = false
-				break
+				return nil
 			}
 			if result == "failure" {
 				hasFailure = true
 			}
 		}
 
-		if allJobDone {
-			reusedWorkflowJobResult := "success"
-			reusedWorkflowJobResultMessage := "succeeded"
-			if hasFailure {
-				reusedWorkflowJobResult = "failure"
-				reusedWorkflowJobResultMessage = "failed"
-			}
+		reusedWorkflowJobResult := "success"
+		reusedWorkflowJobResultMessage := "succeeded"
+		if hasFailure {
+			reusedWorkflowJobResult = "failure"
+			reusedWorkflowJobResultMessage = "failed"
+		}
 
-			if rc.caller != nil {
-				rc.caller.setReusedWorkflowJobResult(rc.Run.JobID, reusedWorkflowJobResult)
-			} else {
-				// Serialize this shared Job.Result write against the other matrix combos
-				// and setJobResult (same lockJob key).
-				unlock := lockJob(rc.Run.Job())
-				rc.result(reusedWorkflowJobResult)
-				unlock()
-				common.Logger(ctx).With("jobResult", reusedWorkflowJobResult).Infof("Job %s", reusedWorkflowJobResultMessage)
-			}
+		if rc.caller != nil {
+			rc.caller.setReusedWorkflowJobResult(rc.Run.JobID, reusedWorkflowJobResult)
+		} else {
+			// Serialize this shared Job.Result write against the other matrix combos
+			// and setJobResult (same lockJob key).
+			unlock := lockJob(rc.Run.Job())
+			rc.result(reusedWorkflowJobResult)
+			unlock()
+			common.Logger(ctx).With("jobResult", reusedWorkflowJobResult).Infof("Job %s", reusedWorkflowJobResultMessage)
 		}
 
 		return nil

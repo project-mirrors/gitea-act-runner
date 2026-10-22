@@ -40,13 +40,6 @@ import (
 )
 
 func TestRunContext_EvalBool(t *testing.T) {
-	var yml yaml.Node
-	err := yml.Encode(map[string][]any{
-		"os":  {"Linux", "Windows"},
-		"foo": {"bar", "baz"},
-	})
-	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
-
 	rc := &RunContext{
 		Config: &Config{
 			Workdir: ".",
@@ -61,26 +54,12 @@ func TestRunContext_EvalBool(t *testing.T) {
 			Workflow: &model.Workflow{
 				Name: "test-workflow",
 				Jobs: map[string]*model.Job{
-					"job1": {
-						Strategy: &model.Strategy{
-							RawMatrix: yml,
-						},
-					},
+					"job1": {},
 				},
 			},
-		},
-		Matrix: map[string]any{
-			"os":  "Linux",
-			"foo": "bar",
 		},
 		StepResults: map[string]*model.StepResult{
-			"id1": {
-				Conclusion: model.StepStatusSuccess,
-				Outcome:    model.StepStatusFailure,
-				Outputs: map[string]string{
-					"foo": "bar",
-				},
-			},
+			"id1": {Conclusion: model.StepStatusSuccess, Outcome: model.StepStatusFailure},
 		},
 	}
 	rc.ExprEval = rc.NewExpressionEvaluator(t.Context())
@@ -90,21 +69,12 @@ func TestRunContext_EvalBool(t *testing.T) {
 		out     bool
 		wantErr bool
 	}{
-		// The basic ones
 		{in: "failure()", out: false},
 		{in: "success()", out: true},
 		{in: "cancelled()", out: false},
 		{in: "always()", out: true},
-		// TODO: move to sc.NewExpressionEvaluator(), because "steps" context is not available here
-		// {in: "steps.id1.conclusion == 'success'", out: true},
-		// {in: "steps.id1.conclusion != 'success'", out: false},
-		// {in: "steps.id1.outcome == 'failure'", out: true},
-		// {in: "steps.id1.outcome != 'failure'", out: false},
 		{in: "true", out: true},
 		{in: "false", out: false},
-		// TODO: This does not throw an error, because the evaluator does not know if the expression is inside ${{ }} or not
-		// {in: "!true", wantErr: true},
-		// {in: "!false", wantErr: true},
 		{in: "1 != 0", out: true},
 		{in: "1 != 1", out: false},
 		{in: "${{ 1 != 0 }}", out: true},
@@ -113,32 +83,24 @@ func TestRunContext_EvalBool(t *testing.T) {
 		{in: "1 == 1", out: true},
 		{in: "1 > 2", out: false},
 		{in: "1 < 2", out: true},
-		// And or
 		{in: "true && false", out: false},
 		{in: "true && 1 < 2", out: true},
 		{in: "false || 1 < 2", out: true},
 		{in: "false || false", out: false},
-		// None boolable
 		{in: "env.UNKNOWN == 'true'", out: false},
 		{in: "env.UNKNOWN", out: false},
-		// Inline expressions
 		{in: "env.SOME_TEXT", out: true},
 		{in: "env.SOME_TEXT == 'text'", out: true},
 		{in: "env.SOMETHING_TRUE == 'true'", out: true},
 		{in: "env.SOMETHING_FALSE == 'true'", out: false},
 		{in: "env.SOMETHING_TRUE", out: true},
 		{in: "env.SOMETHING_FALSE", out: true},
-		// TODO: This does not throw an error, because the evaluator does not know if the expression is inside ${{ }} or not
-		// {in: "!env.SOMETHING_TRUE", wantErr: true},
-		// {in: "!env.SOMETHING_FALSE", wantErr: true},
 		{in: "${{ !env.SOMETHING_TRUE }}", out: false},
 		{in: "${{ !env.SOMETHING_FALSE }}", out: false},
 		{in: "${{ ! env.SOMETHING_TRUE }}", out: false},
 		{in: "${{ ! env.SOMETHING_FALSE }}", out: false},
 		{in: "${{ env.SOMETHING_TRUE }}", out: true},
 		{in: "${{ env.SOMETHING_FALSE }}", out: true},
-		{in: "${{ !env.SOMETHING_TRUE }}", out: false},
-		{in: "${{ !env.SOMETHING_FALSE }}", out: false},
 		{in: "${{ !env.SOMETHING_TRUE && true }}", out: false},
 		{in: "${{ !env.SOMETHING_FALSE && true }}", out: false},
 		{in: "${{ !env.SOMETHING_TRUE || true }}", out: true},
@@ -146,14 +108,11 @@ func TestRunContext_EvalBool(t *testing.T) {
 		{in: "${{ env.SOMETHING_TRUE && true }}", out: true},
 		{in: "${{ env.SOMETHING_FALSE || true }}", out: true},
 		{in: "${{ env.SOMETHING_FALSE || false }}", out: true},
-		// TODO: This does not throw an error, because the evaluator does not know if the expression is inside ${{ }} or not
-		// {in: "!env.SOMETHING_TRUE || true", wantErr: true},
 		{in: "${{ env.SOMETHING_TRUE == 'true'}}", out: true},
 		{in: "${{ env.SOMETHING_FALSE == 'true'}}", out: false},
 		{in: "${{ env.SOMETHING_FALSE == 'false'}}", out: true},
 		{in: "${{ env.SOMETHING_FALSE }} && ${{ env.SOMETHING_TRUE }}", out: true},
 
-		// All together now
 		{in: "false || env.SOMETHING_TRUE == 'true'", out: true},
 		{in: "true || env.SOMETHING_FALSE == 'true'", out: true},
 		{in: "true && env.SOMETHING_TRUE == 'true'", out: true},
@@ -162,33 +121,26 @@ func TestRunContext_EvalBool(t *testing.T) {
 		{in: "env.SOMETHING_FALSE == 'true' && true", out: false},
 		{in: "${{ env.SOMETHING_FALSE == 'true' }} && true", out: true},
 		{in: "true && ${{ env.SOMETHING_FALSE == 'true' }}", out: true},
-		// Check github context
 		{in: "github.actor == 'nektos/act'", out: true},
 		{in: "github.actor == 'unknown'", out: false},
 		{in: "github.job == 'job1'", out: true},
-		// The special ACT flag
 		{in: "${{ env.ACT }}", out: true},
 		{in: "${{ !env.ACT }}", out: false},
-		// Invalid expressions should be reported
 		{in: "INVALID_EXPRESSION", wantErr: true},
 	}
 
 	for _, table := range tables {
 		t.Run(table.in, func(t *testing.T) {
-			assertObject := assert.New(t)
 			b, err := EvalBool(t.Context(), rc.ExprEval, table.in, exprparser.DefaultStatusCheckSuccess)
 			if table.wantErr {
-				assertObject.Error(err) //nolint:testifylint // pre-existing issue from nektos/act
+				require.Error(t, err)
 			}
 
-			assertObject.Equal(table.out, b, fmt.Sprintf("Expected %s to be %v, was %v", table.in, table.out, b)) //nolint:testifylint // pre-existing issue from nektos/act
+			assert.Equal(t, table.out, b)
 		})
 	}
 }
 
-// fakeContainer turns every container operation into a no-op, so startJobContainer
-// runs without a Docker daemon. The embedded interface is nil, so any method the
-// test does not exercise panics rather than silently doing the wrong thing.
 type fakeContainer struct {
 	container.ExecutionsEnvironment
 }
@@ -244,7 +196,7 @@ func startJobContainerInputs(t *testing.T, workflowYAML string, cfg *Config) []*
 	t.Cleanup(func() { newContainer = origNewContainer })
 
 	cfg.Workdir = "/tmp"
-	cfg.ContainerNetworkMode = "host" // an explicit network mode creates no network
+	cfg.ContainerNetworkMode = "host"
 	cfg.Env = map[string]string{}
 	cfg.Secrets = map[string]string{}
 
@@ -287,8 +239,6 @@ func startJobContainerInputs(t *testing.T, workflowYAML string, cfg *Config) []*
 	return inputs
 }
 
-// Regression test: a service without a `credentials:` block resolves to empty
-// credentials, which used to overwrite the job container's own credentials.
 func TestStartJobContainerKeepsJobCredentialsWithServices(t *testing.T) {
 	inputs := startJobContainerInputs(t, `
 name: test
@@ -317,9 +267,7 @@ jobs:
 		credentials[in.Image] = [2]string{in.Username, in.Password}
 	}
 
-	// the job container keeps its own credentials, whichever services exist
 	require.Equal(t, [2]string{"job-user", "job-password"}, credentials["registry.example/private:latest"])
-	// each service keeps its own, and a service without credentials gets none
 	require.Equal(t, [2]string{"db-user", "db-password"}, credentials["postgres:latest"])
 	require.Equal(t, [2]string{"", ""}, credentials["redis:latest"])
 }
@@ -335,10 +283,10 @@ jobs:
           - data:/data
 `, &Config{ValidVolumes: []string{"data"}})[0]
 
-	require.Equal(t, "redis:latest", redis.Image) // services are built before the job container
+	require.Equal(t, "redis:latest", redis.Image)
 	require.Equal(t, []string{"data"}, redis.ValidVolumes)
 	require.Equal(t, map[string]string{"data": "/data"}, redis.Mounts)
-	require.Empty(t, redis.Binds) // the docker socket is the job container's alone
+	require.Empty(t, redis.Binds)
 	require.Empty(t, redis.WorkingDir)
 	require.Nil(t, redis.Entrypoint)
 	require.Nil(t, redis.Cmd)
@@ -388,8 +336,6 @@ jobs:
 	require.Equal(t, "--volumes-from "+job.Name, redis.WorkflowOptions)
 }
 
-// Only the workflow's options may be stripped later, so the two sources have to reach the
-// container apart from each other.
 func TestStartJobContainerKeepsRunnerOptionsApartFromWorkflowOptions(t *testing.T) {
 	inputs := startJobContainerInputs(t, `
 name: test
@@ -413,12 +359,9 @@ jobs:
 	}
 
 	require.Equal(t, [2]string{"--device /dev/fuse", "--cap-add SYS_PTRACE"}, options["registry.example/job:latest"])
-	// a service container gets no options from the runner's config today
 	require.Equal(t, [2]string{"", "--shm-size 1g"}, options["redis:latest"])
 }
 
-// A service container reaches the internet the same way the job does, so it inherits the
-// job's proxy; a service that sets the variable itself keeps its own value.
 func TestStartJobContainerGivesServicesTheJobProxy(t *testing.T) {
 	inputs := startJobContainerInputs(t, `
 name: test
@@ -442,14 +385,11 @@ jobs:
 
 	require.Contains(t, redis.Env, "http_proxy=http://proxy:3128")
 	require.Contains(t, redis.Env, "no_proxy=internal.example")
-	// the service's own env wins over what the runner injected, without dropping the rest
 	require.Contains(t, db.Env, "no_proxy=db-only.example")
 	require.NotContains(t, db.Env, "no_proxy=internal.example")
 	require.Contains(t, db.Env, "http_proxy=http://proxy:3128")
 }
 
-// act builds Dockerfile actions through the API, which does not pre-populate the proxy
-// build args the docker CLI would, so the RUN steps would have no network behind a proxy.
 func TestProxyBuildArgs(t *testing.T) {
 	rc := &RunContext{Config: &Config{ProxyEnv: map[string]string{"http_proxy": "http://proxy:3128"}}}
 
@@ -458,69 +398,56 @@ func TestProxyBuildArgs(t *testing.T) {
 	require.Len(t, args, 1)
 	require.Equal(t, "http://proxy:3128", *args["http_proxy"])
 
-	// a job without a proxy builds exactly as it does today
 	require.Nil(t, (&RunContext{Config: &Config{}}).proxyBuildArgs())
 }
 
 func TestRunContext_GetBindsAndMounts(t *testing.T) {
-	rctemplate := &RunContext{
-		Name: "TestRCName",
-		Run: &model.Run{
-			Workflow: &model.Workflow{
-				Name: "TestWorkflowName",
+	newRunContext := func(config *Config) *RunContext {
+		return &RunContext{
+			Name: "TestRCName",
+			Run: &model.Run{
+				Workflow: &model.Workflow{Name: "TestWorkflowName"},
 			},
-		},
-		Config: &Config{
-			BindWorkdir: false,
-		},
+			Config: config,
+		}
 	}
+	rctemplate := newRunContext(&Config{})
 
 	tests := []struct {
 		windowsPath bool
-		name        string
-		rc          *RunContext
-		wantbind    string
-		wantmount   string
+		name, want  string
 	}{
-		{false, "/mnt/linux", rctemplate, "/mnt/linux", "/mnt/linux"},
-		{false, "/mnt/path with spaces/linux", rctemplate, "/mnt/path with spaces/linux", "/mnt/path with spaces/linux"},
-		{true, "C:\\Users\\TestPath\\MyTestPath", rctemplate, "/mnt/c/Users/TestPath/MyTestPath", "/mnt/c/Users/TestPath/MyTestPath"},
-		{true, "C:\\Users\\Test Path with Spaces\\MyTestPath", rctemplate, "/mnt/c/Users/Test Path with Spaces/MyTestPath", "/mnt/c/Users/Test Path with Spaces/MyTestPath"},
-		{true, "/LinuxPathOnWindowsShouldFail", rctemplate, "", ""},
+		{false, "/mnt/linux", "/mnt/linux"},
+		{false, "/mnt/path with spaces/linux", "/mnt/path with spaces/linux"},
+		{true, `C:\Users\TestPath\MyTestPath`, "/mnt/c/Users/TestPath/MyTestPath"},
+		{true, `C:\Users\Test Path with Spaces\MyTestPath`, "/mnt/c/Users/Test Path with Spaces/MyTestPath"},
+		{true, "/LinuxPathOnWindowsShouldFail", ""},
 	}
 
-	isWindows := runtime.GOOS == "windows"
-
 	for _, testcase := range tests {
-		// pin for scopelint
+		if (runtime.GOOS == "windows") != testcase.windowsPath {
+			continue
+		}
 		for _, bindWorkDir := range []bool{true, false} {
-			// pin for scopelint
 			testBindSuffix := ""
 			if bindWorkDir {
 				testBindSuffix = "Bind"
 			}
+			t.Run(testcase.name+testBindSuffix, func(t *testing.T) {
+				rctemplate.Config.Workdir = testcase.name
+				rctemplate.Config.BindWorkdir = bindWorkDir
+				gotbind, gotmount := rctemplate.GetBindsAndMounts(t.Context())
 
-			// Only run windows path tests on windows and non-windows on non-windows
-			if (isWindows && testcase.windowsPath) || (!isWindows && !testcase.windowsPath) {
-				t.Run((testcase.name + testBindSuffix), func(t *testing.T) {
-					config := testcase.rc.Config
-					config.Workdir = testcase.name
-					config.BindWorkdir = bindWorkDir
-					gotbind, gotmount := rctemplate.GetBindsAndMounts(t.Context())
-
-					// Name binds/mounts are either/or
-					if config.BindWorkdir {
-						fullBind := testcase.name + ":" + testcase.wantbind
-						if runtime.GOOS == "darwin" {
-							fullBind += ":delegated"
-						}
-						assert.Contains(t, gotbind, fullBind)
-					} else {
-						mountkey := testcase.rc.jobContainerName()
-						assert.EqualValues(t, testcase.wantmount, gotmount[mountkey]) //nolint:testifylint // pre-existing issue from nektos/act
+				if bindWorkDir {
+					fullBind := testcase.name + ":" + testcase.want
+					if runtime.GOOS == "darwin" {
+						fullBind += ":delegated"
 					}
-				})
-			}
+					assert.Contains(t, gotbind, fullBind)
+				} else {
+					assert.Equal(t, testcase.want, gotmount[rctemplate.jobContainerName()])
+				}
+			})
 		}
 	}
 
@@ -548,21 +475,12 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			rc := &RunContext{
-				Name: "TestRCName",
-				Run: &model.Run{
-					Workflow: &model.Workflow{
-						Name: "TestWorkflowName",
-					},
+			rc := newRunContext(&Config{
+				ValidVolumes: []string{"**"},
+				Secrets: map[string]string{
+					"MAME": "/host/mame/roms",
 				},
-				Config: &Config{
-					BindWorkdir:  false,
-					ValidVolumes: []string{"**"},
-					Secrets: map[string]string{
-						"MAME": "/host/mame/roms",
-					},
-				},
-			}
+			})
 			rc.Run.JobID = "job1"
 			rc.Run.Workflow.Jobs = map[string]*model.Job{"job1": job}
 			rc.ExprEval = rc.NewExpressionEvaluator(t.Context())
@@ -576,20 +494,11 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 
 		for _, testcase := range tests {
 			t.Run(testcase.name, func(t *testing.T) {
-				rc := &RunContext{
-					Name: "TestRCName",
-					Run: &model.Run{
-						Workflow: &model.Workflow{
-							Name: "TestWorkflowName",
-						},
-					},
-					Config: &Config{
-						BindWorkdir:     false,
-						SharedToolCache: true, // so OverridesToolCache has a mount to displace
-						ValidVolumes:    []string{"**"},
-					},
-					containerSpec: model.ContainerSpec{Volumes: testcase.volumes},
-				}
+				rc := newRunContext(&Config{
+					SharedToolCache: true,
+					ValidVolumes:    []string{"**"},
+				})
+				rc.containerSpec.Volumes = testcase.volumes
 				rc.Run.JobID = "job1"
 
 				gotbind, gotmount := rc.GetBindsAndMounts(t.Context())
@@ -603,8 +512,6 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 					assert.Equal(t, gotmount[k], v)
 				}
 
-				// Docker rejects a container with two mounts on one target, so the job's own
-				// volumes must displace the runner's rather than pile up next to them.
 				targets := map[string]bool{}
 				for _, bind := range gotbind {
 					parsed, err := container.ParseVolume(bind)
@@ -621,11 +528,7 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 	})
 
 	t.Run("ToolCacheMount", func(t *testing.T) {
-		rc := &RunContext{
-			Name:   "TestRCName",
-			Run:    &model.Run{Workflow: &model.Workflow{Name: "TestWorkflowName"}},
-			Config: &Config{},
-		}
+		rc := newRunContext(&Config{})
 
 		_, gotmount := rc.GetBindsAndMounts(t.Context())
 		assert.NotContains(t, gotmount, sharedToolCacheVolume)
@@ -668,15 +571,11 @@ func TestRunContextValidVolumes(t *testing.T) {
 
 	got := rc.validVolumes()
 
-	// the configured volumes plus the ones the runner mounts automatically
 	assert.Subset(t, got, []string{"my-vol", "/host/path", sharedToolCacheVolume, name, name + "-env", "/var/run/docker.sock"})
 
-	// deriving the list must never mutate or grow the shared Config slice: parallel matrix
-	// combinations share one *Config, and the previous in-place append was a data race.
 	assert.Equal(t, []string{"my-vol", "/host/path"}, rc.Config.ValidVolumes)
 	assert.Len(t, rc.validVolumes(), len(got), "repeated calls must be stable, not accumulate")
 
-	// a job may mount it only while the runner does
 	rc.Config.SharedToolCache = false
 	assert.NotContains(t, rc.validVolumes(), sharedToolCacheVolume)
 
@@ -894,7 +793,6 @@ func TestInterpolateOutputsIsPerMatrixComboKeepingNeedsOutputs(t *testing.T) {
 	require.Equal(t, map[string]string{"o": "from-gitea"}, needed.Outputs)
 }
 
-// A whole-value `outputs:` expression only reaches the typed field through DecodeRaw.
 func TestInterpolateOutputsFromExpression(t *testing.T) {
 	var rawOutputs yaml.Node
 	require.NoError(t, rawOutputs.Encode(`${{ fromJSON('{"o":"resolved"}') }}`))
@@ -912,7 +810,7 @@ func TestGetGitHubContext(t *testing.T) {
 	logging.SetLevel(logging.LevelDebug)
 
 	cwd, err := os.Getwd()
-	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
+	require.NoError(t, err)
 
 	rc := &RunContext{
 		Config: &Config{
@@ -939,8 +837,6 @@ func TestGetGitHubContext(t *testing.T) {
 
 	ghc := rc.getGithubContext(t.Context())
 
-	logging.Debugf("%v", ghc)
-
 	actor := "nektos/act"
 	if a := os.Getenv("ACT_ACTOR"); a != "" {
 		actor = a
@@ -956,15 +852,15 @@ func TestGetGitHubContext(t *testing.T) {
 		owner = o
 	}
 
-	assert.Equal(t, ghc.RunID, "1")         //nolint:testifylint // pre-existing issue from nektos/act
-	assert.Equal(t, ghc.RunNumber, "1")     //nolint:testifylint // pre-existing issue from nektos/act
-	assert.Equal(t, ghc.RetentionDays, "0") //nolint:testifylint // pre-existing issue from nektos/act
-	assert.Equal(t, ghc.Actor, actor)
-	assert.Equal(t, ghc.Repository, repo)
-	assert.Equal(t, ghc.RepositoryOwner, owner)
-	assert.Equal(t, ghc.RunnerPerflog, "/dev/null") //nolint:testifylint // pre-existing issue from nektos/act
-	assert.Equal(t, ghc.Token, rc.Config.Secrets["GITHUB_TOKEN"])
-	assert.Equal(t, ghc.Job, "job1") //nolint:testifylint // pre-existing issue from nektos/act
+	assert.Equal(t, "1", ghc.RunID)
+	assert.Equal(t, "1", ghc.RunNumber)
+	assert.Equal(t, "0", ghc.RetentionDays)
+	assert.Equal(t, actor, ghc.Actor)
+	assert.Equal(t, repo, ghc.Repository)
+	assert.Equal(t, owner, ghc.RepositoryOwner)
+	assert.Equal(t, "/dev/null", ghc.RunnerPerflog)
+	assert.Equal(t, rc.Config.Secrets["GITHUB_TOKEN"], ghc.Token)
+	assert.Equal(t, "job1", ghc.Job)
 
 	rc.Config.PresetGitHubContext = &model.GithubContext{Actor: "preset-actor", TriggeringActor: "triggerer", Job: "preset-job"}
 	ghc = rc.getGithubContext(t.Context())
@@ -1070,229 +966,88 @@ func createJob(t *testing.T, input, result string) *model.Job {
 }
 
 func TestRunContextRunsOnPlatformNames(t *testing.T) {
-	logging.SetLevel(logging.LevelDebug)
-	assertObject := assert.New(t)
-
-	rc := createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ubuntu-latest`, ""),
-	})
-	assertObject.Equal([]string{"ubuntu-latest"}, rc.runsOnPlatformNames(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ${{ 'ubuntu-latest' }}`, ""),
-	})
-	assertObject.Equal([]string{"ubuntu-latest"}, rc.runsOnPlatformNames(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: [self-hosted, my-runner]`, ""),
-	})
-	assertObject.Equal([]string{"self-hosted", "my-runner"}, rc.runsOnPlatformNames(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: [self-hosted, "${{ 'my-runner' }}"]`, ""),
-	})
-	assertObject.Equal([]string{"self-hosted", "my-runner"}, rc.runsOnPlatformNames(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ${{ fromJSON('["ubuntu-latest"]') }}`, ""),
-	})
-	assertObject.Equal([]string{"ubuntu-latest"}, rc.runsOnPlatformNames(t.Context()))
-
-	// test missing / invalid runs-on
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `name: something`, ""),
-	})
-	assertObject.Equal([]string{}, rc.runsOnPlatformNames(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on:
-  mapping: value`, ""),
-	})
-	assertObject.Equal([]string{}, rc.runsOnPlatformNames(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ${{ invalid expression }}`, ""),
-	})
-	assertObject.Equal([]string{}, rc.runsOnPlatformNames(t.Context()))
-}
-
-func TestRunContextIsEnabled(t *testing.T) {
-	logging.SetLevel(logging.LevelDebug)
-	assertObject := assert.New(t)
-
-	// success()
-	rc := createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ubuntu-latest
-env:
-  BROKEN: ${{ fromJSON('invalid') }}
-if: success()`, ""),
-	})
-	assertObject.True(rc.isEnabled(t.Context()))
-	require.Error(t, evaluateJobEnvAndDefaults(t.Context(), rc))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ubuntu-latest`, "failure"),
-		"job2": createJob(t, `runs-on: ubuntu-latest
-needs: [job1]
-if: success()`, ""),
-	})
-	rc.Run.JobID = "job2"
-	assertObject.False(rc.isEnabled(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ubuntu-latest`, "success"),
-		"job2": createJob(t, `runs-on: ubuntu-latest
-needs: [job1]
-if: success()`, ""),
-	})
-	rc.Run.JobID = "job2"
-	assertObject.True(rc.isEnabled(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ubuntu-latest`, "failure"),
-		"job2": createJob(t, `runs-on: ubuntu-latest
-if: success()`, ""),
-	})
-	rc.Run.JobID = "job2"
-	assertObject.True(rc.isEnabled(t.Context()))
-
-	// failure()
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ubuntu-latest
-if: failure()`, ""),
-	})
-	assertObject.False(rc.isEnabled(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ubuntu-latest`, "failure"),
-		"job2": createJob(t, `runs-on: ubuntu-latest
-needs: [job1]
-if: failure()`, ""),
-	})
-	rc.Run.JobID = "job2"
-	assertObject.True(rc.isEnabled(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ubuntu-latest`, "success"),
-		"job2": createJob(t, `runs-on: ubuntu-latest
-needs: [job1]
-if: failure()`, ""),
-	})
-	rc.Run.JobID = "job2"
-	assertObject.False(rc.isEnabled(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ubuntu-latest`, "failure"),
-		"job2": createJob(t, `runs-on: ubuntu-latest
-if: failure()`, ""),
-	})
-	rc.Run.JobID = "job2"
-	assertObject.False(rc.isEnabled(t.Context()))
-
-	// always()
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ubuntu-latest
-if: always()`, ""),
-	})
-	assertObject.True(rc.isEnabled(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ubuntu-latest`, "failure"),
-		"job2": createJob(t, `runs-on: ubuntu-latest
-needs: [job1]
-if: always()`, ""),
-	})
-	rc.Run.JobID = "job2"
-	assertObject.True(rc.isEnabled(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ubuntu-latest`, "success"),
-		"job2": createJob(t, `runs-on: ubuntu-latest
-needs: [job1]
-if: always()`, ""),
-	})
-	rc.Run.JobID = "job2"
-	assertObject.True(rc.isEnabled(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `runs-on: ubuntu-latest`, "success"),
-		"job2": createJob(t, `runs-on: ubuntu-latest
-if: always()`, ""),
-	})
-	rc.Run.JobID = "job2"
-	assertObject.True(rc.isEnabled(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `uses: ./.github/workflows/reusable.yml`, ""),
-	})
-	assertObject.True(rc.isEnabled(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `uses: ./.github/workflows/reusable.yml
-if: false`, ""),
-	})
-	assertObject.False(rc.isEnabled(t.Context()))
-
-	rc = createIfTestRunContext(map[string]*model.Job{
-		"job1": createJob(t, `if: ${{ fromJSON('not-json') }}`, ""),
-	})
-	enabled, err := rc.isEnabled(t.Context())
-	require.NoError(t, err)
-	assertObject.False(enabled)
-}
-
-func TestRunContextGetEnv(t *testing.T) {
-	tests := []struct {
-		description string
-		rc          *RunContext
-		targetEnv   string
-		want        string
+	for _, testcase := range []struct {
+		job  string
+		want []string
 	}{
-		{
-			description: "Env from Config should overwrite",
-			rc: &RunContext{
-				Config: &Config{
-					Env: map[string]string{"OVERWRITTEN": "true"},
-				},
-				Run: &model.Run{
-					Workflow: &model.Workflow{
-						Jobs: map[string]*model.Job{"test": {Name: "test"}},
-						Env:  map[string]string{"OVERWRITTEN": "false"},
-					},
-					JobID: "test",
-				},
-			},
-			targetEnv: "OVERWRITTEN",
-			want:      "true",
-		},
-		{
-			description: "No overwrite occurs",
-			rc: &RunContext{
-				Config: &Config{
-					Env: map[string]string{"SOME_OTHER_VAR": "true"},
-				},
-				Run: &model.Run{
-					Workflow: &model.Workflow{
-						Jobs: map[string]*model.Job{"test": {Name: "test"}},
-						Env:  map[string]string{"OVERWRITTEN": "false"},
-					},
-					JobID: "test",
-				},
-			},
-			targetEnv: "OVERWRITTEN",
-			want:      "false",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.description, func(t *testing.T) {
-			envMap := test.rc.GetEnv()
-			assert.EqualValues(t, test.want, envMap[test.targetEnv]) //nolint:testifylint // pre-existing issue from nektos/act
+		{"runs-on: ubuntu-latest", []string{"ubuntu-latest"}},
+		{"runs-on: ${{ 'ubuntu-latest' }}", []string{"ubuntu-latest"}},
+		{"runs-on: [self-hosted, my-runner]", []string{"self-hosted", "my-runner"}},
+		{`runs-on: [self-hosted, "${{ 'my-runner' }}"]`, []string{"self-hosted", "my-runner"}},
+		{`runs-on: ${{ fromJSON('["ubuntu-latest"]') }}`, []string{"ubuntu-latest"}},
+		{"name: something", []string{}},
+		{"runs-on: {mapping: value}", []string{}},
+		{"runs-on: ${{ invalid expression }}", []string{}},
+	} {
+		t.Run(testcase.job, func(t *testing.T) {
+			rc := createIfTestRunContext(map[string]*model.Job{"job1": createJob(t, testcase.job, "")})
+			assert.Equal(t, testcase.want, rc.runsOnPlatformNames(t.Context()))
 		})
 	}
 }
 
-// a remote composite action re-evaluates its env per stage, so inputs must follow it
+func TestRunContextIsEnabled(t *testing.T) {
+	for _, testcase := range []struct {
+		name, job, neededResult string
+		want, envError          bool
+	}{
+		{name: "broken env fails at setup", job: "runs-on: ubuntu-latest\nenv:\n  BROKEN: ${{ fromJSON('invalid') }}\nif: success()", want: true, envError: true},
+		{name: "success with failed dependency", job: "runs-on: ubuntu-latest\nneeds: [needed]\nif: success()", neededResult: "failure"},
+		{name: "success with successful dependency", job: "runs-on: ubuntu-latest\nneeds: [needed]\nif: success()", neededResult: "success", want: true},
+		{name: "success with unrelated failed job", job: "runs-on: ubuntu-latest\nif: success()", neededResult: "failure", want: true},
+		{name: "failure without dependencies", job: "runs-on: ubuntu-latest\nif: failure()"},
+		{name: "failure with failed dependency", job: "runs-on: ubuntu-latest\nneeds: [needed]\nif: failure()", neededResult: "failure", want: true},
+		{name: "failure with successful dependency", job: "runs-on: ubuntu-latest\nneeds: [needed]\nif: failure()", neededResult: "success"},
+		{name: "failure with unrelated failed job", job: "runs-on: ubuntu-latest\nif: failure()", neededResult: "failure"},
+		{name: "always without dependencies", job: "runs-on: ubuntu-latest\nif: always()", want: true},
+		{name: "always with failed dependency", job: "runs-on: ubuntu-latest\nneeds: [needed]\nif: always()", neededResult: "failure", want: true},
+		{name: "always with successful dependency", job: "runs-on: ubuntu-latest\nneeds: [needed]\nif: always()", neededResult: "success", want: true},
+		{name: "always with unrelated successful job", job: "runs-on: ubuntu-latest\nif: always()", neededResult: "success", want: true},
+		{name: "reusable workflow", job: "uses: ./.github/workflows/reusable.yml", want: true},
+		{name: "disabled reusable workflow", job: "uses: ./.github/workflows/reusable.yml\nif: false"},
+		{name: "invalid condition", job: "if: ${{ fromJSON('not-json') }}"},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			jobs := map[string]*model.Job{"job1": createJob(t, testcase.job, "")}
+			if testcase.neededResult != "" {
+				jobs["needed"] = createJob(t, "runs-on: ubuntu-latest", testcase.neededResult)
+			}
+			rc := createIfTestRunContext(jobs)
+			enabled, err := rc.isEnabled(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, testcase.want, enabled)
+			if testcase.envError {
+				require.Error(t, evaluateJobEnvAndDefaults(t.Context(), rc))
+			}
+		})
+	}
+}
+
+func TestRunContextGetEnv(t *testing.T) {
+	for _, testcase := range []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"Env from Config should overwrite", map[string]string{"OVERWRITTEN": "true"}, "true"},
+		{"No overwrite occurs", map[string]string{"SOME_OTHER_VAR": "true"}, "false"},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			rc := &RunContext{
+				Config: &Config{Env: testcase.env},
+				Run: &model.Run{
+					JobID: "test",
+					Workflow: &model.Workflow{
+						Jobs: map[string]*model.Job{"test": {}},
+						Env:  map[string]string{"OVERWRITTEN": "false"},
+					},
+				},
+			}
+			assert.Equal(t, testcase.want, rc.GetEnv()["OVERWRITTEN"])
+		})
+	}
+}
+
 func TestSetActionEnvRefreshesInputs(t *testing.T) {
 	rc := &RunContext{}
 	rc.setActionEnv(map[string]string{"INPUT_MSG": "pre"})
@@ -1452,15 +1207,40 @@ func TestWaitForServiceContainers(t *testing.T) {
 		}
 	}
 
-	t.Run("returns as soon as a service without a healthcheck runs", func(t *testing.T) {
-		service := &containerMock{}
-		service.On("Inspect", mock.Anything).
-			Return(&container.Info{ID: "id", State: "running", Health: container.HealthNone}, nil).Once()
-
-		rc := newRunContext(0, &serviceContainer{name: "redis", container: service})
-		require.NoError(t, rc.waitForServiceContainers()(t.Context()))
-		service.AssertExpectations(t)
-	})
+	for _, testcase := range []struct {
+		name, serviceName string
+		timeout           time.Duration
+		info              *container.Info
+		inspectError      error
+		wantError, wantID string
+	}{
+		{name: "returns as soon as a service without a healthcheck runs", serviceName: "redis", info: &container.Info{ID: "id", State: "running", Health: container.HealthNone}},
+		{name: "fails with the probe output when a service is unhealthy", serviceName: "postgres", info: &container.Info{State: "running", Health: container.HealthUnhealthy, HealthOutput: "connection refused"}, wantError: "the service 'postgres' is unhealthy: connection refused"},
+		{name: "lets the steps run when a service exits without a healthcheck", serviceName: "postgres", info: &container.Info{State: "exited", ExitCode: 2, Health: container.HealthNone}},
+		{name: "proceeds when the container is gone", serviceName: "postgres", inspectError: container.ErrContainerNotFound},
+		{name: "does not wait when the timeout is negative", serviceName: "postgres", timeout: -1, info: &container.Info{ID: "id", State: "running", Health: container.HealthStarting}, wantID: "id"},
+		{name: "fails on an inspect error even when the timeout is negative", serviceName: "postgres", timeout: -1, inspectError: errors.New("daemon is gone"), wantError: "failed to inspect service 'postgres'"},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			service := &containerMock{}
+			service.On("Inspect", mock.Anything).Return(testcase.info, testcase.inspectError).Once()
+			if testcase.info != nil && testcase.info.Health == container.HealthUnhealthy {
+				service.On("DumpLogs", mock.Anything).Return(nil).Once()
+			}
+			svc := &serviceContainer{name: testcase.serviceName, container: service}
+			err := newRunContext(testcase.timeout, svc).waitForServiceContainers()(t.Context())
+			if testcase.wantError != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), testcase.wantError)
+			} else {
+				require.NoError(t, err)
+			}
+			if testcase.wantID != "" {
+				assert.Equal(t, testcase.wantID, svc.info.ID)
+			}
+			service.AssertExpectations(t)
+		})
+	}
 
 	t.Run("polls at a fixed interval and logs starting only once", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
@@ -1481,40 +1261,6 @@ func TestWaitForServiceContainers(t *testing.T) {
 			assert.Equal(t, 1, strings.Count(output.String(), "postgres service is starting."))
 			assert.Contains(t, output.String(), "postgres service is healthy.")
 		})
-	})
-
-	t.Run("fails with the probe output when a service is unhealthy", func(t *testing.T) {
-		service := &containerMock{}
-		service.On("Inspect", mock.Anything).Return(&container.Info{
-			State:        "running",
-			Health:       container.HealthUnhealthy,
-			HealthOutput: "connection refused",
-		}, nil).Once()
-		service.On("DumpLogs", mock.Anything).Return(nil).Once()
-
-		rc := newRunContext(0, &serviceContainer{name: "postgres", container: service})
-		err := rc.waitForServiceContainers()(t.Context())
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "the service 'postgres' is unhealthy: connection refused")
-		service.AssertExpectations(t)
-	})
-
-	t.Run("lets the steps run when a service exits without a healthcheck", func(t *testing.T) {
-		service := &containerMock{}
-		service.On("Inspect", mock.Anything).
-			Return(&container.Info{State: "exited", ExitCode: 2, Health: container.HealthNone}, nil).Once()
-
-		rc := newRunContext(0, &serviceContainer{name: "postgres", container: service})
-		require.NoError(t, rc.waitForServiceContainers()(t.Context()))
-	})
-
-	t.Run("proceeds when the container is gone", func(t *testing.T) {
-		service := &containerMock{}
-		service.On("Inspect", mock.Anything).
-			Return((*container.Info)(nil), container.ErrContainerNotFound).Once()
-
-		rc := newRunContext(0, &serviceContainer{name: "postgres", container: service})
-		require.NoError(t, rc.waitForServiceContainers()(t.Context()))
 	})
 
 	t.Run("fails right away when one service fails while another is still starting", func(t *testing.T) {
@@ -1565,29 +1311,6 @@ func TestWaitForServiceContainers(t *testing.T) {
 		assert.Contains(t, err.Error(), "did not become healthy within")
 	})
 
-	t.Run("does not wait when the timeout is negative", func(t *testing.T) {
-		service := &containerMock{}
-		// Still described once, so the `job.services` context is filled either way.
-		service.On("Inspect", mock.Anything).
-			Return(&container.Info{ID: "id", State: "running", Health: container.HealthStarting}, nil).Once()
-
-		svc := &serviceContainer{name: "postgres", container: service}
-		rc := newRunContext(-1, svc)
-		require.NoError(t, rc.waitForServiceContainers()(t.Context()))
-		service.AssertExpectations(t)
-		assert.Equal(t, "id", svc.info.ID)
-	})
-
-	t.Run("fails on an inspect error even when the timeout is negative", func(t *testing.T) {
-		service := &containerMock{}
-		service.On("Inspect", mock.Anything).Return((*container.Info)(nil), errors.New("daemon is gone")).Once()
-
-		rc := newRunContext(-1, &serviceContainer{name: "postgres", container: service})
-		err := rc.waitForServiceContainers()(t.Context())
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to inspect service 'postgres'")
-	})
-
 	t.Run("is a no-op without services", func(t *testing.T) {
 		require.NoError(t, newRunContext(0).waitForServiceContainers()(t.Context()))
 	})
@@ -1616,9 +1339,7 @@ func TestGetJobContextReportsContainers(t *testing.T) {
 		jobContainerID: "job-container-id",
 		serviceContainers: []*serviceContainer{
 			{name: "postgres", info: &container.Info{ID: "svc-id", Ports: map[string]string{"5432": "49153"}}},
-			// A service that publishes no port reports an empty map, as GitHub does.
 			{name: "redis", info: &container.Info{ID: "redis-id", Ports: map[string]string{}}},
-			// A service that never reported is left out rather than reported as empty.
 			{name: "mailhog"},
 		},
 	}
@@ -1656,7 +1377,6 @@ func TestCaptureJobContainerInfoExportsDockerWorkspace(t *testing.T) {
 	assert.NotContains(t, rc.Env, "GITEA_DOCKER_WORKSPACE")
 }
 
-// A job that never started a container reports an empty context, not a placeholder.
 func TestGetJobContextWithoutContainer(t *testing.T) {
 	jobContext := (&RunContext{}).getJobContext()
 

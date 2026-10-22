@@ -14,13 +14,8 @@ const jobErrorContextKeyVal = jobErrorContextKey("job.error")
 
 // JobError returns the job error for current context if any
 func JobError(ctx context.Context) error {
-	val := ctx.Value(jobErrorContextKeyVal)
-	if val != nil {
-		if container, ok := val.(map[string]error); ok {
-			return container["error"]
-		}
-	}
-	return nil
+	container, _ := ctx.Value(jobErrorContextKeyVal).(map[string]error)
+	return container["error"]
 }
 
 func SetJobError(ctx context.Context, err error) {
@@ -31,6 +26,5 @@ func SetJobError(ctx context.Context, err error) {
 
 // WithJobErrorContainer adds a value to the context as a container for an error
 func WithJobErrorContainer(ctx context.Context) context.Context {
-	container := map[string]error{}
-	return context.WithValue(ctx, jobErrorContextKeyVal, container)
+	return context.WithValue(ctx, jobErrorContextKeyVal, map[string]error{})
 }

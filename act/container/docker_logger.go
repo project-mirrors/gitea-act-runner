@@ -33,18 +33,9 @@ func logDockerResponse(logger *logging.Logger, dockerResponse io.ReadCloser, isE
 	defer dockerResponse.Close()
 
 	scanner := bufio.NewScanner(dockerResponse)
-	msg := dockerMessage{}
-
 	for scanner.Scan() {
 		line := scanner.Bytes()
-
-		msg.ID = ""
-		msg.Stream = ""
-		msg.Error = ""
-		msg.ErrorDetail.Message = ""
-		msg.Status = ""
-		msg.Progress = ""
-
+		var msg dockerMessage
 		if err := json.Unmarshal(line, &msg); err != nil {
 			writeLog(logger, false, "Unable to unmarshal line [%s] ==> %v", string(line), err)
 			continue

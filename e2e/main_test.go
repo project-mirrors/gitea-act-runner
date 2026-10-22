@@ -21,10 +21,6 @@ const runTimeout = 3 * time.Minute
 
 var nonRepoChars = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 
-func repoName(t *testing.T) string {
-	return strings.ToLower(nonRepoChars.ReplaceAllString(t.Name(), "-"))
-}
-
 var fixture *GiteaFixture
 
 var skipReason string
@@ -59,7 +55,7 @@ func runSuite(m *testing.M) int {
 func newScenario(t *testing.T) (*GiteaAPI, string) {
 	t.Helper()
 
-	repo := repoName(t)
+	repo := strings.ToLower(nonRepoChars.ReplaceAllString(t.Name(), "-"))
 	api := &GiteaAPI{baseURL: fixture.baseURL, token: fixture.adminToken}
 	if err := api.CreateRepo(t.Context(), repo); err != nil {
 		t.Fatalf("create repo: %v", err)

@@ -51,17 +51,10 @@ const (
 )
 
 var (
-	colors    []int
+	colors    = []int{blue, yellow, green, magenta, red, gray, cyan}
 	nextColor int
 	mux       sync.Mutex
 )
-
-func init() {
-	nextColor = 0
-	colors = []int{
-		blue, yellow, green, magenta, red, gray, cyan,
-	}
-}
 
 type masksContextKey string
 
@@ -69,11 +62,8 @@ const masksContextKeyVal = masksContextKey("logrus.FieldLogger")
 
 // Logger returns the appropriate logger for current context
 func Masks(ctx context.Context) *[]string {
-	val := ctx.Value(masksContextKeyVal)
-	if val != nil {
-		if masks, ok := val.(*[]string); ok {
-			return masks
-		}
+	if masks, ok := ctx.Value(masksContextKeyVal).(*[]string); ok {
+		return masks
 	}
 	return &[]string{}
 }
@@ -178,7 +168,7 @@ var secretValueEncoders = []func(string) string{
 	uriDataEscape,
 	url.QueryEscape, // the form-encoded twin of uriDataEscape, which spells a space "+"
 	url.PathEscape,
-	xmlDataEscape,
+	xmlDataEscaper.Replace,
 	trimDoubleQuotes,
 }
 
@@ -224,10 +214,6 @@ var xmlDataEscaper = strings.NewReplacer(
 	`"`, "&quot;",
 	"'", "&apos;",
 )
-
-func xmlDataEscape(v string) string {
-	return xmlDataEscaper.Replace(v)
-}
 
 func trimDoubleQuotes(v string) string {
 	if len(v) > 8 && strings.HasPrefix(v, `"`) && strings.HasSuffix(v, `"`) {
@@ -407,7 +393,7 @@ func (f textFormatter) format(r logging.Record) ([]byte, error) {
 	b := &bytes.Buffer{}
 
 	// the web renderer decodes command data, so this local view has to as well
-	if _, _, _, _, ok := parseActionCommand(r.Message, ""); ok && (strings.HasPrefix(r.Message, "::") || strings.HasPrefix(r.Message, "##[")) {
+	if _, _, _, ok := parseActionCommand(r.Message, ""); ok && (strings.HasPrefix(r.Message, "::") || strings.HasPrefix(r.Message, "##[")) {
 		r.Message = UnescapeCommandData(r.Message)
 	}
 	r.Message = strings.TrimSuffix(r.Message, "\n")
@@ -468,7 +454,8 @@ func (f textFormatter) print(b *bytes.Buffer, r logging.Record) {
 }
 
 func (f textFormatter) isColored() bool {
-	isColored := checkIfTerminal(f.w)
+	file, ok := f.w.(*os.File)
+	isColored := ok && term.IsTerminal(int(file.Fd()))
 
 	if force, ok := os.LookupEnv("CLICOLOR_FORCE"); ok && force != "0" {
 		isColored = true
@@ -479,15 +466,6 @@ func (f textFormatter) isColored() bool {
 	}
 
 	return isColored
-}
-
-func checkIfTerminal(w io.Writer) bool {
-	switch v := w.(type) {
-	case *os.File:
-		return term.IsTerminal(int(v.Fd()))
-	default:
-		return false
-	}
 }
 
 // maskSecrets hides this job's secrets in a value that reaches somewhere the log maskers cannot,

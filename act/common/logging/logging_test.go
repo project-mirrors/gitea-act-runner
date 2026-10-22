@@ -38,6 +38,7 @@ func (c countingStringer) String() string { *c.n++; return "x" }
 
 func TestLogger(t *testing.T) {
 	h := logtest.NewWithLevel(logging.LevelTrace)
+	assert.Nil(t, h.LastRecord())
 	l := logging.New(h)
 
 	l.With("job", "j1").WithError(errors.New("boom")).Warnf("step %d", 2)
@@ -53,12 +54,9 @@ func TestLogger(t *testing.T) {
 	assert.Equal(t, "j1", job)
 	errv, _ := recs[0].Attr("error")
 	require.EqualError(t, errv.(error), "boom")
-	assert.Equal(t, "a1 2b", recs[1].Message) // fmt.Sprint spacing
+	assert.Equal(t, "a1 2b", recs[1].Message)
 	bad, _ := recs[2].Attr("!BADKEY")
 	assert.Equal(t, 7, bad)
-
-	h.Reset()
-	assert.Nil(t, h.LastRecord())
 }
 
 func TestLoggerSkipsFormattingWhenDisabled(t *testing.T) {
@@ -117,10 +115,8 @@ func TestDefaultLevel(t *testing.T) {
 
 func TestSlogHandler(t *testing.T) {
 	var buf strings.Builder
-	slogger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	l := logging.New(logging.NewSlogHandler(slogger.Handler())).With("job", "j1")
+	l := logging.New(logging.NewSlogHandler(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))).With("job", "j1")
 
-	l.Tracef("dropped")
 	assert.False(t, l.Enabled(logging.LevelTrace))
 	l.WithError(errors.New("boom")).Errorf("fail %s", "x")
 

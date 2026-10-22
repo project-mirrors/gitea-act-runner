@@ -5,6 +5,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -23,8 +24,6 @@ import (
 	yaml "go.yaml.in/yaml/v4"
 )
 
-var builtinShells = []string{"bash", "sh", "pwsh", "powershell", "cmd", "python"}
-
 type stepRun struct {
 	Step               *model.Step
 	RunContext         *RunContext
@@ -41,14 +40,24 @@ func (sr *stepRun) pre() common.Executor { return common.NewPipelineExecutor() }
 func (sr *stepRun) main() common.Executor {
 	sr.env = map[string]string{}
 	return runStepExecutor(sr, stepStageMain, common.NewPipelineExecutor(
-		sr.setupShellCommandExecutor(),
+		func(ctx context.Context) error {
+			scriptName, script, err := sr.setupShellCommand(ctx)
+			if err != nil {
+				return err
+			}
+			return sr.RunContext.JobContainer.Copy(sr.RunContext.JobContainer.GetActPath(), &container.FileEntry{
+				Name: scriptName,
+				Mode: 0o755,
+				Body: script,
+			})(ctx)
+		},
 		func(ctx context.Context) error {
 			rc := sr.getRunContext()
 			// Apply ::add-path:: effects before printing so PATH is accurate in the env: block.
 			rc.ApplyExtraPath(ctx, &sr.env)
 			sr.printRunScriptActionDetails(ctx)
 			if he, ok := rc.JobContainer.(*container.HostEnvironment); ok && he != nil {
-				return he.ExecWithCmdLine(sr.cmd, sr.cmdline, sr.env, "", sr.WorkingDirectory)(ctx)
+				return he.ExecWithCmdLine(sr.cmd, sr.cmdline, sr.env, sr.WorkingDirectory)(ctx)
 			}
 			return rc.JobContainer.Exec(sr.cmd, sr.env, "", sr.WorkingDirectory)(ctx)
 		},
@@ -86,11 +95,7 @@ func printRunActionHeader(ctx context.Context, step *model.Step, env map[string]
 	}
 	rawLogger := common.Logger(ctx).With(rawOutputField, true)
 
-	title := step.Uses
-	if step.Name != "" {
-		title = step.Name
-	}
-	rawLogger.Infof("::group::Run %s", EscapeCommandData(title))
+	rawLogger.Infof("::group::Run %s", EscapeCommandData(cmp.Or(step.Name, step.Uses)))
 
 	if len(step.With) > 0 {
 		rawLogger.Infof("with:")
@@ -223,30 +228,6 @@ func (sr *stepRun) getIfExpression(_ context.Context, _ stepStage) string {
 	return sr.Step.If.Value
 }
 
-func (sr *stepRun) setupShellCommandExecutor() common.Executor {
-	return func(ctx context.Context) error {
-		scriptName, script, err := sr.setupShellCommand(ctx)
-		if err != nil {
-			return err
-		}
-
-		rc := sr.getRunContext()
-		return rc.JobContainer.Copy(rc.JobContainer.GetActPath(), &container.FileEntry{
-			Name: scriptName,
-			Mode: 0o755,
-			Body: script,
-		})(ctx)
-	}
-}
-
-func getScriptName(rc *RunContext, step *model.Step) string {
-	scriptName := step.ID
-	for rcs := rc; rcs.Parent != nil; rcs = rcs.Parent {
-		scriptName = fmt.Sprintf("%s-composite-%s", rcs.Parent.CurrentStep, scriptName)
-	}
-	return "workflow/" + scriptName
-}
-
 // TODO: Currently we just ignore top level keys, BUT we should return proper error on them
 // BUTx2 I leave this for when we rewrite act to use actionlint for workflow validation
 // so we return proper errors before any execution or spawning containers
@@ -272,8 +253,9 @@ func (sr *stepRun) setupShellCommand(ctx context.Context) (name, script string, 
 	sr.interpolatedScript = script
 
 	// GitHub matches the built-in names case-insensitively, so `shell: PWSH` is valid
-	if slices.Contains(builtinShells, strings.ToLower(step.Shell)) {
-		step.Shell = strings.ToLower(step.Shell)
+	switch shell := strings.ToLower(step.Shell); shell {
+	case "bash", "sh", "pwsh", "powershell", "cmd", "python":
+		step.Shell = shell
 	}
 
 	scCmd := step.ShellCommand()
@@ -285,7 +267,11 @@ func (sr *stepRun) setupShellCommand(ctx context.Context) (name, script string, 
 	}
 	sr.shellCommand = scCmd
 
-	name = getScriptName(sr.RunContext, step)
+	name = step.ID
+	for rc := sr.RunContext; rc.Parent != nil; rc = rc.Parent {
+		name = fmt.Sprintf("%s-composite-%s", rc.Parent.CurrentStep, name)
+	}
+	name = "workflow/" + name
 
 	// Reference: https://github.com/actions/runner/blob/8109c962f09d9acc473d92c595ff43afceddb347/src/Runner.Worker/Handlers/ScriptHandlerHelpers.cs#L47-L64
 	// Reference: https://github.com/actions/runner/blob/8109c962f09d9acc473d92c595ff43afceddb347/src/Runner.Worker/Handlers/ScriptHandlerHelpers.cs#L19-L27
@@ -330,13 +316,7 @@ func (sr *stepRun) setupShell(ctx context.Context, eval *expressionEvaluator) (b
 	if err != nil {
 		return false, fmt.Errorf("unable to interpolate the shell: %w", err)
 	}
-	if shell == "" {
-		shell = rc.jobRunDefaults.Shell
-	}
-	if shell == "" {
-		shell = rc.Run.Workflow.Defaults.Run.Shell
-	}
-	step.Shell = shell
+	step.Shell = cmp.Or(shell, rc.jobRunDefaults.Shell, rc.Run.Workflow.Defaults.Run.Shell)
 
 	implicitShell := step.Shell == ""
 	if implicitShell {
@@ -381,13 +361,7 @@ func (sr *stepRun) setupWorkingDirectory(ctx context.Context, eval *expressionEv
 	if err != nil {
 		return fmt.Errorf("unable to interpolate the working directory: %w", err)
 	}
-	if workingdirectory == "" {
-		workingdirectory = rc.jobRunDefaults.WorkingDirectory
-	}
 	// top level keys in workflow file like `defaults` or `env` can't hold expressions
-	if workingdirectory == "" {
-		workingdirectory = rc.Run.Workflow.Defaults.Run.WorkingDirectory
-	}
-	sr.WorkingDirectory = workingdirectory
+	sr.WorkingDirectory = cmp.Or(workingdirectory, rc.jobRunDefaults.WorkingDirectory, rc.Run.Workflow.Defaults.Run.WorkingDirectory)
 	return nil
 }

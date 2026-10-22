@@ -83,8 +83,6 @@ func New(cfg *config.Config, client client.Client, runner TaskRunner) *Poller {
 
 	jobsCtx, shutdownJobs := context.WithCancel(context.Background())
 
-	done := make(chan struct{})
-
 	p := &Poller{
 		client: client,
 		runner: runner,
@@ -96,11 +94,11 @@ func New(cfg *config.Config, client client.Client, runner TaskRunner) *Poller {
 		jobsCtx:      jobsCtx,
 		shutdownJobs: shutdownJobs,
 
-		done: done,
+		done:               make(chan struct{}),
+		availabilityReady:  true,
+		availabilityReason: "ok",
 	}
 	p.lastHealthyPoll.Store(time.Now().UnixNano())
-	p.availabilityReady = true
-	p.availabilityReason = "ok"
 	return p
 }
 
@@ -132,8 +130,8 @@ func (p *Poller) Poll() {
 			continue
 		}
 
-		task, ok := p.fetchTask(p.pollingCtx, s)
-		if !ok {
+		task := p.fetchTask(p.pollingCtx, s)
+		if task == nil {
 			p.runIdleMaintenance()
 			<-sem
 			if !p.waitBackoff(s) {
@@ -166,8 +164,8 @@ func (p *Poller) PollOnce(onTaskFetched func()) {
 			}
 			continue
 		}
-		task, ok := p.fetchTask(p.pollingCtx, s)
-		if !ok {
+		task := p.fetchTask(p.pollingCtx, s)
+		if task == nil {
 			p.runIdleMaintenance()
 			if !p.waitBackoff(s) {
 				return
@@ -348,7 +346,7 @@ func (p *Poller) runTaskWithRecover(ctx context.Context, task *runnerv1.Task) {
 	}
 }
 
-func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task, bool) {
+func (p *Poller) fetchTask(ctx context.Context, s *workerState) *runnerv1.Task {
 	reqCtx, cancel := context.WithTimeout(ctx, p.cfg.Runner.FetchTimeout)
 	defer cancel()
 
@@ -370,7 +368,7 @@ func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task,
 		}
 		s.consecutiveEmpty++
 		metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultEmpty).Inc()
-		return nil, false
+		return nil
 	}
 	s.fetchTimedOut = false
 	metrics.PollFetchDuration.Observe(time.Since(start).Seconds())
@@ -385,22 +383,17 @@ func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task,
 			p.unregistered.Store(true)
 			p.registrationRejected.Store(rejected)
 			p.shutdownPolling()
-			return nil, false
+			return nil
 		}
-		// Not a long poll, so a deadline can mean the server assigned a task
-		// this runner never received.
-		if errors.Is(err, context.DeadlineExceeded) {
-			logging.WithError(err).Errorf("fetching a task timed out after %s", p.cfg.Runner.FetchTimeout)
-		} else {
-			logging.WithError(err).Error("failed to fetch task")
-		}
+		logging.WithError(err).Error("failed to fetch task")
 		p.lastPollFailed.Store(true)
 		s.consecutiveErrors++
 		metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultError).Inc()
 		metrics.ClientErrors.WithLabelValues(metrics.LabelMethodFetchTask, connect.CodeOf(err).String()).Inc()
-		return nil, false
+		return nil
 	}
-	p.markHealthyPoll()
+	p.lastHealthyPoll.Store(time.Now().UnixNano())
+	p.lastPollFailed.Store(false)
 
 	// Successful response — reset error counter.
 	s.consecutiveErrors = 0
@@ -408,7 +401,7 @@ func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task,
 	if resp == nil {
 		s.consecutiveEmpty++
 		metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultEmpty).Inc()
-		return nil, false
+		return nil
 	}
 
 	if resp.TasksVersion > v {
@@ -418,17 +411,12 @@ func (p *Poller) fetchTask(ctx context.Context, s *workerState) (*runnerv1.Task,
 	if resp.Task == nil {
 		s.consecutiveEmpty++
 		metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultEmpty).Inc()
-		return nil, false
+		return nil
 	}
 
 	// got a task, set `tasksVersion` to zero to force query db in next request.
 	p.tasksVersion.CompareAndSwap(resp.TasksVersion, 0)
 
 	metrics.PollFetchTotal.WithLabelValues(metrics.LabelResultTask).Inc()
-	return resp.Task, true
-}
-
-func (p *Poller) markHealthyPoll() {
-	p.lastHealthyPoll.Store(time.Now().UnixNano())
-	p.lastPollFailed.Store(false)
+	return resp.Task
 }

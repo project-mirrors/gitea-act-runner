@@ -203,12 +203,8 @@ func parseKVAndFile(rawKVs []string, filePath string) map[string]string {
 	_ = readEnvs(filePath, result)
 
 	for _, raw := range rawKVs {
-		parts := strings.SplitN(raw, "=", 2)
-		if len(parts) == 2 {
-			result[parts[0]] = parts[1]
-		} else {
-			result[parts[0]] = ""
-		}
+		key, value, _ := strings.Cut(raw, "=")
+		result[key] = value
 	}
 	return result
 }
@@ -265,39 +261,25 @@ func printList(plan *model.Plan) {
 
 	for i, stage := range plan.Stages {
 		for _, r := range stage.Runs {
-			jobID := r.JobID
 			line := lineInfoDef{
-				jobID:   jobID,
+				jobID:   r.JobID,
 				jobName: r.String(),
 				stage:   strconv.Itoa(i),
 				wfName:  r.Workflow.Name,
 				wfFile:  r.Workflow.File,
 				events:  strings.Join(r.Workflow.On(), `,`),
 			}
-			if _, ok := jobs[jobID]; ok {
+			if jobs[r.JobID] {
 				duplicateJobIDs = true
-			} else {
-				jobs[jobID] = true
 			}
+			jobs[r.JobID] = true
 			lineInfos = append(lineInfos, line)
-			if jobIDMaxWidth < len(line.jobID) {
-				jobIDMaxWidth = len(line.jobID)
-			}
-			if jobNameMaxWidth < len(line.jobName) {
-				jobNameMaxWidth = len(line.jobName)
-			}
-			if stageMaxWidth < len(line.stage) {
-				stageMaxWidth = len(line.stage)
-			}
-			if wfNameMaxWidth < len(line.wfName) {
-				wfNameMaxWidth = len(line.wfName)
-			}
-			if wfFileMaxWidth < len(line.wfFile) {
-				wfFileMaxWidth = len(line.wfFile)
-			}
-			if eventsMaxWidth < len(line.events) {
-				eventsMaxWidth = len(line.events)
-			}
+			jobIDMaxWidth = max(jobIDMaxWidth, len(line.jobID))
+			jobNameMaxWidth = max(jobNameMaxWidth, len(line.jobName))
+			stageMaxWidth = max(stageMaxWidth, len(line.stage))
+			wfNameMaxWidth = max(wfNameMaxWidth, len(line.wfName))
+			wfFileMaxWidth = max(wfFileMaxWidth, len(line.wfFile))
+			eventsMaxWidth = max(eventsMaxWidth, len(line.events))
 		}
 	}
 
@@ -356,21 +338,15 @@ func runExecList(planner model.WorkflowPlanner, execArgs *executeArgs) error {
 	case execArgs.job != "":
 		logging.Infof("Preparing plan with a job: %s", execArgs.job)
 		filterPlan, err = planner.PlanJob(execArgs.job)
-		if err != nil {
-			return err
-		}
 	case filterEventName != "":
 		logging.Infof("Preparing plan for a event: %s", filterEventName)
 		filterPlan, err = planner.PlanEvent(filterEventName)
-		if err != nil {
-			return err
-		}
 	default:
 		logging.Infof("Preparing plan with all jobs")
 		filterPlan, err = planner.PlanAll()
-		if err != nil {
-			return err
-		}
+	}
+	if err != nil {
+		return err
 	}
 
 	printList(filterPlan)
@@ -385,32 +361,31 @@ func (i *executeArgs) runnerConfig(eventName string, env, proxyEnv map[string]st
 	}
 
 	return &runner.Config{
-		Workdir:               i.Workdir(),
-		BindWorkdir:           false,
-		ForcePull:             i.forcePull,
-		ForceRebuild:          i.forceRebuild,
-		JSONLogger:            i.jsonLogger,
-		Env:                   env,
-		ProxyEnv:              proxyEnv,
-		Vars:                  i.LoadVars(),
-		Secrets:               i.LoadSecrets(),
-		InsecureSecrets:       i.insecureSecrets,
-		Privileged:            i.privileged,
-		UsernsMode:            i.usernsMode,
-		ContainerArchitecture: i.containerArchitecture,
-		ContainerDaemonSocket: i.containerDaemonSocket,
-		UseGitIgnore:          i.useGitIgnore,
-		GitHubInstance:        i.githubInstance,
-		ContainerCapAdd:       i.containerCapAdd,
-		ContainerCapDrop:      i.containerCapDrop,
-		ContainerOptions:      i.containerOptions,
-		ArtifactServerPath:    i.artifactServerPath,
-		ArtifactServerPort:    i.artifactServerPort,
-		ArtifactServerAddr:    i.artifactServerAddr,
-		NoSkipCheckout:        i.noSkipCheckout,
-		EventName:             eventName,
-		EventJSON:             eventJSON,
-		// PresetGitHubContext:   preset,
+		Workdir:                           i.Workdir(),
+		BindWorkdir:                       false,
+		ForcePull:                         i.forcePull,
+		ForceRebuild:                      i.forceRebuild,
+		JSONLogger:                        i.jsonLogger,
+		Env:                               env,
+		ProxyEnv:                          proxyEnv,
+		Vars:                              i.LoadVars(),
+		Secrets:                           i.LoadSecrets(),
+		InsecureSecrets:                   i.insecureSecrets,
+		Privileged:                        i.privileged,
+		UsernsMode:                        i.usernsMode,
+		ContainerArchitecture:             i.containerArchitecture,
+		ContainerDaemonSocket:             i.containerDaemonSocket,
+		UseGitIgnore:                      i.useGitIgnore,
+		GitHubInstance:                    i.githubInstance,
+		ContainerCapAdd:                   i.containerCapAdd,
+		ContainerCapDrop:                  i.containerCapDrop,
+		ContainerOptions:                  i.containerOptions,
+		ArtifactServerPath:                i.artifactServerPath,
+		ArtifactServerPort:                i.artifactServerPort,
+		ArtifactServerAddr:                i.artifactServerAddr,
+		NoSkipCheckout:                    i.noSkipCheckout,
+		EventName:                         eventName,
+		EventJSON:                         eventJSON,
 		ContainerNamePrefix:               "GITEA-ACTIONS-TASK-" + eventName,
 		ContainerMaxLifetime:              maxLifetime,
 		ContainerNetworkMode:              container.NetworkMode(i.network),
@@ -465,15 +440,12 @@ func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command
 		if execArgs.job != "" {
 			logging.Infof("Planning job: %s", execArgs.job)
 			plan, err = planner.PlanJob(execArgs.job)
-			if err != nil {
-				return err
-			}
 		} else {
 			logging.Infof("Planning jobs for event: %s", eventName)
 			plan, err = planner.PlanEvent(eventName)
-			if err != nil {
-				return err
-			}
+		}
+		if err != nil {
+			return err
 		}
 
 		maxLifetime := 3 * time.Hour
@@ -548,11 +520,7 @@ func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command
 		config.Env["ACT_EXEC"] = "true"
 		config.Secrets[actionsRuntimeTokenEnvName] = actionsRuntimeToken
 
-		if t := config.Secrets["GITEA_TOKEN"]; t != "" {
-			config.Token = t
-		} else if t := config.Secrets["GITHUB_TOKEN"]; t != "" {
-			config.Token = t
-		}
+		config.Token = cmp.Or(config.Secrets["GITEA_TOKEN"], config.Secrets["GITHUB_TOKEN"])
 
 		if !execArgs.debug {
 			logLevel := logging.LevelInfo

@@ -19,8 +19,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// v2Call posts a twirp request to the cache service and returns the decoded response.
-// Field names are the proto ones, which is what the toolkit's client sends.
 func v2Call(t *testing.T, handler *Handler, client *http.Client, method string, request any) map[string]any {
 	t.Helper()
 
@@ -37,7 +35,6 @@ func v2Call(t *testing.T, handler *Handler, client *http.Client, method string, 
 	return got
 }
 
-// putBlob uploads to a signed URL and returns the status, so a test can assert a refusal.
 func putBlob(t *testing.T, url string, content []byte) int {
 	t.Helper()
 
@@ -47,8 +44,6 @@ func putBlob(t *testing.T, url string, content []byte) int {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusCreated {
-		// The Azure SDK client dereferences this header without checking, so a blob upload that
-		// omits it panics the caller rather than failing it.
 		require.NotEmpty(t, resp.Header.Get("x-ms-request-id"))
 	}
 	return resp.StatusCode
@@ -67,8 +62,6 @@ func getURL(t *testing.T, url string) []byte {
 	return body
 }
 
-// saveV2 runs the reserve/upload/finalize sequence and returns the finalize response along
-// with the upload URL it used.
 func saveV2(t *testing.T, handler *Handler, key, version string, content []byte) (finalized map[string]any, uploadURL string) {
 	t.Helper()
 
@@ -84,9 +77,6 @@ func saveV2(t *testing.T, handler *Handler, key, version string, content []byte)
 	}), uploadURL
 }
 
-// The whole round trip an actions/cache v2 client makes, plus the guarantees on the signed
-// URLs it is handed: unsigned requests are refused, an upload URL cannot be replayed to read
-// or to replace a finalized entry.
 func TestCacheServiceV2RoundTrip(t *testing.T) {
 	handler := newTestHandler(t, Policy{})
 	content := []byte("the cached archive")
@@ -98,10 +88,8 @@ func TestCacheServiceV2RoundTrip(t *testing.T) {
 	require.Equal(t, true, finalized["ok"])
 	assert.NotEmpty(t, finalized["entry_id"])
 
-	// The upload URL outlives the finalize call, so replaying it must not poison the entry,
-	// and it is an upload URL only: nothing reads a blob back through it.
 	assert.Equal(t, http.StatusBadRequest, putBlob(t, uploadURL, []byte("poisoned")))
-	resp, err := http.Get(uploadURL) //nolint:noctx // the URL is the server under test
+	resp, err := http.Get(uploadURL)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
@@ -114,8 +102,6 @@ func TestCacheServiceV2RoundTrip(t *testing.T) {
 	assert.Equal(t, content, getURL(t, downloadURL))
 }
 
-// A large archive is staged as blocks and only put in order by the final block list, so
-// blocks that arrive out of order must still be assembled the way the client asked.
 func TestCacheServiceV2BlockUpload(t *testing.T) {
 	handler := newTestHandler(t, Policy{})
 
@@ -130,7 +116,6 @@ func TestCacheServiceV2BlockUpload(t *testing.T) {
 		blocks[blockID] = []byte(part)
 		order = append(order, blockID)
 	}
-	// Upload in an order that is not the block list order.
 	for _, blockID := range []string{order[2], order[0], order[1]} {
 		require.Equal(t, http.StatusCreated, putBlob(t, uploadURL+"&comp=block&blockid="+blockID, blocks[blockID]))
 	}
@@ -174,8 +159,6 @@ func TestCacheServiceV2Lookups(t *testing.T) {
 		assert.Equal(t, false, got["ok"])
 	})
 
-	// The toolkit serialises with the proto field names; the camelCase spellings of the same
-	// proto JSON mapping are accepted alongside them.
 	for _, field := range []string{"restore_keys", "restoreKeys"} {
 		t.Run("restore keys match by prefix, spelled "+field, func(t *testing.T) {
 			got := v2Call(t, handler, testClient, "GetCacheEntryDownloadURL", map[string]any{
@@ -191,9 +174,6 @@ func TestCacheServiceV2Lookups(t *testing.T) {
 		assert.Equal(t, false, again["ok"])
 	})
 
-	// A key that is only a prefix of an existing one is a different entry, so the
-	// reservation check must be exact and not a restore-key prefix match, or the shorter
-	// key would be reported as existing and silently never saved.
 	t.Run("a prefix of an existing key is still reserved", func(t *testing.T) {
 		reserved := v2Call(t, handler, testClient, "CreateCacheEntry", map[string]any{"key": "deps", "version": "v1"})
 		require.Equal(t, true, reserved["ok"])
@@ -219,7 +199,6 @@ func TestCacheServiceV2Lookups(t *testing.T) {
 		assert.Equal(t, false, got["ok"])
 	})
 
-	// The size the client declares is what Commit validates the assembled archive against.
 	t.Run("finalizing with the wrong size is not ok", func(t *testing.T) {
 		created := v2Call(t, handler, testClient, "CreateCacheEntry", map[string]any{"key": "wrong-size", "version": "v1"})
 		require.Equal(t, http.StatusCreated, putBlob(t, created["signed_upload_url"].(string), []byte("four")))
@@ -230,8 +209,6 @@ func TestCacheServiceV2Lookups(t *testing.T) {
 		assert.Equal(t, false, got["ok"])
 	})
 
-	// Both API versions are served from one store, so an entry written through v2 is a hit for
-	// a v1 client asking for the same key and version.
 	t.Run("a v1 client sees an entry written through v2", func(t *testing.T) {
 		resp, err := testClient.Get(fmt.Sprintf("%s%s/cache?keys=deps-abc&version=v1", handler.ExternalURL(), apiPath))
 		require.NoError(t, err)
@@ -244,7 +221,6 @@ func TestCacheServiceV2Lookups(t *testing.T) {
 		assert.NotEmpty(t, got["archiveLocation"])
 	})
 
-	// The cache of one repository must stay invisible to another, as it does for the v1 API.
 	t.Run("another repository sees nothing", func(t *testing.T) {
 		handler.RegisterJob("other-runtime-token", JobCredential{Repo: "other/repo"})
 		otherClient := &http.Client{Transport: &bearerTransport{token: "other-runtime-token"}}
@@ -321,20 +297,12 @@ func TestCacheServiceV2ConcurrentSaveAndRetries(t *testing.T) {
 		"another job's upload is not this job's to finalize")
 
 	base := handler.ExternalURL() + apiPath
-	reserveV1, err := json.Marshal(&Request{Key: "v1-made", Version: "v1", Size: int64(len(content))})
-	require.NoError(t, err)
-	resp, err := testClient.Post(base+"/caches", "application/json", bytes.NewReader(reserveV1))
-	require.NoError(t, err)
-	var madeByV1 struct {
-		CacheID uint64 `json:"cacheId"`
-	}
-	require.NoError(t, json.UnmarshalRead(resp.Body, &madeByV1))
-	resp.Body.Close()
+	madeByV1 := reserveCache(t, testClient, base, "v1-made", "v1", int64(len(content)))
 	upload, err := http.NewRequestWithContext(t.Context(), http.MethodPatch,
-		fmt.Sprintf("%s/caches/%d", base, madeByV1.CacheID), bytes.NewReader(content))
+		fmt.Sprintf("%s/caches/%d", base, madeByV1), bytes.NewReader(content))
 	require.NoError(t, err)
 	upload.Header.Set("Content-Range", fmt.Sprintf("bytes 0-%d/*", len(content)-1))
-	resp, err = testClient.Do(upload)
+	resp, err := testClient.Do(upload)
 	require.NoError(t, err)
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)

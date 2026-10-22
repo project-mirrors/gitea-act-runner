@@ -79,25 +79,25 @@ func (e *Error) Unwrap() error  { return e.err }
 func (e *Error) Commit() string { return e.commit }
 
 // FindGitRevision get the current git revision
-func FindGitRevision(ctx context.Context, file string) (shortSHA, sha string, err error) {
+func FindGitRevision(ctx context.Context, file string) (string, error) {
 	logger := common.Logger(ctx)
-	sha, err = gitOutput(ctx, file, "rev-parse", "--verify", "HEAD^{commit}")
+	sha, err := gitOutput(ctx, file, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
 		logger.WithError(err).Error("path", file, "not located inside a git repository")
-		return "", "", err
+		return "", err
 	}
 	if len(sha) < 7 {
-		return "", "", errors.New("HEAD could not be resolved")
+		return "", errors.New("HEAD could not be resolved")
 	}
 	logger.Debugf("Found revision: %s", sha)
-	return sha[:7], sha, nil
+	return sha, nil
 }
 
 // FindGitRef get the current git ref
 func FindGitRef(ctx context.Context, file string) (string, error) {
 	logger := common.Logger(ctx)
 	logger.Debugf("Loading revision from git directory")
-	_, revision, err := FindGitRevision(ctx, file)
+	revision, err := FindGitRevision(ctx, file)
 	if err != nil {
 		return "", err
 	}

@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -25,6 +24,8 @@ import (
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/git"
 	"gitea.com/gitea/runner/act/container"
+
+	_ "embed"
 
 	"gitea.dev/actionslib/pkg/model"
 	"github.com/kballard/go-shellquote"
@@ -47,11 +48,13 @@ type fileWriter func(filename string, data []byte, perm fs.FileMode) error
 type runAction func(step actionStep, actionDir string, remoteAction *remoteAction) common.Executor
 
 //go:embed res/trampoline.js
-var trampoline embed.FS
+var trampoline string
 
 var (
 	ContainerImageExistsLocally     = container.ImageExistsLocally
 	ContainerNewDockerBuildExecutor = container.NewDockerBuildExecutor
+	dockerActionNamePattern         = regexp.MustCompile("[^a-zA-Z0-9]")
+	inputEnvPattern                 = regexp.MustCompile("[^A-Z0-9-]")
 )
 
 func readActionImpl(ctx context.Context, step *model.Step, actionDir, actionPath string, readFile actionYamlReader, writeFile fileWriter) (*model.Action, error) {
@@ -85,38 +88,31 @@ func readActionImpl(ctx context.Context, step *model.Step, actionDir, actionPath
 				logger.Debugf("Using synthetic action %v for Dockerfile", action)
 				return action, nil
 			}
-			if step.With != nil {
-				if val, ok := step.With["args"]; ok {
-					var b []byte
-					if b, err = trampoline.ReadFile("res/trampoline.js"); err != nil {
-						return nil, err
-					}
-					err2 := writeFile(filepath.Join(actionDir, actionPath, "trampoline.js"), b, 0o644)
-					if err2 != nil {
-						return nil, err2
-					}
-					action := &model.Action{
-						Name: "(Synthetic)",
-						Inputs: map[string]model.Input{
-							"cwd": {
-								Description: "(Actual working directory)",
-								Required:    false,
-								Default:     filepath.Join(actionDir, actionPath),
-							},
-							"command": {
-								Description: "(Actual program)",
-								Required:    false,
-								Default:     val,
-							},
-						},
-						Runs: model.ActionRuns{
-							Using: "node12",
-							Main:  "trampoline.js",
-						},
-					}
-					logger.Debugf("Using synthetic action %v", action)
-					return action, nil
+			if val, ok := step.With["args"]; ok {
+				if err := writeFile(filepath.Join(actionDir, actionPath, "trampoline.js"), []byte(trampoline), 0o644); err != nil {
+					return nil, err
 				}
+				action := &model.Action{
+					Name: "(Synthetic)",
+					Inputs: map[string]model.Input{
+						"cwd": {
+							Description: "(Actual working directory)",
+							Required:    false,
+							Default:     filepath.Join(actionDir, actionPath),
+						},
+						"command": {
+							Description: "(Actual program)",
+							Required:    false,
+							Default:     val,
+						},
+					},
+					Runs: model.ActionRuns{
+						Using: "node12",
+						Main:  "trampoline.js",
+					},
+				}
+				logger.Debugf("Using synthetic action %v", action)
+				return action, nil
 			}
 		}
 	}
@@ -125,8 +121,7 @@ func readActionImpl(ctx context.Context, step *model.Step, actionDir, actionPath
 	}
 	defer closer.Close()
 
-	action, err := model.ReadAction(reader)
-	return action, err
+	return model.ReadAction(reader)
 }
 
 func maybeCopyToActionDir(ctx context.Context, step actionStep, actionDir, actionPath, containerActionDir string) error {
@@ -166,7 +161,7 @@ func runActionImpl(step actionStep, actionDir string, remoteAction *remoteAction
 	return func(ctx context.Context) error {
 		logger := common.Logger(ctx)
 		actionPath := ""
-		if remoteAction != nil && remoteAction.Path != "" {
+		if remoteAction != nil {
 			actionPath = remoteAction.Path
 		}
 
@@ -178,7 +173,6 @@ func runActionImpl(step actionStep, actionDir string, remoteAction *remoteAction
 			return err
 		}
 
-		actionLocation := path.Join(actionDir, actionPath)
 		actionName, containerActionDir := getContainerActionPaths(step)
 
 		logger.Debugf("type=%v actionDir=%s actionPath=%s workdir=%s actionCacheDir=%s actionName=%s containerActionDir=%s", stepModel.Type(), actionDir, actionPath, rc.Config.Workdir, rc.ActionCacheDir(), actionName, containerActionDir)
@@ -196,7 +190,7 @@ func runActionImpl(step actionStep, actionDir string, remoteAction *remoteAction
 
 			return rc.JobContainer.Exec(containerArgs, *step.getEnv(), "", "")(ctx)
 		case x.IsDocker():
-			location := actionLocation
+			location := path.Join(actionDir, actionPath)
 			if remoteAction == nil {
 				location = containerActionDir
 			}
@@ -215,12 +209,9 @@ func runActionImpl(step actionStep, actionDir string, remoteAction *remoteAction
 			rc.ApplyExtraPath(ctx, step.getEnv())
 
 			execFileName := action.Runs.Main + ".out"
-			buildArgs := []string{"go", "build", "-o", execFileName, action.Runs.Main}
-			execArgs := []string{filepath.Join(containerActionDir, execFileName)}
-
 			return common.NewPipelineExecutor(
-				rc.JobContainer.Exec(buildArgs, *step.getEnv(), "", containerActionDir),
-				rc.JobContainer.Exec(execArgs, *step.getEnv(), "", ""),
+				rc.JobContainer.Exec([]string{"go", "build", "-o", execFileName, action.Runs.Main}, *step.getEnv(), "", containerActionDir),
+				rc.JobContainer.Exec([]string{filepath.Join(containerActionDir, execFileName)}, *step.getEnv(), "", ""),
 			)(ctx)
 		default:
 			return fmt.Errorf("the runs.using key must be one of: %v, got %s", []string{
@@ -259,16 +250,14 @@ func dockerActionImageTag(repository, actionName string, localAction bool) strin
 		name = path.Join(repository, actionName)
 	}
 	// The human-readable name is sanitized by collapsing every non-alphanumeric character to "-".
-	sanitized := regexp.MustCompile("[^a-zA-Z0-9]").ReplaceAllString(name, "-")
+	sanitized := dockerActionNamePattern.ReplaceAllString(name, "-")
 	if localAction {
 		// For local actions a short hash of the raw repository and action path is appended so the tag stays unique per repository.
 		sum := sha256.Sum256([]byte(repository + "\x00" + actionName))
 		sanitized += "-" + hex.EncodeToString(sum[:])[:12]
 	}
 	// "-dockeraction" ensures that "./", "./test " won't get converted to "act-:latest", "act-test-:latest" which are invalid docker image names
-	image := fmt.Sprintf("%s-dockeraction:%s", sanitized, "latest")
-	image = "act-" + strings.TrimLeft(image, "-")
-	return strings.ToLower(image)
+	return strings.ToLower("act-" + strings.TrimLeft(sanitized+"-dockeraction:latest", "-"))
 }
 
 // One image per step and job: its stages share a build, and concurrent jobs never run each other's.
@@ -485,20 +474,15 @@ func newStepContainer(ctx context.Context, step step, image string, cmd, entrypo
 }
 
 func populateEnvsFromSavedState(env *map[string]string, step actionStep, rc *RunContext) {
-	state, ok := rc.IntraActionState[step.getStepModel().ID]
-	if ok {
-		for name, value := range state {
-			envName := "STATE_" + name
-			(*env)[envName] = value
-		}
+	for name, value := range rc.IntraActionState[step.getStepModel().ID] {
+		(*env)["STATE_"+name] = value
 	}
 }
 
 func populateEnvsFromInput(ctx context.Context, env *map[string]string, action *model.Action, rc *RunContext) error {
 	eval := rc.NewExpressionEvaluator(ctx)
 	for inputID, input := range action.Inputs {
-		envKey := regexp.MustCompile("[^A-Z0-9-]").ReplaceAllString(strings.ToUpper(inputID), "_")
-		envKey = "INPUT_" + envKey
+		envKey := "INPUT_" + inputEnvPattern.ReplaceAllString(strings.ToUpper(inputID), "_")
 		if _, ok := (*env)[envKey]; !ok {
 			var err error
 			if (*env)[envKey], err = eval.Interpolate(ctx, input.Default); err != nil {
@@ -637,12 +621,9 @@ func runPreStep(step actionStep) common.Executor {
 			rc.ApplyExtraPath(ctx, step.getEnv())
 
 			execFileName := action.Runs.Pre + ".out"
-			buildArgs := []string{"go", "build", "-o", execFileName, action.Runs.Pre}
-			execArgs := []string{filepath.Join(containerActionDir, execFileName)}
-
 			return common.NewPipelineExecutor(
-				rc.JobContainer.Exec(buildArgs, *step.getEnv(), "", containerActionDir),
-				rc.JobContainer.Exec(execArgs, *step.getEnv(), "", ""),
+				rc.JobContainer.Exec([]string{"go", "build", "-o", execFileName, action.Runs.Pre}, *step.getEnv(), "", containerActionDir),
+				rc.JobContainer.Exec([]string{filepath.Join(containerActionDir, execFileName)}, *step.getEnv(), "", ""),
 			)(ctx)
 		default:
 			return nil
@@ -653,7 +634,7 @@ func runPreStep(step actionStep) common.Executor {
 func shouldRunPostStep(step actionStep) common.Conditional {
 	return func(ctx context.Context) bool {
 		log := common.Logger(ctx)
-		stepResults := step.getRunContext().getStepsContext()
+		stepResults := step.getRunContext().StepResults
 		stepResult := stepResults[step.getStepModel().ID]
 
 		if stepResult == nil {
@@ -731,12 +712,9 @@ func runPostStep(step actionStep) common.Executor {
 			rc.ApplyExtraPath(ctx, step.getEnv())
 
 			execFileName := action.Runs.Post + ".out"
-			buildArgs := []string{"go", "build", "-o", execFileName, action.Runs.Post}
-			execArgs := []string{filepath.Join(containerActionDir, execFileName)}
-
 			return common.NewPipelineExecutor(
-				rc.JobContainer.Exec(buildArgs, *step.getEnv(), "", containerActionDir),
-				rc.JobContainer.Exec(execArgs, *step.getEnv(), "", ""),
+				rc.JobContainer.Exec([]string{"go", "build", "-o", execFileName, action.Runs.Post}, *step.getEnv(), "", containerActionDir),
+				rc.JobContainer.Exec([]string{filepath.Join(containerActionDir, execFileName)}, *step.getEnv(), "", ""),
 			)(ctx)
 
 		default:

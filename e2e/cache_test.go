@@ -5,44 +5,23 @@
 
 package e2e
 
-import (
-	"testing"
-)
+import "testing"
 
-func testActionsCacheRoundTrip(t *testing.T) {
+func testCacheAndArtifactRoundTrips(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name string
-		v2   bool
+		name, workflow, label string
+		options               runnerOptions
 	}{
-		{name: "cache_v2", v2: true},
-		{name: "cache_v1", v2: false},
+		{"cache_v2", "cache.yml", "e2e-cache", runnerOptions{cacheV2: new(true)}},
+		{"cache_v1", "cache.yml", "e2e-cache", runnerOptions{cacheV2: new(false)}},
+		{"artifact_through_the_cache_server", "artifact.yml", "e2e-artifact", runnerOptions{cacheV2: new(true)}},
+		{"artifact_direct_with_no_reachable_cache", "artifact.yml", "e2e-artifact", runnerOptions{cacheHost: "cache.invalid", cacheV2: new(false)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			api, repo, _ := startIsolatedScenario(t, "cache.yml", "e2e-cache", runnerOptions{cacheV2: &tc.v2})
-
-			wfRun := waitForRun(t, api, repo)
-			requireSuccess(t, api, repo, wfRun.ID)
-		})
-	}
-}
-
-func testArtifactRoundTrip(t *testing.T) {
-	t.Parallel()
-
-	v2 := true
-	for _, tc := range []struct {
-		name    string
-		options runnerOptions
-	}{
-		{"through_the_cache_server", runnerOptions{cacheV2: &v2}},
-		{"direct_with_no_reachable_cache", runnerOptions{cacheHost: "cache.invalid", cacheV2: new(bool)}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			api, repo, _ := startIsolatedScenario(t, "artifact.yml", "e2e-artifact", tc.options)
+			api, repo, _ := startIsolatedScenario(t, tc.workflow, tc.label, tc.options)
 
 			wfRun := waitForRun(t, api, repo)
 			requireSuccess(t, api, repo, wfRun.ID)

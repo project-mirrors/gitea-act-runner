@@ -56,7 +56,7 @@ func Main(ctx context.Context, c *action.Context) (err error) {
 	ref := c.Inputs["ref"]
 	sshKey := strings.TrimSpace(c.Inputs["ssh-key"])
 	isWorkflowRepo := strings.EqualFold(repository, ghc.Repository)
-	local := isWorkflowRepo && slices.Contains([]string{"", shortBranch(ghc.Ref), ghc.Sha}, shortBranch(ref)) && !c.NoSkipCheckout && sshKey == ""
+	local := isWorkflowRepo && slices.Contains([]string{"", strings.TrimPrefix(ghc.Ref, "refs/heads/"), ghc.Sha}, strings.TrimPrefix(ref, "refs/heads/")) && !c.NoSkipCheckout && sshKey == ""
 	if local && (!c.BindWorkdir || dst == c.Workspace) {
 		if !c.BindWorkdir {
 			if err := c.Container.CopyDir(dst, c.HostWorkdir+string(filepath.Separator)+".", c.UseGitIgnore, false)(ctx); err != nil {
@@ -469,8 +469,4 @@ func fetchDepth(input string) (int, error) {
 		return 0, fmt.Errorf("checkout: fetch-depth %q must be a non-negative integer", input)
 	}
 	return depth, nil
-}
-
-func shortBranch(ref string) string { // full tag refs stay exact
-	return strings.TrimPrefix(ref, "refs/heads/")
 }

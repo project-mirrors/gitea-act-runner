@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,8 +31,7 @@ func evaluateCompositeInputAndEnv(ctx context.Context, parent *RunContext, step 
 	ee := parent.NewStepExpressionEvaluator(ctx, step)
 
 	for inputID, input := range step.getActionModel().Inputs {
-		envKey := regexp.MustCompile("[^A-Z0-9-]").ReplaceAllString(strings.ToUpper(inputID), "_")
-		envKey = "INPUT_" + strings.ToUpper(envKey)
+		envKey := "INPUT_" + inputEnvPattern.ReplaceAllString(strings.ToUpper(inputID), "_")
 
 		// lookup if key is defined in the step but the already
 		// evaluated value from the environment
@@ -211,19 +209,16 @@ func (rc *RunContext) compositeExecutor(action *model.Action) *compositeSteps {
 		}
 
 		stepID := step.getStepModel().ID
-		stepPre := rc.newCompositeCommandExecutor(step.pre())
-		preSteps = append(preSteps, newCompositeStepLogExecutor(stepPre, stepID))
+		preSteps = append(preSteps, newCompositeStepLogExecutor(rc.newCompositeCommandExecutor(step.pre()), stepID))
 
 		steps = append(steps, newCompositeStepLogExecutor(rc.newCompositeCommandExecutor(step.main()), stepID))
 
 		// run the post executor in reverse order
+		stepPost := rc.newCompositeCommandExecutor(step.post())
 		if postExecutor != nil {
-			stepPost := rc.newCompositeCommandExecutor(step.post())
-			postExecutor = newCompositeStepLogExecutor(stepPost.Finally(postExecutor), stepID)
-		} else {
-			stepPost := rc.newCompositeCommandExecutor(step.post())
-			postExecutor = newCompositeStepLogExecutor(stepPost, stepID)
+			stepPost = stepPost.Finally(postExecutor)
 		}
+		postExecutor = newCompositeStepLogExecutor(stepPost, stepID)
 	}
 
 	steps = append(steps, common.JobError)
@@ -250,12 +245,12 @@ func newCompositeStepLogExecutor(runStep common.Executor, stepID string) common.
 		ctx = WithCompositeStepLogger(ctx, stepID)
 		logger := common.Logger(ctx)
 		err := runStep(ctx)
+		if err == nil {
+			err = ctx.Err()
+		}
 		if err != nil {
 			logger.Errorf("##[error]%s", EscapeCommandData(err.Error()))
 			common.SetJobError(ctx, err)
-		} else if ctx.Err() != nil {
-			logger.Errorf("##[error]%s", EscapeCommandData(ctx.Err().Error()))
-			common.SetJobError(ctx, ctx.Err())
 		}
 		return nil
 	}

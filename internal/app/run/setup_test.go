@@ -96,33 +96,23 @@ func TestSetupLinesInputs(t *testing.T) {
 }
 
 func TestPrettyOSName(t *testing.T) {
-	tests := map[string]struct {
+	for _, tt := range []struct {
+		name      string
 		osRelease string
 		want      string
+		missing   bool
 	}{
-		"quoted value": {
-			osRelease: "NAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nPRETTY_NAME=\"Ubuntu 24.04.4 LTS\"\n",
-			want:      "Ubuntu 24.04.4 LTS",
-		},
-		"unquoted value": {
-			osRelease: "PRETTY_NAME=Alpine Linux v3.21\n",
-			want:      "Alpine Linux v3.21",
-		},
-		"no pretty name": {
-			osRelease: "NAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\n",
-			want:      "",
-		},
-		// A key that merely ends in PRETTY_NAME must not be mistaken for it.
-		"similar key": {
-			osRelease: "IMAGE_PRETTY_NAME=\"Ubuntu Core 24\"\n",
-			want:      "",
-		},
-	}
-
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
+		{"quoted value", "NAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nPRETTY_NAME=\"Ubuntu 24.04.4 LTS\"\n", "Ubuntu 24.04.4 LTS", false},
+		{"unquoted value", "PRETTY_NAME=Alpine Linux v3.21\n", "Alpine Linux v3.21", false},
+		{"no pretty name", "NAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\n", "", false},
+		{"similar key", "IMAGE_PRETTY_NAME=\"Ubuntu Core 24\"\n", "", false},
+		{"missing file", "", "", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "os-release")
-			require.NoError(t, os.WriteFile(path, []byte(tt.osRelease), 0o600))
+			if !tt.missing {
+				require.NoError(t, os.WriteFile(path, []byte(tt.osRelease), 0o600))
+			}
 
 			original := osReleasePath
 			osReleasePath = path
@@ -131,12 +121,4 @@ func TestPrettyOSName(t *testing.T) {
 			assert.Equal(t, tt.want, prettyOSName())
 		})
 	}
-
-	t.Run("missing file", func(t *testing.T) {
-		original := osReleasePath
-		osReleasePath = filepath.Join(t.TempDir(), "absent")
-		defer func() { osReleasePath = original }()
-
-		assert.Empty(t, prettyOSName())
-	})
 }

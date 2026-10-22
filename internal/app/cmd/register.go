@@ -117,10 +117,7 @@ func (r *registerInputs) validate() error {
 	if r.Token == "" {
 		return errors.New("token is empty")
 	}
-	if len(r.Labels) > 0 {
-		return validateLabels(r.Labels)
-	}
-	return nil
+	return validateLabels(r.Labels)
 }
 
 func validateLabels(ls []string) error {
@@ -141,20 +138,14 @@ func (r *registerInputs) stageValue(stage registerStage) string {
 	case StageInputRunnerName:
 		return r.RunnerName
 	case StageInputLabels:
-		if len(r.Labels) > 0 {
-			return strings.Join(r.Labels, ",")
-		}
+		return strings.Join(r.Labels, ",")
 	}
 	return ""
 }
 
 func (r *registerInputs) assignToNext(stage registerStage, value string, cfg *config.Config) registerStage {
-	// must set instance address and token.
-	// if empty, keep current stage.
-	if stage == StageInputInstance || stage == StageInputToken {
-		if value == "" {
-			return stage
-		}
+	if (stage == StageInputInstance || stage == StageInputToken) && value == "" {
+		return stage
 	}
 
 	// set hostname for runner name if empty
@@ -222,11 +213,10 @@ func initInputs(regArgs *registerArgs) (*registerInputs, error) {
 	case regArgs.Token != "":
 		token = regArgs.Token
 	default:
-		envToken, ok := os.LookupEnv(registerTokenEnvVar)
-		if !ok || envToken == "" {
+		token = os.Getenv(registerTokenEnvVar)
+		if token == "" {
 			return nil, fmt.Errorf("missing token, token-file argument, or %s environment variable", registerTokenEnvVar)
 		}
-		token = envToken
 	}
 	inputs := &registerInputs{
 		InstanceAddr: strings.TrimSpace(regArgs.InstanceAddr),

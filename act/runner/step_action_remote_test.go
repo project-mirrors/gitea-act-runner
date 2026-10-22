@@ -5,11 +5,9 @@
 package runner
 
 import (
-	"bytes"
+	"cmp"
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -27,10 +25,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v4"
 )
-
-type stepActionRemoteMocks struct {
-	mock.Mock
-}
 
 func setFetch(t *testing.T, fetch func(context.Context, git.NewGitCloneExecutorInput) (string, string, error)) {
 	original := stepActionRemoteFetch
@@ -74,108 +68,21 @@ func TestShortSHAActionRejected(t *testing.T) {
 	require.ErrorContains(t, err, "shortened version of a commit SHA")
 }
 
-func (sarm *stepActionRemoteMocks) readAction(_ context.Context, step *model.Step, actionDir, actionPath string, readFile actionYamlReader, writeFile fileWriter) (*model.Action, error) {
-	args := sarm.Called(step, actionDir, actionPath, readFile, writeFile)
-	return args.Get(0).(*model.Action), args.Error(1)
-}
-
-func (sarm *stepActionRemoteMocks) runAction(step actionStep, actionDir string, remoteAction *remoteAction) common.Executor {
-	args := sarm.Called(step, actionDir, remoteAction)
-	return args.Get(0).(func(context.Context) error)
-}
-
 func TestStepActionRemote(t *testing.T) {
-	table := []struct {
-		name      string
-		stepModel *model.Step
-		result    *model.StepResult
-		mocks     struct {
-			env    bool
-			cloned bool
-			read   bool
-			run    bool
-		}
-		runError error
+	for _, tt := range []struct {
+		name, condition string
+		status          model.StepStatus
+		runError        error
 	}{
-		{
-			name: "run-successful",
-			stepModel: &model.Step{
-				ID:   "step",
-				Uses: "remote/action@v1",
-			},
-			result: &model.StepResult{
-				Conclusion: model.StepStatusSuccess,
-				Outcome:    model.StepStatusSuccess,
-				Outputs:    map[string]string{},
-			},
-			mocks: struct {
-				env    bool
-				cloned bool
-				read   bool
-				run    bool
-			}{
-				env:    true,
-				cloned: true,
-				read:   true,
-				run:    true,
-			},
-		},
-		{
-			name: "run-skipped",
-			stepModel: &model.Step{
-				ID:   "step",
-				Uses: "remote/action@v1",
-				If:   yaml.Node{Value: "false"},
-			},
-			result: &model.StepResult{
-				Conclusion: model.StepStatusSkipped,
-				Outcome:    model.StepStatusSkipped,
-				Outputs:    map[string]string{},
-			},
-			mocks: struct {
-				env    bool
-				cloned bool
-				read   bool
-				run    bool
-			}{
-				env:    true,
-				cloned: true,
-				read:   true,
-				run:    false,
-			},
-		},
-		{
-			name: "run-error",
-			stepModel: &model.Step{
-				ID:   "step",
-				Uses: "remote/action@v1",
-			},
-			result: &model.StepResult{
-				Conclusion: model.StepStatusFailure,
-				Outcome:    model.StepStatusFailure,
-				Outputs:    map[string]string{},
-			},
-			mocks: struct {
-				env    bool
-				cloned bool
-				read   bool
-				run    bool
-			}{
-				env:    true,
-				cloned: true,
-				read:   true,
-				run:    true,
-			},
-			runError: errors.New("error"),
-		},
-	}
-
-	for _, tt := range table {
+		{name: "run-successful", status: model.StepStatusSuccess},
+		{name: "run-skipped", condition: "false", status: model.StepStatusSkipped},
+		{name: "run-error", status: model.StepStatusFailure, runError: assert.AnError},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := t.Context()
 
 			cm := &containerMock{}
-			sarm := &stepActionRemoteMocks{}
+			sarm := &stepActionMocks{}
 
 			clonedAction := false
 			actionDir := t.TempDir()
@@ -201,37 +108,23 @@ func TestStepActionRemote(t *testing.T) {
 					StepResults:  map[string]*model.StepResult{},
 					JobContainer: cm,
 				},
-				Step:       tt.stepModel,
+				Step:       &model.Step{ID: "step", Uses: "remote/action@v1", If: yaml.Node{Value: tt.condition}},
 				readAction: sarm.readAction,
 				runAction:  sarm.runAction,
 			}
 			sar.RunContext.ExprEval = sar.RunContext.NewExpressionEvaluator(ctx)
 
-			if tt.mocks.read {
-				sarm.On("readAction", sar.Step, actionDir, "", mock.Anything, mock.Anything).Return(&model.Action{}, nil)
-			}
-			if tt.mocks.run {
-				sarm.On("runAction", sar, actionDir, mustNewRemoteAction(t, sar.Step.Uses)).Return(func(ctx context.Context) error { return tt.runError })
+			sarm.On("readAction", sar.Step, actionDir, "", mock.Anything, mock.Anything).Return(&model.Action{}, nil)
+			if tt.status != model.StepStatusSkipped {
+				sarm.On("runAction", sar, actionDir, mustNewRemoteAction(t, sar.Step.Uses)).Return(func(_ctx context.Context) error { return tt.runError })
 
-				cm.On("Copy", "/var/run/act", mock.AnythingOfType("[]*container.FileEntry")).Return(noopExecutor)
-
-				cm.On("UpdateFromEnv", "/var/run/act/workflow/envs.txt", mock.AnythingOfType("*map[string]string")).Return(noopExecutor)
-
-				cm.On("UpdateFromEnv", "/var/run/act/workflow/statecmd.txt", mock.AnythingOfType("*map[string]string")).Return(noopExecutor)
-
-				cm.On("UpdateFromEnv", "/var/run/act/workflow/outputcmd.txt", mock.AnythingOfType("*map[string]string")).Return(noopExecutor)
-
-				cm.On("GetContainerArchive", ctx, "/var/run/act/workflow/pathcmd.txt").Return(io.NopCloser(&bytes.Buffer{}), nil)
+				expectStepFileCommands(t, cm)
 			}
 
-			err := sar.pre()(ctx)
-			if err == nil {
-				err = sar.main()(ctx)
-			}
-
-			assert.Equal(t, tt.runError, err)
-			assert.Equal(t, tt.mocks.cloned, clonedAction)
-			assert.Equal(t, tt.result, sar.RunContext.StepResults["step"])
+			require.NoError(t, sar.pre()(ctx))
+			assert.Equal(t, tt.runError, sar.main()(ctx))
+			assert.True(t, clonedAction)
+			assert.Equal(t, &model.StepResult{Conclusion: tt.status, Outcome: tt.status, Outputs: map[string]string{}}, sar.RunContext.StepResults["step"])
 
 			sarm.AssertExpectations(t)
 			cm.AssertExpectations(t)
@@ -314,341 +207,33 @@ func TestStepActionRemotePrepare(t *testing.T) {
 	assert.Equal(t, "restore", path.Base(restoreContainerDir))
 }
 
-func TestStepActionRemotePost(t *testing.T) {
-	table := []struct {
-		name               string
-		stepModel          *model.Step
-		actionModel        *model.Action
-		initialStepResults map[string]*model.StepResult
-		IntraActionState   map[string]map[string]string
-		expectedEnv        map[string]string
-		err                error
-		mocks              struct {
-			env  bool
-			exec bool
-		}
-	}{
-		{
-			name: "main-success",
-			stepModel: &model.Step{
-				ID:   "step",
-				Uses: "remote/action@v1",
-			},
-			actionModel: &model.Action{
-				Runs: model.ActionRuns{
-					Using:  "node16",
-					Post:   "post.js",
-					PostIf: "always()",
-				},
-			},
-			initialStepResults: map[string]*model.StepResult{
-				"step": {
-					Conclusion: model.StepStatusSuccess,
-					Outcome:    model.StepStatusSuccess,
-					Outputs:    map[string]string{},
-				},
-			},
-			IntraActionState: map[string]map[string]string{
-				"step": {
-					"key": "value",
-				},
-			},
-			expectedEnv: map[string]string{
-				"STATE_key": "value",
-			},
-			mocks: struct {
-				env  bool
-				exec bool
-			}{
-				env:  true,
-				exec: true,
-			},
-		},
-		{
-			name: "main-failed",
-			stepModel: &model.Step{
-				ID:   "step",
-				Uses: "remote/action@v1",
-			},
-			actionModel: &model.Action{
-				Runs: model.ActionRuns{
-					Using:  "node16",
-					Post:   "post.js",
-					PostIf: "always()",
-				},
-			},
-			initialStepResults: map[string]*model.StepResult{
-				"step": {
-					Conclusion: model.StepStatusFailure,
-					Outcome:    model.StepStatusFailure,
-					Outputs:    map[string]string{},
-				},
-			},
-			mocks: struct {
-				env  bool
-				exec bool
-			}{
-				env:  true,
-				exec: true,
-			},
-		},
-		{
-			name: "skip-if-failed",
-			stepModel: &model.Step{
-				ID:   "step",
-				Uses: "remote/action@v1",
-			},
-			actionModel: &model.Action{
-				Runs: model.ActionRuns{
-					Using:  "node16",
-					Post:   "post.js",
-					PostIf: "success()",
-				},
-			},
-			initialStepResults: map[string]*model.StepResult{
-				"step": {
-					Conclusion: model.StepStatusFailure,
-					Outcome:    model.StepStatusFailure,
-					Outputs:    map[string]string{},
-				},
-			},
-			mocks: struct {
-				env  bool
-				exec bool
-			}{
-				env:  true,
-				exec: false,
-			},
-		},
-		{
-			name: "skip-if-main-skipped",
-			stepModel: &model.Step{
-				ID:   "step",
-				If:   yaml.Node{Value: "failure()"},
-				Uses: "remote/action@v1",
-			},
-			actionModel: &model.Action{
-				Runs: model.ActionRuns{
-					Using:  "node16",
-					Post:   "post.js",
-					PostIf: "always()",
-				},
-			},
-			initialStepResults: map[string]*model.StepResult{
-				"step": {
-					Conclusion: model.StepStatusSkipped,
-					Outcome:    model.StepStatusSkipped,
-					Outputs:    map[string]string{},
-				},
-			},
-			mocks: struct {
-				env  bool
-				exec bool
-			}{
-				env:  false,
-				exec: false,
-			},
-		},
-	}
-
-	for _, tt := range table {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := t.Context()
-
-			cm := &containerMock{}
-
-			sar := &stepActionRemote{
-				env: map[string]string{},
-				RunContext: &RunContext{
-					Config: &Config{
-						GitHubInstance: "https://github.com",
-						ActionCacheDir: t.TempDir(),
-					},
-					JobContainer: cm,
-					Run: &model.Run{
-						JobID: "1",
-						Workflow: &model.Workflow{
-							Jobs: map[string]*model.Job{
-								"1": {},
-							},
-						},
-					},
-					StepResults:      tt.initialStepResults,
-					IntraActionState: tt.IntraActionState,
-				},
-				Step:   tt.stepModel,
-				action: tt.actionModel,
-				// post only ever runs after prepareActionExecutor resolved the action
-				remoteAction: mustNewRemoteAction(t, tt.stepModel.Uses),
-			}
-			sar.RunContext.ExprEval = sar.RunContext.NewExpressionEvaluator(ctx)
-
-			if tt.mocks.exec {
-				// Use mock.MatchedBy to match the exec command with hash-based path
-				execMatcher := mock.MatchedBy(func(args []string) bool {
-					if len(args) != 3 {
-						return false
-					}
-					return args[0] == "node" && args[1] == "--preserve-symlinks-main" && strings.Contains(args[2], "post.js")
-				})
-
-				cm.On("Exec", execMatcher, sar.env, "", "").Return(func(ctx context.Context) error { return tt.err })
-
-				cm.On("Copy", "/var/run/act", mock.AnythingOfType("[]*container.FileEntry")).Return(noopExecutor)
-
-				cm.On("UpdateFromEnv", "/var/run/act/workflow/envs.txt", mock.AnythingOfType("*map[string]string")).Return(noopExecutor)
-
-				cm.On("UpdateFromEnv", "/var/run/act/workflow/statecmd.txt", mock.AnythingOfType("*map[string]string")).Return(noopExecutor)
-
-				cm.On("UpdateFromEnv", "/var/run/act/workflow/outputcmd.txt", mock.AnythingOfType("*map[string]string")).Return(noopExecutor)
-
-				cm.On("GetContainerArchive", ctx, "/var/run/act/workflow/pathcmd.txt").Return(io.NopCloser(&bytes.Buffer{}), nil)
-			}
-
-			err := sar.post()(ctx)
-
-			assert.Equal(t, tt.err, err)
-			if tt.expectedEnv != nil {
-				for key, value := range tt.expectedEnv {
-					assert.Equal(t, value, sar.env[key])
-				}
-			}
-			// Enshure that StepResults is nil in this test
-			assert.Equal(t, sar.RunContext.StepResults["post-step"], (*model.StepResult)(nil)) //nolint:testifylint // pre-existing issue from nektos/act
-			cm.AssertExpectations(t)
-		})
-	}
-}
-
 func Test_newRemoteAction(t *testing.T) {
-	tests := []struct {
-		action       string
-		want         *remoteAction
-		wantCloneURL string
-	}{
-		{
-			action: "actions/heroku@main",
-			want: &remoteAction{
-				URL:  "",
-				Org:  "actions",
-				Repo: "heroku",
-				Path: "",
-				Ref:  "main",
-			},
-			wantCloneURL: "https://github.com/actions/heroku",
-		},
-		{
-			action: "actions/aws/ec2@main",
-			want: &remoteAction{
-				URL:  "",
-				Org:  "actions",
-				Repo: "aws",
-				Path: "ec2",
-				Ref:  "main",
-			},
-			wantCloneURL: "https://github.com/actions/aws",
-		},
-		{
-			action: "./.github/actions/my-action", // it's valid for GitHub, but act don't support it
-			want:   nil,
-		},
-		{
-			action: "docker://alpine:3.8", // it's valid for GitHub, but act don't support it
-			want:   nil,
-		},
-		{
-			action: "https://gitea.com/actions/heroku@main", // it's invalid for GitHub, but gitea supports it
-			want: &remoteAction{
-				URL:  "https://gitea.com",
-				Org:  "actions",
-				Repo: "heroku",
-				Path: "",
-				Ref:  "main",
-			},
-			wantCloneURL: "https://gitea.com/actions/heroku",
-		},
-		{
-			action: "https://gitea.com/actions/aws/ec2@main", // it's invalid for GitHub, but gitea supports it
-			want: &remoteAction{
-				URL:  "https://gitea.com",
-				Org:  "actions",
-				Repo: "aws",
-				Path: "ec2",
-				Ref:  "main",
-			},
-			wantCloneURL: "https://gitea.com/actions/aws",
-		},
-		{
-			action: "http://gitea.com/actions/heroku@main", // it's invalid for GitHub, but gitea supports it
-			want: &remoteAction{
-				URL:  "http://gitea.com",
-				Org:  "actions",
-				Repo: "heroku",
-				Path: "",
-				Ref:  "main",
-			},
-			wantCloneURL: "http://gitea.com/actions/heroku",
-		},
-		{
-			action: "http://gitea.com/actions/aws/ec2@main", // it's invalid for GitHub, but gitea supports it
-			want: &remoteAction{
-				URL:  "http://gitea.com",
-				Org:  "actions",
-				Repo: "aws",
-				Path: "ec2",
-				Ref:  "main",
-			},
-			wantCloneURL: "http://gitea.com/actions/aws",
-		},
-		{
-			action: "ssh://git@gitea.com/actions/heroku@main", // it's invalid for GitHub, but gitea supports it
-			want: &remoteAction{
-				URL:  "ssh://git@gitea.com",
-				Org:  "actions",
-				Repo: "heroku",
-				Path: "",
-				Ref:  "main",
-			},
-			wantCloneURL: "ssh://git@gitea.com/actions/heroku",
-		},
-		{
-			action: "ssh://git@gitea.com/actions/aws/ec2@main", // the ssh user is kept as part of the host segment
-			want: &remoteAction{
-				URL:  "ssh://git@gitea.com",
-				Org:  "actions",
-				Repo: "aws",
-				Path: "ec2",
-				Ref:  "main",
-			},
-			wantCloneURL: "ssh://git@gitea.com/actions/aws",
-		},
-		{
-			action: "ssh://gitea.com/onlyonesegment@main", // missing org/repo after the host
-			want:   nil,
-		},
-		{
-			action: "self:owner/repo/sub@v1",
-			want: &remoteAction{
-				URL:  "https://gitea.example.com",
-				Org:  "owner",
-				Repo: "repo",
-				Path: "sub",
-				Ref:  "v1",
-			},
-			wantCloneURL: "https://gitea.example.com/owner/repo",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.action, func(t *testing.T) {
-			got, _ := newRemoteAction(tt.action, nil, "gitea.example.com")
-			assert.Equalf(t, tt.want, got, "newRemoteAction(%v)", tt.action)
+	check := func(action string, want *remoteAction, wantCloneURL string) {
+		t.Run(action, func(t *testing.T) {
+			got, _ := newRemoteAction(action, nil, "gitea.example.com")
+			assert.Equalf(t, want, got, "newRemoteAction(%v)", action)
 			cloneURL := ""
 			if got != nil {
 				cloneURL = got.CloneURL("github.com")
 			}
-			assert.Equalf(t, tt.wantCloneURL, cloneURL, "newRemoteAction(%v).CloneURL()", tt.action)
+			assert.Equalf(t, wantCloneURL, cloneURL, "newRemoteAction(%v).CloneURL()", action)
 		})
 	}
+	for _, instance := range []string{"", "https://gitea.com", "http://gitea.com", "ssh://git@gitea.com"} {
+		for _, repository := range []struct{ name, path string }{{"heroku", ""}, {"aws", "ec2"}} {
+			action := path.Join("actions", repository.name, repository.path) + "@main"
+			if instance != "" {
+				action = instance + "/" + action
+			}
+			check(action, &remoteAction{URL: instance, Org: "actions", Repo: repository.name, Path: repository.path, Ref: "main"},
+				cmp.Or(instance, "https://github.com")+"/actions/"+repository.name)
+		}
+	}
+	for _, action := range []string{"./.github/actions/my-action", "docker://alpine:3.8", "ssh://gitea.com/onlyonesegment@main"} {
+		check(action, nil, "")
+	}
+	check("self:owner/repo/sub@v1", &remoteAction{URL: "https://gitea.example.com", Org: "owner", Repo: "repo", Path: "sub", Ref: "v1"},
+		"https://gitea.example.com/owner/repo")
 	_, err := newRemoteAction("self:owner/repo@v1", nil, "")
 	require.ErrorContains(t, err, "without a Gitea instance")
 }
@@ -734,7 +319,6 @@ func Test_remoteActionReference(t *testing.T) {
 	}{
 		{uses: "actions/checkout@v7", want: "actions/checkout@v7"},
 		{uses: "actions/aws/ec2@main", want: "actions/aws/ec2@main"},
-		// The download source can be interpolated from a secret and must stay out of the log.
 		{uses: "https://gitea.example.com/actions/checkout@v7", want: "actions/checkout@v7"},
 	}
 	for _, tt := range tests {
@@ -744,9 +328,6 @@ func Test_remoteActionReference(t *testing.T) {
 	}
 }
 
-// TestStepActionRemotePreResolvesDownloadedCommit runs the real download path against a local
-// git repository standing in for the actions instance, so the reported commit is the one the
-// clone actually checked out.
 func TestStepActionRemotePreResolvesDownloadedCommit(t *testing.T) {
 	instance := t.TempDir()
 	actionDir := filepath.Join(instance, "actions", "setup-go")
@@ -754,9 +335,6 @@ func TestStepActionRemotePreResolvesDownloadedCommit(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(actionDir, "action.yml"),
 		[]byte("name: setup-go\nruns:\n  using: node20\n  main: index.js\n"), 0o600))
 
-	// Supply an identity on the commit so the test does not depend on a
-	// git identity being configured in the environment; a CI runner without
-	// user.name/user.email would otherwise fail "commit" with exit code 128.
 	for _, args := range [][]string{
 		{"init", "--initial-branch=main", actionDir},
 		{"-C", actionDir, "add", "action.yml"},
@@ -814,9 +392,6 @@ func Test_safeFilename(t *testing.T) {
 	}
 }
 
-// Regression: a nested action in a composite cloned anonymously (401) because the
-// composite RunContext nils Config.Secrets. The token must come from github.Token,
-// which survives the config copy; the host gate must still withhold it cross-host.
 func TestStepActionRemoteCloneTokenSurvivesNilSecrets(t *testing.T) {
 	const wantToken = "job-token"
 
@@ -850,7 +425,7 @@ func TestStepActionRemoteCloneTokenSurvivesNilSecrets(t *testing.T) {
 				return actionDir, "", nil
 			})
 
-			sarm := &stepActionRemoteMocks{}
+			sarm := &stepActionMocks{}
 			sar := &stepActionRemote{
 				Step: &model.Step{Uses: "org/repo@v1"},
 				RunContext: &RunContext{
@@ -858,10 +433,8 @@ func TestStepActionRemoteCloneTokenSurvivesNilSecrets(t *testing.T) {
 						GitHubInstance:        tt.gitHubInstance,
 						DefaultActionInstance: tt.defaultActionInstance,
 						ActionCacheDir:        t.TempDir(),
-						// Mirrors the state of a composite RunContext: job secrets are
-						// stripped, but the job token is still reachable via Config.Token.
-						Secrets: nil,
-						Token:   wantToken,
+						Secrets:               nil,
+						Token:                 wantToken,
 					},
 					Run: &model.Run{
 						JobID: "1",

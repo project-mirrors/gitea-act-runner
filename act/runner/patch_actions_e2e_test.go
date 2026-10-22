@@ -25,12 +25,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// actionsCacheRef pins the actions/cache release this is verified against. Bump it
-// deliberately: a new release is exactly what can stop the patch matching.
 const actionsCacheRef = "v6.1.0"
 
-// bundleFromGitHub downloads one bundle file, keeping it in the user cache dir so repeated runs
-// cost nothing. The bundles are megabytes, too large to vendor.
 func bundleFromGitHub(t *testing.T, repo, ref, path string) string {
 	t.Helper()
 
@@ -65,17 +61,28 @@ func bundleFromGitHub(t *testing.T, repo, ref, path string) string {
 	return bundle
 }
 
-// jobEnv is the environment a job gets from this runner, which is what decides where an action's
-// toolkit looks for the cache and artifact services.
 type jobEnv struct {
 	workspace, runnerTemp string
 	cacheURL, resultsURL  string
 	token                 string
 }
 
-// runActionEntrypoint runs one action entrypoint the way a job would. Adding another action to these tests
-// means downloading its entrypoint with bundleFromGitHub and calling this with its inputs, whose
-// names are the ones the action's own action.yml uses.
+func newActionJobEnv(t *testing.T, token string, credential artifactcache.JobCredential) jobEnv {
+	t.Helper()
+
+	handler, err := artifactcache.StartHandler(artifactcache.Options{Dir: filepath.Join(t.TempDir(), "cache"), OutboundIP: "127.0.0.1"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = handler.Close() })
+	t.Cleanup(handler.RegisterJob(token, credential))
+	return jobEnv{
+		workspace:  tempDirPath(t),
+		runnerTemp: tempDirPath(t),
+		cacheURL:   handler.ExternalURL(),
+		resultsURL: handler.ExternalURL(),
+		token:      token,
+	}
+}
+
 func runActionEntrypoint(t *testing.T, script string, env jobEnv, inputs map[string]string) string {
 	t.Helper()
 	state := filepath.Join(env.runnerTemp, "state")
@@ -110,7 +117,6 @@ func runActionEntrypoint(t *testing.T, script string, env jobEnv, inputs map[str
 	return string(out)
 }
 
-// patchedAction downloads one entrypoint and patches it exactly as a downloaded action would be.
 func patchedAction(t *testing.T, repo, ref, entrypoint string) string {
 	t.Helper()
 
@@ -122,8 +128,6 @@ func patchedAction(t *testing.T, repo, ref, entrypoint string) string {
 	return script
 }
 
-// tempDirPath is TempDir with symlinks resolved, because macOS hands out /var paths that resolve
-// to /private/var and the client derives archive paths relative to the workspace.
 func tempDirPath(t *testing.T) string {
 	t.Helper()
 
@@ -132,32 +136,13 @@ func tempDirPath(t *testing.T) string {
 	return dir
 }
 
-// The whole chain against the pinned release, whose bundles ship unminified: patch them, run the
-// real client with an ordinary Gitea server URL and a results URL that goes nowhere, and have it
-// save and restore through this runner's cache server. The unreachable results URL is the point,
-// it is what proves the cache reaches the runner without the runner fronting Gitea. If a release
-// stops matching the patch the client falls back to v1 and this fails on the version line, which
-// is the signal to look at the new bundle.
 func TestCacheServiceV2EndToEnd(t *testing.T) {
 	requireHostTools(t, "node")
 
 	restore := patchedAction(t, "actions/cache", actionsCacheRef, "dist/restore/index.js")
 	save := patchedAction(t, "actions/cache", actionsCacheRef, "dist/save/index.js")
 
-	handler, err := artifactcache.StartHandler(artifactcache.Options{Dir: filepath.Join(t.TempDir(), "cache"), OutboundIP: "127.0.0.1"})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = handler.Close() })
-	const token, repo = "e2e-runtime-token", "testuser/testrepo"
-	handler.RegisterJob(token, artifactcache.JobCredential{Repo: repo})
-
-	env := jobEnv{
-		workspace:  tempDirPath(t),
-		runnerTemp: tempDirPath(t),
-		cacheURL:   handler.ExternalURL(),
-		// The results service is the cache server's too, which is what the runner advertises.
-		resultsURL: handler.ExternalURL(),
-		token:      token,
-	}
+	env := newActionJobEnv(t, "e2e-runtime-token", artifactcache.JobCredential{Repo: "testuser/testrepo"})
 	require.NoError(t, os.MkdirAll(filepath.Join(env.workspace, "to-cache"), 0o755))
 	content := []byte("cached through the patched gate")
 	require.NoError(t, os.WriteFile(filepath.Join(env.workspace, "to-cache", "data.txt"), content, 0o600))
@@ -179,28 +164,17 @@ func TestCacheServiceV2EndToEnd(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(env.workspace, "to-cache", "data.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, content, got)
-
-	// Untouched, the same client takes a Gitea host for GHES and stays on v1, which reaches the
-	// cache server on its own address. That is what a runner without a results service of its own
-	// leaves its jobs with, so it has to round trip too.
 	env.workspace = tempDirPath(t)
 	v1 := runActionEntrypoint(t, bundleFromGitHub(t, "actions/cache", actionsCacheRef, "dist/restore/index.js"), env, inputs)
 	require.Contains(t, v1, "Cache service version: v1")
 	require.Contains(t, v1, "Cache restored from key: "+key)
 }
 
-// The gate and the URL getter are separate functions, and a bundler may put either first: the gap
-// between them runs from 159 to 1179 bytes across these actions, which is why neither edit is
-// anchored on that distance. One bundle file from each of the families that bundle the cache
-// toolkit, patched but not run, is what keeps a future release from quietly matching only one of
-// the two shapes and leaving every cache on v1.
 func TestPatchedBundleAcrossActions(t *testing.T) {
 	for _, tc := range []struct {
 		repo, ref, path string
 		wantPatched     bool
 	}{
-		// The cache toolkit, in each bundler shape and from a spread of ecosystems, including the
-		// actions that drive a Go or a Rust cache client of their own.
 		{"actions/cache", actionsCacheRef, "dist/restore/index.js", true},
 		{"actions/setup-node", "v7.1.0", "dist/cache-save/index.js", true},
 		{"actions/setup-python", "v7.0.0", "dist/setup/index.js", true},
@@ -214,14 +188,9 @@ func TestPatchedBundleAcrossActions(t *testing.T) {
 		{"Swatinem/rust-cache", "v2.9.2", "dist/cache-CTfQoCTL.js", true},
 		{"docker/build-push-action", "v7.4.0", "dist/index.cjs", true},
 		{"gradle/actions", "v6.4.0", "dist/setup-gradle/main/index.js", true},
-		// The artifact toolkit, where the gate is a refusal and there is nothing to redirect.
-		// v4.4.0 is the first release whose gate carries the localhost test this matches; the
-		// releases before it refuse in a shape the runner leaves alone.
 		{"actions/upload-artifact", "v4.4.0", "dist/upload/index.js", true},
 		{"actions/upload-artifact", "v7.0.2", "dist/upload/index.js", true},
 		{"actions/download-artifact", "v8.0.2", "dist/index.js", true},
-		// Neither toolkit's gate, so these have to come back byte for byte. sccache-action is the
-		// one that exports ACTIONS_CACHE_SERVICE_V2 itself, for the Rust client it installs.
 		{"actions/checkout", "v7.0.1", "dist/index.js", false},
 		{"mozilla-actions/sccache-action", "v0.0.11", "dist/setup/index.js", false},
 	} {
@@ -240,10 +209,8 @@ func TestPatchedBundleAcrossActions(t *testing.T) {
 			assert.NotContains(t, string(out), ".LOCALHOST", "a copy of the gate was missed")
 
 			if !strings.Contains(string(data), CacheServiceV2Env) {
-				return // the artifact toolkit: a refusal to open, and no URL to move
+				return
 			}
-			// Only the reads inside getCacheServiceURL are rewritten. The others, such as the
-			// feature-availability check, must be left as they are.
 			assert.NotZero(t, strings.Count(string(out), "(process.env."+cacheURLEnv+"||process.env"),
 				"the cache service URL was not redirected")
 			assert.Equal(t, strings.Count(string(data), resultsURLEnv), strings.Count(string(out), resultsURLEnv),
@@ -252,10 +219,6 @@ func TestPatchedBundleAcrossActions(t *testing.T) {
 	}
 }
 
-// The stock artifact actions refuse on a Gitea host until the gate is opened, and then they talk
-// to the results service, which is this runner's cache server forwarding the artifact half on to
-// Gitea. Running the real upload-artifact against a stand-in Gitea covers both halves at once:
-// the patch, and the forwarding the job's registration set up.
 func TestUploadArtifactThroughTheResultsService(t *testing.T) {
 	requireHostTools(t, "node")
 
@@ -280,12 +243,12 @@ func TestUploadArtifactThroughTheResultsService(t *testing.T) {
 		case "download":
 			w.Header().Set("Content-Type", "application/zip")
 			_, _ = w.Write(zipped)
-		default: // the zip on its way up, in the blocks the Azure protocol puts it in
+		default:
 			body, _ := io.ReadAll(r.Body)
 			switch r.URL.Query().Get("comp") {
 			case "block":
 				zipped = append(zipped, body...)
-			case "blocklist": // the ordering document, not content
+			case "blocklist":
 			default:
 				zipped = body
 			}
@@ -293,24 +256,11 @@ func TestUploadArtifactThroughTheResultsService(t *testing.T) {
 		}
 	}))
 	defer gitea.Close()
-
-	handler, err := artifactcache.StartHandler(artifactcache.Options{Dir: filepath.Join(t.TempDir(), "cache"), OutboundIP: "127.0.0.1"})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = handler.Close() })
-	// The artifact client decodes the runtime token for the run ids it puts in its requests, where
-	// the cache client only presents it, so this one has to be shaped like Gitea's.
-	token := "e30." + base64.RawURLEncoding.EncodeToString([]byte(`{"scp":"Actions.Results:11:22"}`)) + ".sig"
-	defer handler.RegisterJob(token, artifactcache.JobCredential{Repo: "testuser/testrepo", Results: gitea.URL})()
+	env := newActionJobEnv(t, "e30."+base64.RawURLEncoding.EncodeToString([]byte(`{"scp":"Actions.Results:11:22"}`))+".sig",
+		artifactcache.JobCredential{Repo: "testuser/testrepo", Results: gitea.URL})
 
 	upload := patchedAction(t, "actions/upload-artifact", "v7.0.2", "dist/upload/index.js")
 
-	env := jobEnv{
-		workspace:  tempDirPath(t),
-		runnerTemp: tempDirPath(t),
-		cacheURL:   handler.ExternalURL(),
-		resultsURL: handler.ExternalURL(),
-		token:      token,
-	}
 	uploaded := []byte("through the results service")
 	require.NoError(t, os.WriteFile(filepath.Join(env.workspace, "artifact.txt"), uploaded, 0o600))
 
@@ -321,9 +271,6 @@ func TestUploadArtifactThroughTheResultsService(t *testing.T) {
 	})
 
 	require.Contains(t, out, "has been successfully uploaded")
-
-	// And back down again: listing and downloading go the same way, and the signed URL the
-	// artifact service hands out is fetched straight from it.
 	download := patchedAction(t, "actions/download-artifact", "v8.0.2", "dist/index.js")
 	env.workspace = tempDirPath(t)
 	out = runActionEntrypoint(t, download, env, map[string]string{
@@ -340,27 +287,12 @@ func TestUploadArtifactThroughTheResultsService(t *testing.T) {
 	assert.Equal(t, uploaded, got)
 }
 
-// The setup actions carry the same toolkit and reach the same service, from a key of their own
-// making. setup-node is the cheapest of them to run: given a lockfile and no version to install,
-// it does the cache lookup and nothing else.
 func TestSetupActionFindsTheCacheService(t *testing.T) {
 	requireHostTools(t, "node", "npm")
 
 	setup := patchedAction(t, "actions/setup-node", "v7.1.0", "dist/setup/index.js")
 
-	handler, err := artifactcache.StartHandler(artifactcache.Options{Dir: filepath.Join(t.TempDir(), "cache"), OutboundIP: "127.0.0.1"})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = handler.Close() })
-	const token = "setup-runtime-token"
-	defer handler.RegisterJob(token, artifactcache.JobCredential{Repo: "testuser/testrepo"})()
-
-	env := jobEnv{
-		workspace:  tempDirPath(t),
-		runnerTemp: tempDirPath(t),
-		cacheURL:   handler.ExternalURL(),
-		resultsURL: handler.ExternalURL(),
-		token:      token,
-	}
+	env := newActionJobEnv(t, "setup-runtime-token", artifactcache.JobCredential{Repo: "testuser/testrepo"})
 	require.NoError(t, os.WriteFile(filepath.Join(env.workspace, "package-lock.json"),
 		[]byte(`{"lockfileVersion":3}`), 0o600))
 
@@ -395,20 +327,9 @@ func TestCodeSplitActionFindsTheCacheService(t *testing.T) {
 	}
 	t.Setenv("CARGO_HOME", tempDirPath(t))
 
-	handler, err := artifactcache.StartHandler(artifactcache.Options{Dir: filepath.Join(t.TempDir(), "cache"), OutboundIP: "127.0.0.1"})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = handler.Close() })
-	const token = "split-runtime-token"
-	defer handler.RegisterJob(token, artifactcache.JobCredential{Repo: "testuser/testrepo"})()
-
 	defer patchActions(t.Context(), actionScriptPaths(dir, dir, action))()
-	out := runActionEntrypoint(t, filepath.Join(dir, action.Runs.Main), jobEnv{
-		workspace:  tempDirPath(t),
-		runnerTemp: tempDirPath(t),
-		cacheURL:   handler.ExternalURL(),
-		resultsURL: handler.ExternalURL(),
-		token:      token,
-	}, inputs)
+	out := runActionEntrypoint(t, filepath.Join(dir, action.Runs.Main),
+		newActionJobEnv(t, "split-runtime-token", artifactcache.JobCredential{Repo: "testuser/testrepo"}), inputs)
 
 	require.Contains(t, out, "Cache service version: v2")
 	require.Contains(t, out, "No cache found.", "the lookup did not reach the cache server")

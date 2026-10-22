@@ -33,7 +33,7 @@ func (r *Runner) checkConfiguredHealth(ctx context.Context) (bool, string) {
 	}
 
 	env := processEnvironment()
-	maps.Copy(env, r.cloneEnvs())
+	maps.Copy(env, r.envs)
 	env["GITEA_RUNNER_HEALTH_CHECK"] = "true"
 	env["GITEA_RUNNER_NAME"] = r.name
 	if r.client != nil {
@@ -83,9 +83,6 @@ func executeHealthCheck(ctx context.Context, script string, timeout time.Duratio
 	common.FlushWriter(writer)
 	if errors.Is(checkCtx.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("timed out after %s", timeout)
-	}
-	if err == nil {
-		return nil
 	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		return fmt.Errorf("exited with code %d", exitErr.ExitCode())

@@ -126,7 +126,7 @@ runs:
 				return strings.NewReader(tt.fileContent), closerFunc(func() { closed = true }), nil
 			}
 
-			writeFile := func(filename string, data []byte, perm fs.FileMode) error {
+			writeFile := func(filename string, _data []byte, perm fs.FileMode) error {
 				assert.Equal(t, "actionDir/actionPath/trampoline.js", filename)
 				assert.Equal(t, fs.FileMode(0o644), perm)
 				return nil
@@ -134,7 +134,7 @@ runs:
 
 			action, err := readActionImpl(t.Context(), tt.step, "actionDir", "actionPath", readFile, writeFile)
 
-			assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
+			require.NoError(t, err)
 			assert.Equal(t, tt.expected, action)
 
 			assert.Equal(t, tt.filename != "", closed)
@@ -144,94 +144,27 @@ runs:
 
 func TestActionRunner(t *testing.T) {
 	t.Chdir(t.TempDir())
-	table := []struct {
+	for _, tt := range []struct {
 		name        string
-		step        actionStep
+		inputs      map[string]model.Input
+		state       map[string]string
 		expectedEnv map[string]string
 	}{
 		{
-			name: "with-input",
-			step: &stepActionRemote{
-				Step: &model.Step{
-					Uses: "org/repo/path@ref",
-				},
-				RunContext: &RunContext{
-					Config: &Config{},
-					Run: &model.Run{
-						JobID: "job",
-						Workflow: &model.Workflow{
-							Jobs: map[string]*model.Job{
-								"job": {
-									Name: "job",
-								},
-							},
-						},
-					},
-				},
-				action: &model.Action{
-					Inputs: map[string]model.Input{
-						"key": {
-							Default: "default value",
-						},
-					},
-					Runs: model.ActionRuns{
-						Using: "node16",
-					},
-				},
-				env:          map[string]string{},
-				remoteAction: mustNewRemoteAction(t, "org/repo/path@ref"),
-			},
+			name:        "with-input",
+			inputs:      map[string]model.Input{"key": {Default: "default value"}},
 			expectedEnv: map[string]string{"INPUT_KEY": "default value"},
 		},
 		{
-			name: "restore-saved-state",
-			step: &stepActionRemote{
-				Step: &model.Step{
-					ID:   "step",
-					Uses: "org/repo/path@ref",
-				},
-				RunContext: &RunContext{
-					ActionPath: "path",
-					Config:     &Config{},
-					Run: &model.Run{
-						JobID: "job",
-						Workflow: &model.Workflow{
-							Jobs: map[string]*model.Job{
-								"job": {
-									Name: "job",
-								},
-							},
-						},
-					},
-					CurrentStep: "post-step",
-					StepResults: map[string]*model.StepResult{
-						"step": {},
-					},
-					IntraActionState: map[string]map[string]string{
-						"step": {
-							"name": "state value",
-						},
-					},
-				},
-				action: &model.Action{
-					Runs: model.ActionRuns{
-						Using: "node16",
-					},
-				},
-				env:          map[string]string{},
-				remoteAction: mustNewRemoteAction(t, "org/repo/path@ref"),
-			},
+			name:        "restore-saved-state",
+			state:       map[string]string{"name": "state value"},
 			expectedEnv: map[string]string{"STATE_name": "state value"},
 		},
-	}
-
-	for _, tt := range table {
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := t.Context()
-
 			cm := &containerMock{}
 			containerActionDir := "/var/run/act/actions/" + model.UsesHash("/org/repo/path@ref") + "/"
-			cm.On("CopyDir", containerActionDir, "dir/", false, true).Return(func(ctx context.Context) error { return nil })
+			cm.On("CopyDir", containerActionDir, "dir/", false, true).Return(func(_ctx context.Context) error { return nil })
 
 			envMatcher := mock.MatchedBy(func(env map[string]string) bool {
 				for k, v := range tt.expectedEnv {
@@ -241,14 +174,22 @@ func TestActionRunner(t *testing.T) {
 				}
 				return true
 			})
+			cm.On("Exec", []string{"node", "--preserve-symlinks-main", containerActionDir + "path"}, envMatcher, "", "").Return(func(_ctx context.Context) error { return nil })
 
-			cm.On("Exec", []string{"node", "--preserve-symlinks-main", containerActionDir + "path"}, envMatcher, "", "").Return(func(ctx context.Context) error { return nil })
-
-			tt.step.getRunContext().JobContainer = cm
-
-			err := runActionImpl(tt.step, "dir", mustNewRemoteAction(t, "org/repo/path@ref"))(ctx)
-
-			assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
+			remoteAction := mustNewRemoteAction(t, "org/repo/path@ref")
+			step := &stepActionRemote{
+				Step: &model.Step{ID: "step", Uses: "org/repo/path@ref"},
+				RunContext: &RunContext{
+					Config:           &Config{},
+					Run:              &model.Run{JobID: "job", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job": {}}}},
+					IntraActionState: map[string]map[string]string{"step": tt.state},
+					JobContainer:     cm,
+				},
+				action:       &model.Action{Inputs: tt.inputs, Runs: model.ActionRuns{Using: "node16"}},
+				env:          map[string]string{},
+				remoteAction: remoteAction,
+			}
+			require.NoError(t, runActionImpl(step, "dir", remoteAction)(t.Context()))
 			cm.AssertExpectations(t)
 		})
 	}
@@ -322,7 +263,6 @@ func TestNewStepContainerDoesNotUseDockerSecrets(t *testing.T) {
 
 	newStepContainer(ctx, step, "registry.example.com/action:tag", nil, nil, "")
 
-	// DOCKER_USERNAME/DOCKER_PASSWORD should not be injected as pull credentials for docker action containers.
 	assert.Empty(t, captured.Username)
 	assert.Empty(t, captured.Password)
 	assert.True(t, captured.AutoRemove)
@@ -478,15 +418,11 @@ func TestExecAsDockerHoldsCloneLockForRemoteUncached(t *testing.T) {
 }
 
 func TestDockerActionImageTag(t *testing.T) {
-	// Remote actions already carry a unique, ref-scoped actionName (the uses
-	// hash), so the tag must be left untouched for backwards compatibility.
 	assert.Equal(t,
 		"act-abc123-dockeraction:latest",
 		dockerActionImageTag("owner/repo", "abc123", false),
 	)
 
-	// Local actions keep a human-readable, repository-namespaced prefix and gain a short hash suffix that makes the tag unique per (repository, actionName).
-	// See https://gitea.com/gitea/runner/issues/1039.
 	assert.Equal(t,
 		"act-owner-repo-baca2daaa2fe-dockeraction:latest",
 		dockerActionImageTag("owner/repo", "./", true),
@@ -496,16 +432,11 @@ func TestDockerActionImageTag(t *testing.T) {
 		dockerActionImageTag("owner/repo", "./sub", true),
 	)
 
-	// Sanitizing every non-alphanumeric character to "-" is lossy, so distinct inputs can collapse to the same readable prefix.
-	// The hash suffix must keep such cases apart, otherwise an image built for one repository is reused for another.
 	collisions := [][2]struct {
 		repoName   string
 		actionName string
 	}{
-		// Two different repositories, both `uses: ./`: "a/b-c" and "a-b/c" both sanitize to "a-b-c".
 		{{"a/b-c", "./"}, {"a-b/c", "./"}},
-		// A repository's root action vs another repository's sub-path action:
-		// "owner/repo-a" + "./" and "owner/repo" + "./a" both sanitize to "owner-repo-a".
 		{{"owner/repo-a", "./"}, {"owner/repo", "./a"}},
 	}
 	for _, c := range collisions {
@@ -517,7 +448,6 @@ func TestDockerActionImageTag(t *testing.T) {
 		)
 	}
 
-	// Distinct local actions within the same repository keep distinct tags.
 	assert.NotEqual(t,
 		dockerActionImageTag("owner/repo", "./", true),
 		dockerActionImageTag("owner/repo", "./sub", true),

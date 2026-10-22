@@ -4,12 +4,12 @@
 
 //go:build !(WITHOUT_DOCKER || !(linux || darwin || windows || netbsd))
 
-// This file is exact copy of https://github.com/docker/cli/blob/4a63305d74332de5ceba7fcbccbc3cbb7412f5ba/cli/command/container/opts.go with:
+// This file is based on https://github.com/docker/cli/blob/4a63305d74332de5ceba7fcbccbc3cbb7412f5ba/cli/command/container/opts.go with:
 // * appended with license information
 // * regexp and ParseVolume in place of the import-restricted internal/lazyregexp and internal/volumespec
 // * cdiDeviceName in place of the container-device-interface parser's IsQualifiedName
 // * jsontext in place of json.Compact for the seccomp profile
-// * invalidParameter from the package's errors.go, and convertPortSet/convertPortMap for the callers in docker_run.go
+// * invalidParameter from the package's errors.go, and convertPortSet/convertPortMap for nat port types
 //
 // docker/cli is licensed under the Apache License, Version 2.0.
 // See DOCKER_LICENSE for the full license text.
@@ -154,9 +154,6 @@ type containerOptions struct {
 	init                bool
 	umask               opts.UmaskOpt
 	annotations         *opts.MapOpts
-
-	Image string
-	Args  []string
 }
 
 // addFlags adds all command line flags that will be used by parse to the FlagSet
@@ -422,12 +419,7 @@ func parse(flags *pflag.FlagSet, copts *containerOptions, serverOS string) (*con
 		tmpfs[k] = v
 	}
 
-	var runCmd, entrypoint []string
-
-	if len(copts.Args) > 0 {
-		runCmd = copts.Args
-	}
-
+	var entrypoint []string
 	if copts.entrypoint != "" {
 		entrypoint = []string{copts.entrypoint}
 	} else if flags.Changed("entrypoint") {
@@ -448,36 +440,15 @@ func parse(flags *pflag.FlagSet, copts *containerOptions, serverOS string) (*con
 	if err != nil {
 		return nil, err
 	}
-	portBindings := network.PortMap{}
-	for port, bindings := range natPortBindings {
-		p, err := network.ParsePort(string(port))
-		if err != nil {
-			return nil, err
-		}
-		portBindings[p] = []network.PortBinding{}
-		for _, b := range bindings {
-			var hostIP netip.Addr
-			if b.HostIP != "" {
-				hostIP, err = netip.ParseAddr(b.HostIP)
-				if err != nil {
-					return nil, err
-				}
-			}
-			portBindings[p] = append(portBindings[p], network.PortBinding{
-				HostIP:   hostIP,
-				HostPort: b.HostPort,
-			})
-		}
+	portBindings, err := convertPortMap(natPortBindings)
+	if err != nil {
+		return nil, err
 	}
 
 	// Add published ports as exposed ports.
-	exposedPorts := network.PortSet{}
-	for port := range ports {
-		p, err := network.ParsePort(string(port))
-		if err != nil {
-			return nil, err
-		}
-		exposedPorts[p] = struct{}{}
+	exposedPorts, err := convertPortSet(ports)
+	if err != nil {
+		return nil, err
 	}
 
 	// Merge in exposed ports to the map of published ports
@@ -618,11 +589,10 @@ func parse(flags *pflag.FlagSet, copts *containerOptions, serverOS string) (*con
 
 	deviceRequests := copts.gpus.Value()
 	if len(cdiDeviceNames) > 0 {
-		cdiDeviceRequest := container.DeviceRequest{
+		deviceRequests = append(deviceRequests, container.DeviceRequest{
 			Driver:    "cdi",
 			DeviceIDs: cdiDeviceNames,
-		}
-		deviceRequests = append(deviceRequests, cdiDeviceRequest)
+		})
 	}
 
 	resources := container.Resources{
@@ -668,8 +638,6 @@ func parse(flags *pflag.FlagSet, copts *containerOptions, serverOS string) (*con
 		AttachStdout: attachStdout,
 		AttachStderr: attachStderr,
 		Env:          envVariables,
-		Cmd:          runCmd,
-		Image:        copts.Image,
 		Volumes:      volumes,
 		Entrypoint:   entrypoint,
 		WorkingDir:   copts.workingDir,
@@ -810,10 +778,8 @@ func parseNetworkOpts(copts *containerOptions) (map[string]*network.EndpointSett
 		// For backward compatibility: if no custom options are provided for the network,
 		// and only a single network is specified, omit the endpoint-configuration
 		// on the client (the daemon will still create it when creating the container)
-		if i == 0 && len(copts.netMode.Value()) == 1 {
-			if ep == nil || reflect.ValueOf(*ep).IsZero() {
-				continue
-			}
+		if i == 0 && len(copts.netMode.Value()) == 1 && reflect.ValueOf(*ep).IsZero() {
+			continue
 		}
 		endpoints[n.Target] = ep
 	}
@@ -844,14 +810,12 @@ func applyContainerOptions(n *opts.NetworkAttachmentOpts, copts *containerOption
 		return invalidParameter(errors.New("conflicting options: cannot specify both --link-local-ip and per-network link-local IP addresses"))
 	}
 	if copts.aliases.Len() > 0 {
-		n.Aliases = make([]string, copts.aliases.Len())
-		copy(n.Aliases, copts.aliases.GetSlice())
+		n.Aliases = slices.Clone(copts.aliases.GetSlice())
 	}
 	// For a user-defined network, "--link" is an endpoint option, it creates an alias. But,
 	// for the default bridge it defines a legacy-link.
 	if container.NetworkMode(n.Target).IsUserDefined() && copts.links.Len() > 0 {
-		n.Links = make([]string, copts.links.Len())
-		copy(n.Links, copts.links.GetSlice())
+		n.Links = slices.Clone(copts.links.GetSlice())
 	}
 	if copts.ipv4Address != nil {
 		if ipv4, ok := netip.AddrFromSlice(copts.ipv4Address.To4()); ok {
@@ -890,7 +854,6 @@ func parseNetworkAttachmentOpt(ep opts.NetworkAttachmentOpts) (*network.Endpoint
 	}
 	epConfig.Aliases = append(epConfig.Aliases, ep.Aliases...)
 	if len(ep.DriverOpts) > 0 {
-		epConfig.DriverOpts = make(map[string]string)
 		epConfig.DriverOpts = ep.DriverOpts
 	}
 	if len(ep.Links) > 0 {
@@ -934,11 +897,10 @@ func convertToStandardNotation(ports []string) ([]string, error) {
 }
 
 func parseLoggingOpts(loggingDriver string, loggingOpts []string) (map[string]string, error) {
-	loggingOptsMap := opts.ConvertKVStringsToMap(loggingOpts)
 	if loggingDriver == "none" && len(loggingOpts) > 0 {
 		return map[string]string{}, fmt.Errorf("invalid logging opts for driver %s", loggingDriver)
 	}
-	return loggingOptsMap, nil
+	return opts.ConvertKVStringsToMap(loggingOpts), nil
 }
 
 // takes a local seccomp daemon, reads the file contents for sending to the daemon

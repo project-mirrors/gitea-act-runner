@@ -163,8 +163,8 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 			}
 		}
 
-		if !slices.Equal(reg.Labels, ls.ToStrings()) {
-			reg.Labels = ls.ToStrings()
+		if labelStrings := ls.ToStrings(); !slices.Equal(reg.Labels, labelStrings) {
+			reg.Labels = labelStrings
 			if err := config.SaveRegistration(cfg.Runner.File, reg); err != nil {
 				return fmt.Errorf("failed to save runner config: %w", err)
 			}
@@ -244,26 +244,14 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 		}
 
 		if daemArgs.Once || reg.Ephemeral {
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				poller.PollOnce(func() { removeEphemeralRegistration(reg, cfg.Runner.File) })
-			}()
-
-			// shutdown when we complete a job or cancel is requested
-			select {
-			case <-ctx.Done():
-			case <-done:
-			}
+			go poller.PollOnce(func() { removeEphemeralRegistration(reg, cfg.Runner.File) })
 		} else {
 			go poller.Poll()
+		}
 
-			// Stop either on an external cancellation or when the poller shuts
-			// itself down (e.g. after the runner has been unregistered).
-			select {
-			case <-ctx.Done():
-			case <-poller.Done():
-			}
+		select {
+		case <-ctx.Done():
+		case <-poller.Done():
 		}
 
 		logging.Infof("runner: %s shutdown initiated, waiting %s for running jobs to complete before shutting down", resp.Runner.Name, cfg.Runner.ShutdownTimeout)
@@ -329,13 +317,8 @@ func splitLabels(s string) []string {
 // initLogging sets up the process-wide logger.
 func initLogging(cfg *config.Config) {
 	callPrettyfier := func(f *runtime.Frame) (string, string) {
-		// get function name
-		s := strings.Split(f.Function, ".")
-		funcname := "[" + s[len(s)-1] + "]"
-		// get file name and line number
 		_, filename := path.Split(f.File)
-		filename = "[" + filename + ":" + strconv.Itoa(f.Line) + "]"
-		return funcname, filename
+		return "[" + f.Function[strings.LastIndexByte(f.Function, '.')+1:] + "]", "[" + filename + ":" + strconv.Itoa(f.Line) + "]"
 	}
 
 	isTerm := term.IsTerminal(int(os.Stdout.Fd()))
@@ -407,11 +390,12 @@ func getDockerSocketPath(configDockerHost string) (string, error) {
 	}
 
 	for _, p := range commonSocketPaths {
-		if _, err := os.Lstat(os.ExpandEnv(p)); err == nil {
+		socket := os.ExpandEnv(p)
+		if _, err := os.Lstat(socket); err == nil {
 			if strings.HasPrefix(p, `\\.\`) {
-				return "npipe://" + filepath.ToSlash(os.ExpandEnv(p)), nil
+				return "npipe://" + filepath.ToSlash(socket), nil
 			}
-			return "unix://" + filepath.ToSlash(os.ExpandEnv(p)), nil
+			return "unix://" + filepath.ToSlash(socket), nil
 		}
 	}
 

@@ -7,8 +7,6 @@ package common
 import (
 	"context"
 	"errors"
-	"reflect"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,42 +16,25 @@ import (
 )
 
 func TestNewWorkflow(t *testing.T) {
-	assert := assert.New(t)
-
 	ctx := t.Context()
+	require.NoError(t, NewPipelineExecutor()(ctx))
+	require.EqualError(t, NewErrorExecutor(errors.New("test error"))(ctx), "test error")
 
-	// empty
-	emptyWorkflow := NewPipelineExecutor()
-	assert.NoError(emptyWorkflow(ctx)) //nolint:testifylint // pre-existing issue from nektos/act
-
-	// error case
-	errorWorkflow := NewErrorExecutor(errors.New("test error"))
-	assert.Error(errorWorkflow(ctx)) //nolint:testifylint // pre-existing issue from nektos/act
-
-	// multiple success case
 	runcount := 0
-	successWorkflow := NewPipelineExecutor(
-		func(ctx context.Context) error {
-			runcount++
-			return nil
-		},
-		func(ctx context.Context) error {
-			runcount++
-			return nil
-		})
-	assert.NoError(successWorkflow(ctx)) //nolint:testifylint // pre-existing issue from nektos/act
-	assert.Equal(2, runcount)
+	increment := func(_ctx context.Context) error {
+		runcount++
+		return nil
+	}
+	require.NoError(t, NewPipelineExecutor(increment, increment)(ctx))
+	assert.Equal(t, 2, runcount)
 }
 
-// concurrencyProbe returns an executor recording the peak number of concurrent copies. Copies
-// block until wantActive are in flight so the peak is exact without sleeping, and later copies
-// find the gate already open so the last one still finishes with no partner left.
 func concurrencyProbe(wantActive int32) (exec Executor, count, maxActive *atomic.Int32) {
 	var counted, active, peak atomic.Int32
 	var once sync.Once
 	reached := make(chan struct{})
 
-	return func(ctx context.Context) error {
+	return func(_ctx context.Context) error {
 		counted.Add(1)
 		running := active.Add(1)
 		for {
@@ -72,18 +53,14 @@ func concurrencyProbe(wantActive int32) (exec Executor, count, maxActive *atomic
 }
 
 func TestNewParallelExecutor(t *testing.T) {
-	ctx := t.Context()
-
-	exec, count, maxActive := concurrencyProbe(2)
-	require.NoError(t, NewParallelExecutor(2, exec, exec, exec)(ctx))
-	assert.Equal(t, int32(3), count.Load(), "should run all 3 executors")
-	assert.Equal(t, int32(2), maxActive.Load(), "should run at most 2 executors in parallel")
-
-	// parallelism below 1 falls back to a single worker
-	exec, count, maxActive = concurrencyProbe(1)
-	require.NoError(t, NewParallelExecutor(0, exec, exec, exec)(ctx))
-	assert.Equal(t, int32(3), count.Load(), "should run all 3 executors")
-	assert.Equal(t, int32(1), maxActive.Load(), "should run at most 1 executor in parallel")
+	for name, parallel := range map[string]int{"parallel": 2, "below minimum": 0} {
+		t.Run(name, func(t *testing.T) {
+			exec, count, maxActive := concurrencyProbe(int32(max(1, parallel)))
+			require.NoError(t, NewParallelExecutor(parallel, exec, exec, exec)(t.Context()))
+			assert.Equal(t, int32(3), count.Load())
+			assert.Equal(t, int32(max(1, parallel)), maxActive.Load())
+		})
+	}
 }
 
 func TestNewParallelExecutorEmpty(t *testing.T) {
@@ -99,66 +76,49 @@ func TestNewParallelExecutorEmpty(t *testing.T) {
 	assert.ErrorIs(err, context.Canceled)
 }
 
-func TestNewParallelExecutorFailed(t *testing.T) {
-	assert := assert.New(t)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	count := 0
-	errorWorkflow := NewPipelineExecutor(func(ctx context.Context) error {
-		count++
-		return errors.New("fake error")
-	})
-	err := NewParallelExecutor(1, errorWorkflow)(ctx)
-	assert.Equal(1, count)
-	assert.ErrorIs(context.Canceled, err)
-}
-
-func TestNewParallelExecutorCanceled(t *testing.T) {
-	assert := assert.New(t)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	errExpected := errors.New("fake error")
-
-	var count atomic.Int32
-	successWorkflow := NewPipelineExecutor(func(ctx context.Context) error {
-		count.Add(1)
-		return nil
-	})
-	errorWorkflow := NewPipelineExecutor(func(ctx context.Context) error {
-		count.Add(1)
-		return errExpected
-	})
-	err := NewParallelExecutor(3, errorWorkflow, successWorkflow, successWorkflow)(ctx)
-	assert.Equal(int32(3), count.Load())
-	assert.Error(errExpected, err) //nolint:testifylint // pre-existing issue from nektos/act
-}
-
-func TestNewParallelExecutorRunsRemainingAfterFailure(t *testing.T) {
-	var successCount atomic.Int32
-	executors := make([]Executor, 5)
-	for i := range executors {
-		executors[i] = func(ctx context.Context) error {
-			if i == 2 {
-				return errors.New("fake error")
+func TestNewParallelExecutorRunsAllTasksAfterFailureOrCancellation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		canceled        bool
+		parallel, tasks int
+	}{
+		"failure":              {false, 2, 5},
+		"canceled":             {true, 2, 5},
+		"canceled single task": {true, 1, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.canceled {
+				cancel()
 			}
-			successCount.Add(1)
-			return nil
-		}
-	}
+			var calls atomic.Int32
+			executors := make([]Executor, tc.tasks)
+			for i := range executors {
+				executors[i] = func(_ctx context.Context) error {
+					calls.Add(1)
+					if i == tc.tasks/2 {
+						return errors.New("fake error")
+					}
+					return nil
+				}
+			}
 
-	require.Error(t, NewParallelExecutor(2, executors...)(t.Context()))
-	assert.Equal(t, int32(4), successCount.Load(), "a failing executor must not stop the others")
+			err := NewParallelExecutor(tc.parallel, executors...)(ctx)
+			if tc.canceled {
+				require.ErrorIs(t, err, context.Canceled)
+			} else {
+				require.EqualError(t, err, "fake error")
+			}
+			assert.Equal(t, int32(tc.tasks), calls.Load())
+		})
+	}
 }
 
 func TestExecutorConditionalsAndFinally(t *testing.T) {
 	ctx := t.Context()
 	var calls []string
 	record := func(name string) Executor {
-		return func(ctx context.Context) error {
+		return func(_ctx context.Context) error {
 			calls = append(calls, name)
 			return nil
 		}
@@ -170,10 +130,7 @@ func TestExecutorConditionalsAndFinally(t *testing.T) {
 	require.NoError(t, record("if-bool").IfBool(true)(ctx))
 	require.NoError(t, record("main").Finally(record("finally"))(ctx))
 
-	want := []string{"if-true", "if-not", "if-bool", "main", "finally"}
-	if !reflect.DeepEqual(calls, want) {
-		t.Fatalf("calls = %v, want %v", calls, want)
-	}
+	assert.Equal(t, []string{"if-true", "if-not", "if-bool", "main", "finally"}, calls)
 }
 
 func TestExecutorFinallyReturnsFinallyErrorWithOriginal(t *testing.T) {
@@ -181,8 +138,5 @@ func TestExecutorFinallyReturnsFinallyErrorWithOriginal(t *testing.T) {
 	finalErr := errors.New("cleanup failed")
 
 	err := NewErrorExecutor(mainErr).Finally(NewErrorExecutor(finalErr))(t.Context())
-	require.Error(t, err)
-	if !strings.Contains(err.Error(), "cleanup failed") || !strings.Contains(err.Error(), "main failed") {
-		t.Fatalf("finally error = %q, want both cleanup and original error", err)
-	}
+	require.EqualError(t, err, "error occurred running finally: cleanup failed (original error: main failed)")
 }

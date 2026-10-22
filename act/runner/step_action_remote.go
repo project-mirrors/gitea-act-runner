@@ -290,10 +290,7 @@ func (ra *remoteAction) Reference() string {
 }
 
 func (ra *remoteAction) IsCheckout() bool {
-	if ra.Org == "actions" && ra.Repo == "checkout" {
-		return true
-	}
-	return false
+	return ra.Org == "actions" && ra.Repo == "checkout"
 }
 
 // newRemoteAction resolves `self:` on instanceURL and `$/` in the enclosing composite action, else the workflow's repo and commit.

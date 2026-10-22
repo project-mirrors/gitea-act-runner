@@ -117,8 +117,7 @@ func SetSha(ctx context.Context, ghc *model.GithubContext, repoPath string) {
 
 	if ghc.Sha == "" {
 		sha, err := pinned(ctx, "sha:"+repoPath, func() (string, error) {
-			_, revision, err := findGitRevision(ctx, repoPath)
-			return revision, err
+			return findGitRevision(ctx, repoPath)
 		})
 		if err != nil {
 			logger.Warnf("unable to get git revision: %v", err)
@@ -139,5 +138,5 @@ func SetRepositoryAndOwner(ctx context.Context, ghc *model.GithubContext, repoPa
 		}
 		ghc.Repository = repo
 	}
-	ghc.RepositoryOwner = strings.Split(ghc.Repository, "/")[0]
+	ghc.RepositoryOwner, _, _ = strings.Cut(ghc.Repository, "/")
 }

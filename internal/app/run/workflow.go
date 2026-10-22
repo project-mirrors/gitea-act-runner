@@ -6,7 +6,7 @@ package run
 import (
 	"bytes"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"gitea.dev/actionslib/pkg/model"
@@ -26,27 +26,21 @@ func generateWorkflow(task *runnerv1.Task) (*model.Workflow, string, error) {
 	}
 	jobID := jobIDs[0]
 
-	needJobIDs := make([]string, 0, len(task.Needs))
+	rawNeeds := yaml.Node{
+		Kind:    yaml.SequenceNode,
+		Content: make([]*yaml.Node, 0, len(task.Needs)),
+	}
 	for id, need := range task.Needs {
-		needJobIDs = append(needJobIDs, id)
-		needJob := &model.Job{
+		workflow.Jobs[id] = &model.Job{
 			Outputs: need.Outputs,
 			Result:  strings.ToLower(strings.TrimPrefix(need.Result.String(), "RESULT_")),
 		}
-		workflow.Jobs[id] = needJob
-	}
-	sort.Strings(needJobIDs)
-
-	rawNeeds := yaml.Node{
-		Kind:    yaml.SequenceNode,
-		Content: make([]*yaml.Node, 0, len(needJobIDs)),
-	}
-	for _, id := range needJobIDs {
 		rawNeeds.Content = append(rawNeeds.Content, &yaml.Node{
 			Kind:  yaml.ScalarNode,
 			Value: id,
 		})
 	}
+	slices.SortFunc(rawNeeds.Content, func(left, right *yaml.Node) int { return strings.Compare(left.Value, right.Value) })
 
 	workflow.Jobs[jobID].RawNeeds = rawNeeds
 

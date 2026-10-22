@@ -28,21 +28,15 @@ func chkStat(file string) error {
 }
 
 func hasExt(file string) bool {
-	i := strings.LastIndex(file, ".")
-	if i < 0 {
-		return false
-	}
-	return strings.LastIndexAny(file, `:\/`) < i
+	return strings.LastIndex(file, ".") > strings.LastIndexAny(file, `:\/`)
 }
 
 func findExecutable(file string, exts []string) (string, error) {
 	if len(exts) == 0 {
 		return file, chkStat(file)
 	}
-	if hasExt(file) {
-		if chkStat(file) == nil {
-			return file, nil
-		}
+	if hasExt(file) && chkStat(file) == nil {
+		return file, nil
 	}
 	for _, e := range exts {
 		if f := file + e; chkStat(f) == nil {

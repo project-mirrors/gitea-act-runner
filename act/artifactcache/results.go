@@ -4,6 +4,7 @@
 package artifactcache
 
 import (
+	"cmp"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -74,14 +75,7 @@ func (h *Handler) forwardOrNotFound(w http.ResponseWriter, r *http.Request) {
 
 // A protocol switch loses the bearer or the agent, and an untrusted instance needs skipped verification.
 func (h *Handler) mustProxy(r *http.Request, cred JobCredential, target *url.URL) bool {
-	if cred.InsecureTLS && target.Scheme == "https" {
-		return true
-	}
-	scheme := r.Header.Get("X-Forwarded-Proto")
-	if scheme == "" {
-		scheme = "http"
-	}
-	return scheme != target.Scheme
+	return cred.InsecureTLS && target.Scheme == "https" || cmp.Or(r.Header.Get("X-Forwarded-Proto"), "http") != target.Scheme
 }
 
 func mergeQuery(target, request string) string {

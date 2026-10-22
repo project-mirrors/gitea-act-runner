@@ -11,67 +11,20 @@ import (
 
 func TestParse(t *testing.T) {
 	tests := []struct {
-		args    string
-		want    *Label
-		wantErr bool
+		args string
+		want *Label
 	}{
-		{
-			args: "ubuntu:docker://node:18",
-			want: &Label{
-				Name:   "ubuntu",
-				Schema: "docker",
-				Arg:    "//node:18",
-			},
-			wantErr: false,
-		},
-		{
-			args: "ubuntu:host",
-			want: &Label{
-				Name:   "ubuntu",
-				Schema: "host",
-				Arg:    "",
-			},
-			wantErr: false,
-		},
-		{
-			args: "ubuntu",
-			want: &Label{
-				Name:   "ubuntu",
-				Schema: "host",
-				Arg:    "",
-			},
-			wantErr: false,
-		},
-		{
-			args: "pool:e57e18d4-10d4-406f-93bf-60f127221bdd",
-			want: &Label{
-				Name:   "pool:e57e18d4-10d4-406f-93bf-60f127221bdd",
-				Schema: "host",
-				Arg:    "",
-				Opaque: true,
-			},
-			wantErr: false,
-		},
-		{
-			args: "ubuntu:vm:ubuntu-18.04",
-			want: &Label{
-				Name:   "ubuntu:vm:ubuntu-18.04",
-				Schema: "host",
-				Arg:    "",
-				Opaque: true,
-			},
-			wantErr: false,
-		},
-		{
-			args:    "",
-			want:    nil,
-			wantErr: true,
-		},
+		{"ubuntu:docker://node:18", &Label{Name: "ubuntu", Schema: "docker", Arg: "//node:18"}},
+		{"ubuntu:host", &Label{Name: "ubuntu", Schema: "host"}},
+		{"ubuntu", &Label{Name: "ubuntu", Schema: "host"}},
+		{"pool:e57e18d4-10d4-406f-93bf-60f127221bdd", &Label{Name: "pool:e57e18d4-10d4-406f-93bf-60f127221bdd", Schema: "host", Opaque: true}},
+		{"ubuntu:vm:ubuntu-18.04", &Label{Name: "ubuntu:vm:ubuntu-18.04", Schema: "host", Opaque: true}},
+		{"", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.args, func(t *testing.T) {
 			got, err := Parse(tt.args)
-			if tt.wantErr {
+			if tt.want == nil {
 				require.Error(t, err)
 				return
 			}
@@ -81,7 +34,6 @@ func TestParse(t *testing.T) {
 	}
 }
 
-// mustParse parses the given label strings, failing the test on any error.
 func mustParse(t *testing.T, strs ...string) Labels {
 	t.Helper()
 	ls := make(Labels, 0, len(strs))
@@ -157,7 +109,6 @@ func TestToStrings(t *testing.T) {
 	}, ls.ToStrings())
 }
 
-// a colon-containing name must survive a write to and read back from the .runner file
 func TestOpaqueLabelRoundTrip(t *testing.T) {
 	const raw = "pool:e57e18d4-10d4-406f-93bf-60f127221bdd"
 

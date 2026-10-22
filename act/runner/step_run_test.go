@@ -5,7 +5,6 @@
 package runner
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"io"
@@ -60,20 +59,8 @@ func TestStepRun(t *testing.T) {
 	cm.On("Copy", "/var/run/act", []*container.FileEntry{fileEntry}).Return(noopExecutor)
 	cm.On("Exec", []string{"bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "/var/run/act/workflow/1.sh"}, mock.AnythingOfType("map[string]string"), "", "workdir").Return(noopExecutor)
 
-	cm.On("Copy", "/var/run/act", mock.AnythingOfType("[]*container.FileEntry")).Return(noopExecutor)
-
-	cm.On("UpdateFromEnv", "/var/run/act/workflow/envs.txt", mock.AnythingOfType("*map[string]string")).Return(noopExecutor)
-
-	cm.On("UpdateFromEnv", "/var/run/act/workflow/statecmd.txt", mock.AnythingOfType("*map[string]string")).Return(noopExecutor)
-
-	cm.On("UpdateFromEnv", "/var/run/act/workflow/outputcmd.txt", mock.AnythingOfType("*map[string]string")).Return(noopExecutor)
-
-	ctx := t.Context()
-
-	cm.On("GetContainerArchive", ctx, "/var/run/act/workflow/pathcmd.txt").Return(io.NopCloser(&bytes.Buffer{}), nil)
-
-	err := sr.main()(ctx)
-	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
+	expectStepFileCommands(t, cm)
+	require.NoError(t, sr.main()(t.Context()))
 
 	cm.AssertExpectations(t)
 }

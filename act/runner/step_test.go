@@ -15,7 +15,6 @@ import (
 	"testing/synctest"
 
 	"gitea.com/gitea/runner/act/common"
-	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/common/logging/logtest"
 	"gitea.com/gitea/runner/act/container"
 	"gitea.com/gitea/runner/internal/pkg/telemetry"
@@ -116,11 +115,6 @@ func (sm *stepMock) getRunContext() *RunContext {
 	return args.Get(0).(*RunContext)
 }
 
-func (sm *stepMock) getGithubContext(ctx context.Context) *model.GithubContext {
-	args := sm.Called()
-	return args.Get(0).(*RunContext).getGithubContext(ctx)
-}
-
 func (sm *stepMock) getStepModel() *model.Step {
 	args := sm.Called()
 	return args.Get(0).(*model.Step)
@@ -132,9 +126,6 @@ func (sm *stepMock) getEnv() *map[string]string {
 }
 
 func TestSetupEnv(t *testing.T) {
-	cm := &containerMock{}
-	sm := &stepMock{}
-
 	rc := &RunContext{
 		Config: &Config{
 			Env: map[string]string{
@@ -156,21 +147,16 @@ func TestSetupEnv(t *testing.T) {
 		Env: map[string]string{
 			"RC_KEY": "rcvalue",
 		},
-		JobContainer: cm,
+		JobContainer: &containerMock{},
 	}
 	step := &model.Step{}
 	require.NoError(t, step.RawWith.Encode(map[string]string{"STEP_WITH": "with-value", "ID": "${{ fromJSON('1234567') }}"}))
 	env := map[string]string{}
 
-	sm.On("getRunContext").Return(rc)
-	sm.On("getGithubContext").Return(rc)
-	sm.On("getStepModel").Return(step)
-	sm.On("getEnv").Return(&env)
+	testStep := &stepRun{RunContext: rc, Step: step, env: env}
+	require.NoError(t, setupEnv(t.Context(), testStep))
+	require.NoError(t, setupInputs(t.Context(), testStep))
 
-	require.NoError(t, setupEnv(t.Context(), sm))
-	require.NoError(t, setupInputs(t.Context(), sm))
-
-	// These are commit or system specific
 	delete(env, "GITHUB_REF")
 	delete(env, "GITHUB_REF_NAME")
 	delete(env, "GITHUB_REF_TYPE")
@@ -179,7 +165,6 @@ func TestSetupEnv(t *testing.T) {
 	delete(env, "GITHUB_REPOSITORY")
 	delete(env, "GITHUB_REPOSITORY_OWNER")
 	delete(env, "GITHUB_ACTOR")
-	// Host-dependent, asserted in TestRunContextWithGithubEnvRunnerValues instead.
 	delete(env, "RUNNER_NAME")
 	delete(env, "RUNNER_WORKSPACE")
 
@@ -210,8 +195,6 @@ func TestSetupEnv(t *testing.T) {
 		"RUNNER_PERFLOG":           "/dev/null",
 		"RUNNER_TRACKING_ID":       "",
 	}, env)
-
-	cm.AssertExpectations(t)
 
 	for _, expression := range []string{"inputs.args", "env.ARGS"} {
 		t.Run("deferred inputs from "+expression, func(t *testing.T) {
@@ -276,169 +259,96 @@ jobs:
 }
 
 func TestIsStepEnabled(t *testing.T) {
-	createTestStep := func(t *testing.T, input string) step {
-		var step *model.Step
-		err := yaml.Unmarshal([]byte(input), &step)
-		assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
-
-		return &stepRun{
-			RunContext: &RunContext{
-				Config:      &Config{Workdir: ".", PlatformPicker: func([]string) string { return "ubuntu-latest" }},
-				StepResults: map[string]*model.StepResult{},
-				Env:         map[string]string{},
-				Run: &model.Run{
-					JobID: "job1",
-					Workflow: &model.Workflow{
-						Name: "workflow1",
-						Jobs: map[string]*model.Job{
-							"job1": createJob(t, `runs-on: ubuntu-latest`, ""),
+	for _, test := range []struct {
+		name    string
+		result  *model.StepResult
+		success bool
+	}{
+		{"no prior steps", nil, true},
+		{"prior step succeeded", &model.StepResult{Conclusion: model.StepStatusSuccess}, true},
+		{"prior step failed", &model.StepResult{Conclusion: model.StepStatusFailure}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, condition := range []struct {
+				expression string
+				want       bool
+			}{{"success()", test.success}, {"failure()", !test.success}, {"always()", true}} {
+				t.Run(condition.expression, func(t *testing.T) {
+					step := &stepRun{
+						RunContext: &RunContext{
+							Config:      &Config{},
+							Run:         &model.Run{JobID: "job", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job": {}}}},
+							StepResults: map[string]*model.StepResult{},
 						},
-					},
-				},
+						Step: &model.Step{If: yaml.Node{Value: condition.expression}},
+					}
+					if test.result != nil {
+						step.RunContext.StepResults["prior"] = test.result
+					}
+					enabled, err := isStepEnabled(t.Context(), step.getIfExpression(t.Context(), stepStageMain), step, stepStageMain)
+					require.NoError(t, err)
+					assert.Equal(t, condition.want, enabled)
+				})
+			}
+		})
+	}
+
+	t.Run("env and step inputs are unavailable at every stage", func(t *testing.T) {
+		step := &stepRun{
+			RunContext: &RunContext{
+				Config: &Config{},
+				Run:    &model.Run{JobID: "job", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job": {}}}},
+				Env:    map[string]string{"INPUT_FORGED": "leaked"},
 			},
-			Step: step,
+			Step: &model.Step{},
+			env:  map[string]string{"INPUT_FORGED": "leaked"},
 		}
-	}
-
-	logging.SetLevel(logging.LevelDebug)
-	assertObject := assert.New(t)
-
-	// success()
-	step := createTestStep(t, "if: success()")
-	assertObject.True(isStepEnabled(t.Context(), step.getIfExpression(t.Context(), stepStageMain), step, stepStageMain))
-
-	step = createTestStep(t, "if: success()")
-	step.getRunContext().StepResults["a"] = &model.StepResult{
-		Conclusion: model.StepStatusSuccess,
-	}
-	assertObject.True(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
-
-	step = createTestStep(t, "if: success()")
-	step.getRunContext().StepResults["a"] = &model.StepResult{
-		Conclusion: model.StepStatusFailure,
-	}
-	assertObject.False(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
-
-	// failure()
-	step = createTestStep(t, "if: failure()")
-	assertObject.False(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
-
-	step = createTestStep(t, "if: failure()")
-	step.getRunContext().StepResults["a"] = &model.StepResult{
-		Conclusion: model.StepStatusSuccess,
-	}
-	assertObject.False(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
-
-	step = createTestStep(t, "if: failure()")
-	step.getRunContext().StepResults["a"] = &model.StepResult{
-		Conclusion: model.StepStatusFailure,
-	}
-	assertObject.True(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
-
-	// always()
-	step = createTestStep(t, "if: always()")
-	assertObject.True(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
-
-	step = createTestStep(t, "if: always()")
-	step.getRunContext().StepResults["a"] = &model.StepResult{
-		Conclusion: model.StepStatusSuccess,
-	}
-	assertObject.True(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
-
-	step = createTestStep(t, "if: always()")
-	step.getRunContext().StepResults["a"] = &model.StepResult{
-		Conclusion: model.StepStatusFailure,
-	}
-	assertObject.True(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
-
-	// neither env nor the step's own with: values are inputs, at any stage
-	step = createTestStep(t, "if: inputs.forged")
-	step.getRunContext().Env["INPUT_FORGED"] = "leaked"
-	*step.getEnv() = map[string]string{"INPUT_FORGED": "leaked"}
-	assertObject.False(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStageMain))
-	assertObject.False(isStepEnabled(t.Context(), step.getStepModel().If.Value, step, stepStagePost))
+		for _, stage := range []stepStage{stepStageMain, stepStagePost} {
+			enabled, err := isStepEnabled(t.Context(), "inputs.forged", step, stage)
+			require.NoError(t, err)
+			assert.False(t, enabled)
+		}
+	})
 }
 
 func TestIsContinueOnError(t *testing.T) {
-	createTestStep := func(t *testing.T, input string) step {
-		var step *model.Step
-		err := yaml.Unmarshal([]byte(input), &step)
-		assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
-
-		return &stepRun{
-			RunContext: &RunContext{
-				Config:      &Config{Workdir: ".", PlatformPicker: func([]string) string { return "ubuntu-latest" }},
-				StepResults: map[string]*model.StepResult{},
-				Env:         map[string]string{},
-				Run: &model.Run{
-					JobID: "job1",
-					Workflow: &model.Workflow{
-						Name: "workflow1",
-						Jobs: map[string]*model.Job{
-							"job1": createJob(t, `runs-on: ubuntu-latest`, ""),
-						},
-					},
+	for _, test := range []struct {
+		name, expression string
+		env              map[string]string
+		want, wantError  bool
+	}{
+		{name: "absent"},
+		{name: "explicit true", expression: "true", want: true},
+		{name: "explicit false", expression: "false"},
+		{name: "expression true", expression: "${{ 'test' == 'test' }}", want: true},
+		{name: "expression false", expression: "${{ 'test' != 'test' }}"},
+		{name: "step inputs are unavailable", expression: "${{ inputs.forged }}", env: map[string]string{"INPUT_FORGED": "true"}},
+		{name: "invalid expression", expression: "${{ 'test' != test }}", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			step := &stepRun{
+				RunContext: &RunContext{
+					Config: &Config{},
+					Run:    &model.Run{JobID: "job", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job": {}}}},
 				},
-			},
-			Step: step,
-		}
+				Step: &model.Step{},
+				env:  test.env,
+			}
+			continueOnError, err := isContinueOnError(t.Context(), test.expression, step)
+			if test.wantError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, test.want, continueOnError)
+		})
 	}
-
-	logging.SetLevel(logging.LevelDebug)
-	assertObject := assert.New(t)
-
-	// absent
-	step := createTestStep(t, "name: test")
-	continueOnError, err := isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
-	assertObject.False(continueOnError)
-	assertObject.NoError(err) //nolint:testifylint // pre-existing issue from nektos/act
-
-	// explcit true
-	step = createTestStep(t, "continue-on-error: true")
-	continueOnError, err = isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
-	assertObject.True(continueOnError)
-	assertObject.NoError(err) //nolint:testifylint // pre-existing issue from nektos/act
-
-	// explicit false
-	step = createTestStep(t, "continue-on-error: false")
-	continueOnError, err = isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
-	assertObject.False(continueOnError)
-	assertObject.NoError(err) //nolint:testifylint // pre-existing issue from nektos/act
-
-	// expression true
-	step = createTestStep(t, "continue-on-error: ${{ 'test' == 'test' }}")
-	continueOnError, err = isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
-	assertObject.True(continueOnError)
-	assertObject.NoError(err) //nolint:testifylint // pre-existing issue from nektos/act
-
-	// expression false
-	step = createTestStep(t, "continue-on-error: ${{ 'test' != 'test' }}")
-	continueOnError, err = isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
-	assertObject.False(continueOnError)
-	assertObject.NoError(err) //nolint:testifylint // pre-existing issue from nektos/act
-
-	// the step's own with: values are not inputs
-	step = createTestStep(t, "continue-on-error: ${{ inputs.forged }}")
-	*step.getEnv() = map[string]string{"INPUT_FORGED": "true"}
-	continueOnError, err = isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
-	assertObject.False(continueOnError)
-	require.NoError(t, err)
-
-	// expression parse error
-	step = createTestStep(t, "continue-on-error: ${{ 'test' != test }}")
-	continueOnError, err = isContinueOnError(t.Context(), step.getStepModel().RawContinueOnError, step, stepStageMain)
-	assertObject.False(continueOnError)
-	assertObject.Error(err)
 }
 
-// A refused ::set-env::/::add-path:: records a job-scoped error. When the step that
-// produced it also fails on its own, the refusal must be cleared at the step boundary, so
-// it fails only that step and never leaks onto a later step that runs anyway (if: always()).
 func TestRunStepExecutorDoesNotLeakRefusalToNextStep(t *testing.T) {
 	cm := &containerMock{}
-	noop := func(context.Context) error { return nil }
-	cm.On("Copy", mock.Anything, mock.Anything).Return(noop)
-	cm.On("UpdateFromEnv", mock.Anything, mock.Anything).Return(noop)
+	cm.On("Copy", mock.Anything, mock.Anything).Return(noopExecutor)
+	cm.On("UpdateFromEnv", mock.Anything, mock.Anything).Return(noopExecutor)
 
 	rc := &RunContext{
 		Config: &Config{Env: map[string]string{}},
@@ -451,29 +361,21 @@ func TestRunStepExecutorDoesNotLeakRefusalToNextStep(t *testing.T) {
 		JobContainer: cm,
 	}
 	rc.ExprEval = rc.NewExpressionEvaluator(t.Context())
-	// Dryrun skips reading the path file back from the (mocked) container.
 	ctx := common.WithDryrun(t.Context(), true)
 
-	// A refusal parsed out of the job container's own output belongs to no step, so the
-	// first step must not be failed by it.
 	rc.commandHandler(ctx)("::set-env name=setup::y\n")
 	stepSetup := &stepRun{RunContext: rc, Step: &model.Step{ID: "setup"}, env: map[string]string{}}
-	require.NoError(t, runStepExecutor(stepSetup, stepStageMain, func(context.Context) error { return nil })(ctx))
+	require.NoError(t, runStepExecutor(stepSetup, stepStageMain, noopExecutor)(ctx))
 
-	// Step A refuses a ::set-env:: and then fails on its own.
 	stepA := &stepRun{RunContext: rc, Step: &model.Step{ID: "a"}, env: map[string]string{}}
 	errA := runStepExecutor(stepA, stepStageMain, func(context.Context) error {
 		rc.commandHandler(ctx)("::set-env name=x::y\n")
 		return errors.New("boom")
 	})(ctx)
-	// The step fails with its own error, not the refusal.
 	require.ErrorContains(t, errA, "boom")
 
-	// Step B runs despite step A's failure (if: always()) and issues no unsecure command;
-	// it must not inherit step A's refusal.
 	stepB := &stepRun{RunContext: rc, Step: &model.Step{ID: "b", If: yaml.Node{Value: "always()"}}, env: map[string]string{}}
-	errB := runStepExecutor(stepB, stepStageMain, func(context.Context) error { return nil })(ctx)
-	require.NoError(t, errB)
+	require.NoError(t, runStepExecutor(stepB, stepStageMain, noopExecutor)(ctx))
 }
 
 type fileCommandTestContainer struct {

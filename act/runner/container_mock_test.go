@@ -23,56 +23,44 @@ type containerMock struct {
 }
 
 func (cm *containerMock) Create(capAdd, capDrop []string) common.Executor {
-	args := cm.Called(capAdd, capDrop)
-	return args.Get(0).(func(context.Context) error)
+	return cm.Called(capAdd, capDrop).Get(0).(func(context.Context) error)
 }
 
 func (cm *containerMock) Pull(forcePull bool) common.Executor {
-	args := cm.Called(forcePull)
-	return args.Get(0).(func(context.Context) error)
+	return cm.Called(forcePull).Get(0).(func(context.Context) error)
 }
 
 func (cm *containerMock) Start(attach bool) common.Executor {
-	args := cm.Called(attach)
-	return args.Get(0).(func(context.Context) error)
+	return cm.Called(attach).Get(0).(func(context.Context) error)
 }
 
 func (cm *containerMock) Remove() common.Executor {
-	args := cm.Called()
-	return args.Get(0).(func(context.Context) error)
+	return cm.Called().Get(0).(func(context.Context) error)
 }
 
 func (cm *containerMock) Close() common.Executor {
-	args := cm.Called()
-	return args.Get(0).(func(context.Context) error)
+	return cm.Called().Get(0).(func(context.Context) error)
 }
 
 func (cm *containerMock) UpdateFromEnv(srcPath string, env *map[string]string) common.Executor {
-	args := cm.Called(srcPath, env)
-	return args.Get(0).(func(context.Context) error)
+	return cm.Called(srcPath, env).Get(0).(func(context.Context) error)
 }
 
 func (cm *containerMock) Copy(destPath string, files ...*container.FileEntry) common.Executor {
-	args := cm.Called(destPath, files)
-	return args.Get(0).(func(context.Context) error)
+	return cm.Called(destPath, files).Get(0).(func(context.Context) error)
 }
 
 func (cm *containerMock) CopyDir(destPath, srcPath string, useGitIgnore, skipGitDir bool) common.Executor {
-	args := cm.Called(destPath, srcPath, useGitIgnore, skipGitDir)
-	return args.Get(0).(func(context.Context) error)
+	return cm.Called(destPath, srcPath, useGitIgnore, skipGitDir).Get(0).(func(context.Context) error)
 }
 
 func (cm *containerMock) Exec(command []string, env map[string]string, user, workdir string) common.Executor {
-	args := cm.Called(command, env, user, workdir)
-	return args.Get(0).(func(context.Context) error)
+	return cm.Called(command, env, user, workdir).Get(0).(func(context.Context) error)
 }
 
 func (cm *containerMock) GetContainerArchive(ctx context.Context, srcPath string) (io.ReadCloser, error) {
 	args := cm.Called(ctx, srcPath)
-	err, hasErr := args.Get(1).(error)
-	if !hasErr {
-		err = nil
-	}
+	err, _ := args.Get(1).(error)
 	return args.Get(0).(io.ReadCloser), err
 }
 

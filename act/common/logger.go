@@ -34,10 +34,8 @@ const loggerHandlerKeyVal = loggerHandlerKey("logging.Handler")
 // LoggerHandler returns the extra handler the job logger sends its records to, or nil.
 // It affects the job logger, not the global logger.
 func LoggerHandler(ctx context.Context) logging.Handler {
-	if h, ok := ctx.Value(loggerHandlerKeyVal).(logging.Handler); ok {
-		return h
-	}
-	return nil
+	h, _ := ctx.Value(loggerHandlerKeyVal).(logging.Handler)
+	return h
 }
 
 // WithLoggerHandler adds the extra handler for the job logger to the context

@@ -277,7 +277,7 @@ func mappingValue(mapping *yaml.Node, key string) *yaml.Node {
 }
 
 func renderNode(node *yaml.Node) (string, error) {
-	if !allScalars(node.Content) {
+	if slices.ContainsFunc(node.Content, func(child *yaml.Node) bool { return child.Kind != yaml.ScalarNode }) {
 		encoded, err := encodeYAML(node)
 		if err != nil {
 			return "", err
@@ -301,15 +301,6 @@ func renderNode(node *yaml.Node) (string, error) {
 	default:
 		return node.Value, nil
 	}
-}
-
-func allScalars(nodes []*yaml.Node) bool {
-	for _, node := range nodes {
-		if node.Kind != yaml.ScalarNode {
-			return false
-		}
-	}
-	return true
 }
 
 // encodeYAML never wraps lines, re-encoding must not reflow long values.

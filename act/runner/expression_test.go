@@ -85,71 +85,61 @@ func TestEvaluateRunContext(t *testing.T) {
 	ee := rc.NewExpressionEvaluator(t.Context())
 
 	tables := []struct {
-		in      string
-		out     any
-		errMesg string
+		in  string
+		out any
 	}{
-		{" 1 ", 1.0, ""},
-		// {"1 + 3", "4", ""},
-		// {"(1 + 3) * -2", "-8", ""},
-		{"'my text'", "my text", ""},
-		{"contains('my text', 'te')", true, ""},
-		{"contains('my TEXT', 'te')", true, ""},
-		{"contains(fromJSON('[\"my text\"]'), 'te')", false, ""},
-		{"contains(fromJSON('[\"foo\",\"bar\"]'), 'bar')", true, ""},
-		{"startsWith('hello world', 'He')", true, ""},
-		{"endsWith('hello world', 'ld')", true, ""},
-		{"format('0:{0} 2:{2} 1:{1}', 'zero', 'one', 'two')", "0:zero 2:two 1:one", ""},
-		{"join(fromJSON('[\"hello\"]'),'octocat')", "hello", ""},
-		{"join(fromJSON('[\"hello\",\"mona\",\"the\"]'),'octocat')", "hellooctocatmonaoctocatthe", ""},
-		{"join('hello','mona')", "hello", ""},
-		{"toJSON(env)", "{\n  \"ACT\": \"true\",\n  \"ACT_SKIP_CHECKOUT\": \"true\",\n  \"key\": \"value\"\n}", ""},
-		{"toJson(env)", "{\n  \"ACT\": \"true\",\n  \"ACT_SKIP_CHECKOUT\": \"true\",\n  \"key\": \"value\"\n}", ""},
-		{"(fromJSON('{\"foo\":\"bar\"}')).foo", "bar", ""},
-		{"(fromJson('{\"foo\":\"bar\"}')).foo", "bar", ""},
-		{"(fromJson('[\"foo\",\"bar\"]'))[1]", "bar", ""},
-		// github does return an empty string for non-existent files
-		{"hashFiles('**/non-extant-files')", "", ""},
-		{"hashFiles('**/non-extant-files', '**/more-non-extant-files')", "", ""},
-		{"hashFiles('**/non.extant.files')", "", ""},
-		{"hashFiles('**/non''extant''files')", "", ""},
-		{"success()", true, ""},
-		{"failure()", false, ""},
-		{"always()", true, ""},
-		{"cancelled()", false, ""},
-		{"github.workflow", "test-workflow", ""},
-		{"github.actor", "nektos/act", ""},
-		{"github.run_id", "1", ""},
-		{"github.run_number", "1", ""},
-		{"job.status", "success", ""},
-		{"matrix.os", "Linux", ""},
-		{"matrix.foo", "bar", ""},
-		{"env.key", "value", ""},
-		{"secrets.CASE_INSENSITIVE_SECRET", "value", ""},
-		{"secrets.case_insensitive_secret", "value", ""},
-		{"vars.CASE_INSENSITIVE_VAR", "value", ""},
-		{"vars.case_insensitive_var", "value", ""},
-		{"format('{{0}}', 'test')", "{0}", ""},
-		{"format('{{{0}}}', 'test')", "{test}", ""},
-		{"format('}}')", "}", ""},
-		{"format('echo Hello {0} ${{Test}}', 'World')", "echo Hello World ${Test}", ""},
-		{"format('echo Hello {0} ${{Test}}', github.undefined_property)", "echo Hello  ${Test}", ""},
-		{"format('echo Hello {0}{1} ${{Te{0}st}}', github.undefined_property, 'World')", "echo Hello World ${Test}", ""},
-		{"format('{0}', '{1}', 'World')", "{1}", ""},
-		{"format('{{{0}', '{1}', 'World')", "{{1}", ""},
+		{" 1 ", 1.0},
+		{"'my text'", "my text"},
+		{"contains('my text', 'te')", true},
+		{"contains('my TEXT', 'te')", true},
+		{"contains(fromJSON('[\"my text\"]'), 'te')", false},
+		{"contains(fromJSON('[\"foo\",\"bar\"]'), 'bar')", true},
+		{"startsWith('hello world', 'He')", true},
+		{"endsWith('hello world', 'ld')", true},
+		{"format('0:{0} 2:{2} 1:{1}', 'zero', 'one', 'two')", "0:zero 2:two 1:one"},
+		{"join(fromJSON('[\"hello\"]'),'octocat')", "hello"},
+		{"join(fromJSON('[\"hello\",\"mona\",\"the\"]'),'octocat')", "hellooctocatmonaoctocatthe"},
+		{"join('hello','mona')", "hello"},
+		{"toJSON(env)", "{\n  \"ACT\": \"true\",\n  \"ACT_SKIP_CHECKOUT\": \"true\",\n  \"key\": \"value\"\n}"},
+		{"toJson(env)", "{\n  \"ACT\": \"true\",\n  \"ACT_SKIP_CHECKOUT\": \"true\",\n  \"key\": \"value\"\n}"},
+		{"(fromJSON('{\"foo\":\"bar\"}')).foo", "bar"},
+		{"(fromJson('{\"foo\":\"bar\"}')).foo", "bar"},
+		{"(fromJson('[\"foo\",\"bar\"]'))[1]", "bar"},
+		{"hashFiles('**/non-extant-files')", ""},
+		{"hashFiles('**/non-extant-files', '**/more-non-extant-files')", ""},
+		{"hashFiles('**/non.extant.files')", ""},
+		{"hashFiles('**/non''extant''files')", ""},
+		{"success()", true},
+		{"failure()", false},
+		{"always()", true},
+		{"cancelled()", false},
+		{"github.workflow", "test-workflow"},
+		{"github.actor", "nektos/act"},
+		{"github.run_id", "1"},
+		{"github.run_number", "1"},
+		{"job.status", "success"},
+		{"matrix.os", "Linux"},
+		{"matrix.foo", "bar"},
+		{"env.key", "value"},
+		{"secrets.CASE_INSENSITIVE_SECRET", "value"},
+		{"secrets.case_insensitive_secret", "value"},
+		{"vars.CASE_INSENSITIVE_VAR", "value"},
+		{"vars.case_insensitive_var", "value"},
+		{"format('{{0}}', 'test')", "{0}"},
+		{"format('{{{0}}}', 'test')", "{test}"},
+		{"format('}}')", "}"},
+		{"format('echo Hello {0} ${{Test}}', 'World')", "echo Hello World ${Test}"},
+		{"format('echo Hello {0} ${{Test}}', github.undefined_property)", "echo Hello  ${Test}"},
+		{"format('echo Hello {0}{1} ${{Te{0}st}}', github.undefined_property, 'World')", "echo Hello World ${Test}"},
+		{"format('{0}', '{1}', 'World')", "{1}"},
+		{"format('{{{0}', '{1}', 'World')", "{{1}"},
 	}
 
 	for _, table := range tables {
 		t.Run(table.in, func(t *testing.T) {
-			assertObject := assert.New(t)
 			out, err := ee.evaluate(t.Context(), table.in, exprparser.DefaultStatusCheckNone)
-			if table.errMesg == "" {
-				assertObject.NoError(err, table.in) //nolint:testifylint // pre-existing issue from nektos/act
-				assertObject.Equal(table.out, out, table.in)
-			} else {
-				assertObject.Error(err, table.in) //nolint:testifylint // pre-existing issue from nektos/act
-				assertObject.Equal(table.errMesg, err.Error(), table.in)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, table.out, out)
 		})
 	}
 }
@@ -165,33 +155,26 @@ func TestEvaluateStep(t *testing.T) {
 	ee := rc.NewStepExpressionEvaluator(t.Context(), step)
 
 	tables := []struct {
-		in      string
-		out     any
-		errMesg string
+		in  string
+		out any
 	}{
-		{"steps.idwithnothing.conclusion", model.StepStatusSuccess.String(), ""},
-		{"steps.idwithnothing.outcome", model.StepStatusFailure.String(), ""},
-		{"steps.idwithnothing.outputs.foowithnothing", "barwithnothing", ""},
-		{"steps.id-with-hyphens.conclusion", model.StepStatusSuccess.String(), ""},
-		{"steps.id-with-hyphens.outcome", model.StepStatusFailure.String(), ""},
-		{"steps.id-with-hyphens.outputs.foo-with-hyphens", "bar-with-hyphens", ""},
-		{"steps.id_with_underscores.conclusion", model.StepStatusSuccess.String(), ""},
-		{"steps.id_with_underscores.outcome", model.StepStatusFailure.String(), ""},
-		{"steps.id_with_underscores.outputs.foo_with_underscores", "bar_with_underscores", ""},
-		{"inputs.forged", nil, ""}, // INPUT_* env is not an input
+		{"steps.idwithnothing.conclusion", model.StepStatusSuccess.String()},
+		{"steps.idwithnothing.outcome", model.StepStatusFailure.String()},
+		{"steps.idwithnothing.outputs.foowithnothing", "barwithnothing"},
+		{"steps.id-with-hyphens.conclusion", model.StepStatusSuccess.String()},
+		{"steps.id-with-hyphens.outcome", model.StepStatusFailure.String()},
+		{"steps.id-with-hyphens.outputs.foo-with-hyphens", "bar-with-hyphens"},
+		{"steps.id_with_underscores.conclusion", model.StepStatusSuccess.String()},
+		{"steps.id_with_underscores.outcome", model.StepStatusFailure.String()},
+		{"steps.id_with_underscores.outputs.foo_with_underscores", "bar_with_underscores"},
+		{"inputs.forged", nil},
 	}
 
 	for _, table := range tables {
 		t.Run(table.in, func(t *testing.T) {
-			assertObject := assert.New(t)
 			out, err := ee.evaluate(t.Context(), table.in, exprparser.DefaultStatusCheckNone)
-			if table.errMesg == "" {
-				assertObject.NoError(err, table.in) //nolint:testifylint // pre-existing issue from nektos/act
-				assertObject.Equal(table.out, out, table.in)
-			} else {
-				assertObject.Error(err, table.in) //nolint:testifylint // pre-existing issue from nektos/act
-				assertObject.Equal(table.errMesg, err.Error(), table.in)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, table.out, out)
 		})
 	}
 }
@@ -283,10 +266,8 @@ func TestInterpolate(t *testing.T) {
 }
 
 func TestGetEvaluatorInputsBoolean(t *testing.T) {
-	workflows := map[string]string{
-		"workflow_call": `
-on:
-  workflow_call:
+	workflow := func(event string) string {
+		return "on:\n  " + event + `:
     inputs:
       flag:
         type: boolean
@@ -296,20 +277,7 @@ on:
         default: gitea
       unset:
         type: boolean
-`,
-		"workflow_dispatch": `
-on:
-  workflow_dispatch:
-    inputs:
-      flag:
-        type: boolean
-        default: true
-      name:
-        type: string
-        default: gitea
-      unset:
-        type: boolean
-`,
+`
 	}
 
 	tables := []struct {
@@ -318,7 +286,6 @@ on:
 		flag  any
 	}{
 		{
-			// Gitea >= 1.27 resolves the inputs server-side and sends native JSON types
 			name:  "native bool true",
 			event: map[string]any{"inputs": map[string]any{"flag": true}},
 			flag:  true,
@@ -345,10 +312,10 @@ on:
 		},
 	}
 
-	for eventName, workflow := range workflows {
+	for _, eventName := range []string{"workflow_call", "workflow_dispatch"} {
 		for _, table := range tables {
 			t.Run(eventName+"/"+table.name, func(t *testing.T) {
-				wf, err := model.ReadWorkflow(strings.NewReader(workflow))
+				wf, err := model.ReadWorkflow(strings.NewReader(workflow(eventName)))
 				require.NoError(t, err)
 
 				rc := &RunContext{
@@ -366,7 +333,7 @@ on:
 	}
 
 	t.Run("deferred workflow call inputs", func(t *testing.T) {
-		workflow, err := model.ReadWorkflow(strings.NewReader(workflows["workflow_call"] + `
+		workflow, err := model.ReadWorkflow(strings.NewReader(workflow("workflow_call") + `
 jobs:
   test: {}
   call:
@@ -406,7 +373,6 @@ on:
 	config := &Config{Workdir: ".", WorkflowCallInputs: map[string]any{"name": "caller", "target": "dispatch"}}
 	ghc := &model.GithubContext{EventName: "workflow_dispatch", Event: map[string]any{"inputs": map[string]any{"name": "dispatch"}}}
 
-	// the event's own inputs must not override those Gitea resolved
 	job := &RunContext{Config: config, Run: &model.Run{JobID: "job1", Workflow: wf}}
 	assert.Equal(t, map[string]any{"name": "caller", "target": "dispatch"}, getEvaluatorInputs(job, nil, ghc))
 
@@ -498,8 +464,8 @@ jobs:
 	}
 
 	a, b := containerName("a"), containerName("b")
-	assert.NotContains(t, a, "s3cr3t") // it reaches the container name, which no log masker covers
-	assert.NotEqual(t, a, b)           // masking the name must not collapse two jobs onto one container
+	assert.NotContains(t, a, "s3cr3t")
+	assert.NotEqual(t, a, b)
 }
 
 func TestNewExpressionEvaluatorReadsJobOutputsWhileCombinationsWriteThem(t *testing.T) {

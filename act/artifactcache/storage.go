@@ -32,13 +32,11 @@ func NewStorage(rootDir string) (*Storage, error) {
 }
 
 func (s *Storage) Exist(id uint64) (bool, error) {
-	name := s.filename(id)
-	if _, err := os.Stat(name); os.IsNotExist(err) {
+	_, err := os.Stat(s.filename(id))
+	if os.IsNotExist(err) {
 		return false, nil
-	} else if err != nil {
-		return false, err
 	}
-	return true, nil
+	return err == nil, err
 }
 
 func (s *Storage) Write(id uint64, offset int64, reader io.Reader) error {
@@ -92,9 +90,7 @@ func (s *Storage) OrderBlocks(id uint64, blockIDs []string) error {
 }
 
 func (s *Storage) Commit(id uint64, size int64) (int64, error) {
-	defer func() {
-		_ = os.RemoveAll(s.tempDir(id))
-	}()
+	defer func() { _ = os.RemoveAll(s.tempDir(id)) }()
 
 	name := s.filename(id)
 	tempNames, err := s.tempNames(id)
@@ -153,8 +149,7 @@ func assemble(name string, tempNames []string) (int64, error) {
 }
 
 func (s *Storage) Serve(w http.ResponseWriter, r *http.Request, id uint64) {
-	name := s.filename(id)
-	http.ServeFile(w, r, name)
+	http.ServeFile(w, r, s.filename(id))
 }
 
 // Remove deletes an entry's blob and any staged parts. It reports failure so the caller can

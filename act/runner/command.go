@@ -15,10 +15,10 @@ import (
 )
 
 // parseActionCommand parses like GitHub's runner, but rejects a bare \r GitHub would split at and keeps a value's leading '=' so masks match.
-func parseActionCommand(line, resumeCommand string) (command string, properties map[string]string, data string, legacy, ok bool) {
+func parseActionCommand(line, resumeCommand string) (command string, properties map[string]string, data string, ok bool) {
 	line = strings.TrimRight(line, "\r\n")
 	if strings.ContainsAny(line, "\r\n") {
-		return "", nil, "", false, false
+		return "", nil, "", false
 	}
 	trimmed := strings.TrimLeftFunc(line, unicode.IsSpace)
 	for _, legacy := range []bool{false, true} {
@@ -54,9 +54,9 @@ func parseActionCommand(line, resumeCommand string) (command string, properties 
 				properties[strings.ToLower(key)] = unescapeProperty(value)
 			}
 		}
-		return command, properties, unescapeData(data), legacy, true
+		return command, properties, unescapeData(data), true
 	}
-	return "", nil, "", false, false
+	return "", nil, "", false
 }
 
 // commandHandler reports whether a line is logged, keeping per-handler command state as GitHub does.
@@ -66,7 +66,7 @@ func (rc *RunContext) commandHandler(ctx context.Context) common.LineHandler {
 	echo := debug
 	resumeCommand := ""
 	return func(line string) bool {
-		command, kvPairs, arg, _, ok := parseActionCommand(line, resumeCommand)
+		command, kvPairs, arg, ok := parseActionCommand(line, resumeCommand)
 		if !ok {
 			return true
 		}
@@ -143,7 +143,7 @@ func formatAnnotation(level string, properties map[string]string, message string
 // serviceCommandHandler applies only ::add-mask::, so a service cannot set the job's env, outputs or state.
 func (rc *RunContext) serviceCommandHandler(ctx context.Context) common.LineHandler {
 	return func(line string) bool {
-		command, _, arg, _, ok := parseActionCommand(line, "")
+		command, _, arg, ok := parseActionCommand(line, "")
 		if !ok || command != "add-mask" {
 			return true
 		}
@@ -158,7 +158,9 @@ const allowUnsecureCommandsVar = "ACTIONS_ALLOW_UNSECURE_COMMANDS"
 // not run, recording the error that fails the step. GitHub disabled both because a step that
 // echoes untrusted content can use them to set NODE_OPTIONS or PATH for every later step.
 func (rc *RunContext) refuseUnsecureCommand(ctx context.Context, command string) bool {
-	if rc.allowUnsecureCommandsOptIn() {
+	if isTruthyEnv(rc.currentStepEnv()[allowUnsecureCommandsVar]) ||
+		isTruthyEnv(rc.Env[allowUnsecureCommandsVar]) ||
+		isTruthyEnv(rc.GlobalEnv[allowUnsecureCommandsVar]) {
 		return false
 	}
 
@@ -174,14 +176,6 @@ func (rc *RunContext) refuseUnsecureCommand(ctx context.Context, command string)
 		rc.unsecureCommandErr = fmt.Errorf("the `%s` workflow command is disabled", command)
 	}
 	return true
-}
-
-// allowUnsecureCommandsOptIn reports whether the workflow itself asked for the deprecated
-// commands, from any env scope, as it can on GitHub.
-func (rc *RunContext) allowUnsecureCommandsOptIn() bool {
-	return isTruthyEnv(rc.currentStepEnv()[allowUnsecureCommandsVar]) ||
-		isTruthyEnv(rc.Env[allowUnsecureCommandsVar]) ||
-		isTruthyEnv(rc.GlobalEnv[allowUnsecureCommandsVar])
 }
 
 // isTruthyEnv mirrors GitHub's bool.TryParse: only "true", in any casing.
@@ -230,17 +224,15 @@ func (rc *RunContext) setEnvFile(ctx context.Context, kvPairs map[string]string,
 }
 
 func (rc *RunContext) setOutput(ctx context.Context, kvPairs map[string]string, arg string) {
-	logger := common.Logger(ctx)
 	stepID := rc.CurrentStep
-	outputName := kvPairs["name"]
 
 	result, ok := rc.StepResults[stepID]
 	if !ok {
-		logger.Infof("No outputs registered for step '%s'", stepID)
+		common.Logger(ctx).Infof("No outputs registered for step '%s'", stepID)
 		return
 	}
 
-	result.Outputs[outputName] = arg
+	result.Outputs[kvPairs["name"]] = arg
 }
 
 func (rc *RunContext) addPath(arg string) {

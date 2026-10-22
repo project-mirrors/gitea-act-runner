@@ -12,7 +12,7 @@ import (
 
 type interfaceIP struct {
 	net.IP
-	net.Interface
+	Name string
 }
 
 // GetOutboundIP returns an outbound IP address of this machine.
@@ -43,7 +43,7 @@ func GetOutboundIP() net.IP {
 						ip = v.IP
 					}
 					if ip.IsGlobalUnicast() {
-						ips = append(ips, interfaceIP{ip, i})
+						ips = append(ips, interfaceIP{ip, i.Name})
 					}
 				}
 			}
@@ -59,29 +59,25 @@ func preferredIP(ips []interfaceIP) net.IP {
 		return nil
 	}
 	sort.Slice(ips, func(i, j int) bool {
-		ifi := ips[i].Interface
-		ifj := ips[j].Interface
+		first, second := ips[i], ips[j]
 
 		// ethernet is preferred
-		if vi, vj := strings.HasPrefix(ifi.Name, "e"), strings.HasPrefix(ifj.Name, "e"); vi != vj {
+		if vi, vj := strings.HasPrefix(first.Name, "e"), strings.HasPrefix(second.Name, "e"); vi != vj {
 			return vi
 		}
 
-		ipi := ips[i].IP
-		ipj := ips[j].IP
-
 		// IPv4 is preferred
-		if vi, vj := ipi.To4() != nil, ipj.To4() != nil; vi != vj {
+		if vi, vj := first.To4() != nil, second.To4() != nil; vi != vj {
 			return vi
 		}
 
 		// en0 is preferred to en1
-		if ifi.Name != ifj.Name {
-			return ifi.Name < ifj.Name
+		if first.Name != second.Name {
+			return first.Name < second.Name
 		}
 
 		// fallback
-		return ipi.String() < ipj.String()
+		return first.String() < second.String()
 	})
 	return ips[0].IP
 }

@@ -6,6 +6,7 @@ package container
 import (
 	"testing"
 
+	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,32 +18,17 @@ func TestParsePlatform(t *testing.T) {
 		assert.Nil(t, got)
 	})
 
-	t.Run("os/arch", func(t *testing.T) {
-		got, err := parsePlatform("linux/amd64")
-		require.NoError(t, err)
-		require.NotNil(t, got)
-		assert.Equal(t, "linux", got.OS)
-		assert.Equal(t, "amd64", got.Architecture)
-		assert.Empty(t, got.Variant)
-	})
-
-	t.Run("os/arch/variant", func(t *testing.T) {
-		got, err := parsePlatform("linux/arm/v7")
-		require.NoError(t, err)
-		require.NotNil(t, got)
-		assert.Equal(t, "linux", got.OS)
-		assert.Equal(t, "arm", got.Architecture)
-		assert.Equal(t, "v7", got.Variant)
-	})
-
-	t.Run("input is lowercased", func(t *testing.T) {
-		got, err := parsePlatform("Linux/AMD64/V8")
-		require.NoError(t, err)
-		require.NotNil(t, got)
-		assert.Equal(t, "linux", got.OS)
-		assert.Equal(t, "amd64", got.Architecture)
-		assert.Equal(t, "v8", got.Variant)
-	})
+	for input, want := range map[string]specs.Platform{
+		"linux/amd64":    {OS: "linux", Architecture: "amd64"},
+		"linux/arm/v7":   {OS: "linux", Architecture: "arm", Variant: "v7"},
+		"Linux/AMD64/V8": {OS: "linux", Architecture: "amd64", Variant: "v8"},
+	} {
+		t.Run(input, func(t *testing.T) {
+			got, err := parsePlatform(input)
+			require.NoError(t, err)
+			assert.Equal(t, &want, got)
+		})
+	}
 
 	for _, bad := range []string{
 		"amd64",

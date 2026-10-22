@@ -215,7 +215,7 @@ func runStepExecutor(step step, stage stepStage, executor common.Executor) commo
 		} else {
 			stepResult.Outcome = model.StepStatusFailure
 
-			continueOnError, parseErr := isContinueOnError(ctx, stepModel.RawContinueOnError, step, stage)
+			continueOnError, parseErr := isContinueOnError(ctx, stepModel.RawContinueOnError, step)
 			if parseErr != nil {
 				stepResult.Conclusion = model.StepStatusFailure
 				logger.With("stepResult", stepResult.Conclusion).Infof("Failure - %s %s", stage, stepString)
@@ -254,7 +254,10 @@ func evaluateStepTimeout(ctx context.Context, exprEval *expressionEvaluator, ste
 func setupEnv(ctx context.Context, step step) error {
 	rc := step.getRunContext()
 
-	mergeEnv(ctx, step)
+	env := step.getEnv()
+	// container env is the image's baseline, which job env and $GITHUB_ENV override
+	mergeIntoMap(step, env, rc.containerSpec.Env, rc.GetEnv())
+	rc.withGithubEnv(ctx, step.getGithubContext(ctx), *env)
 
 	var err error
 	exprEval := rc.NewExpressionEvaluator(ctx)
@@ -282,16 +285,6 @@ func setupInputs(ctx context.Context, step step) error {
 	return nil
 }
 
-func mergeEnv(ctx context.Context, step step) {
-	env := step.getEnv()
-	rc := step.getRunContext()
-
-	// container env is the image's baseline, which job env and $GITHUB_ENV override
-	mergeIntoMap(step, env, rc.containerSpec.Env, rc.GetEnv())
-
-	rc.withGithubEnv(ctx, step.getGithubContext(ctx), *env)
-}
-
 func isStepEnabled(ctx context.Context, expr string, step step, stage stepStage) (bool, error) {
 	rc := step.getRunContext()
 
@@ -315,9 +308,9 @@ func isStepEnabled(ctx context.Context, expr string, step step, stage stepStage)
 	return runStep, nil
 }
 
-func isContinueOnError(ctx context.Context, expr string, step step, _ stepStage) (bool, error) {
+func isContinueOnError(ctx context.Context, expr string, step step) (bool, error) {
 	// https://github.com/github/docs/blob/3ae84420bd10997bb5f35f629ebb7160fe776eae/content/actions/reference/workflow-syntax-for-github-actions.md?plain=true#L962
-	if len(strings.TrimSpace(expr)) == 0 {
+	if strings.TrimSpace(expr) == "" {
 		return false, nil
 	}
 
@@ -355,7 +348,7 @@ func mergeIntoMapCaseInsensitive(target map[string]string, maps ...map[string]st
 		if k, ok := foldKeys[foldKey]; ok {
 			return k
 		}
-		foldKeys[strings.ToLower(foldKey)] = s
+		foldKeys[foldKey] = s
 		return s
 	}
 	for _, m := range maps {
@@ -366,8 +359,7 @@ func mergeIntoMapCaseInsensitive(target map[string]string, maps ...map[string]st
 }
 
 func symlinkJoin(filename, sym, parent string) (string, error) {
-	dir := path.Dir(filename)
-	dest := path.Join(dir, sym)
+	dest := path.Join(path.Dir(filename), sym)
 	prefix := path.Clean(parent) + "/"
 	if strings.HasPrefix(dest, prefix) || prefix == "./" {
 		return dest, nil

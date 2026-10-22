@@ -2,7 +2,7 @@
 // Copyright 2022 The nektos/act Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-// This file is exact copy of https://github.com/docker/cli/blob/4a63305d74332de5ceba7fcbccbc3cbb7412f5ba/cli/command/container/opts_test.go with:
+// This file is based on https://github.com/docker/cli/blob/4a63305d74332de5ceba7fcbccbc3cbb7412f5ba/cli/command/container/opts_test.go with:
 // * appended with license information
 // * added tests for the locally changed parseDevice, validateDevice and invalidParameter
 //
@@ -69,7 +69,6 @@ func parseRun(args []string) (*container.Config, *container.HostConfig, *network
 	if err := flags.Parse(args); err != nil {
 		return nil, nil, nil, err
 	}
-	// TODO(dnephin): fix tests to accept ContainerConfig; see https://github.com/moby/moby/pull/31621
 	containerCfg, err := parse(flags, copts, runtime.GOOS)
 	if err != nil {
 		return nil, nil, nil, err
@@ -81,13 +80,12 @@ func setupRunFlags() (*pflag.FlagSet, *containerOptions) {
 	flags := pflag.NewFlagSet("run", pflag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Usage = nil
-	copts := addFlags(flags)
-	return flags, copts
+	return flags, addFlags(flags)
 }
 
 func mustParse(t *testing.T, args string) (*container.Config, *container.HostConfig, *networktypes.NetworkingConfig) {
 	t.Helper()
-	config, hostConfig, nwConfig, err := parseRun(append(strings.Split(args, " "), "ubuntu", "bash"))
+	config, hostConfig, nwConfig, err := parseRun(strings.Split(args, " "))
 	require.NoError(t, err)
 	return config, hostConfig, nwConfig
 }
@@ -179,53 +177,21 @@ func TestParseRunUmask(t *testing.T) {
 }
 
 func TestParseRunAttach(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected container.Config
+	for _, tc := range []struct {
+		input                 string
+		stdin, stdout, stderr bool
 	}{
-		{
-			input: "",
-			expected: container.Config{
-				AttachStdout: true,
-				AttachStderr: true,
-			},
-		},
-		{
-			input: "-i",
-			expected: container.Config{
-				AttachStdin:  true,
-				AttachStdout: true,
-				AttachStderr: true,
-			},
-		},
-		{
-			input: "-a stdin",
-			expected: container.Config{
-				AttachStdin: true,
-			},
-		},
-		{
-			input: "-a stdin -a stdout",
-			expected: container.Config{
-				AttachStdin:  true,
-				AttachStdout: true,
-			},
-		},
-		{
-			input: "-a stdin -a stdout -a stderr",
-			expected: container.Config{
-				AttachStdin:  true,
-				AttachStdout: true,
-				AttachStderr: true,
-			},
-		},
-	}
-	for _, tc := range tests {
+		{"", false, true, true},
+		{"-i", true, true, true},
+		{"-a stdin", true, false, false},
+		{"-a stdin -a stdout", true, true, false},
+		{"-a stdin -a stdout -a stderr", true, true, true},
+	} {
 		t.Run(tc.input, func(t *testing.T) {
 			config, _, _ := mustParse(t, tc.input)
-			require.Equal(t, tc.expected.AttachStdin, config.AttachStdin)
-			require.Equal(t, tc.expected.AttachStdout, config.AttachStdout)
-			require.Equal(t, tc.expected.AttachStderr, config.AttachStderr)
+			require.Equal(t, tc.stdin, config.AttachStdin)
+			require.Equal(t, tc.stdout, config.AttachStdout)
+			require.Equal(t, tc.stderr, config.AttachStderr)
 		})
 	}
 }
@@ -276,104 +242,47 @@ func TestParseRunWithInvalidArgs(t *testing.T) {
 	}
 }
 
-func TestParseWithVolumes(t *testing.T) { //nolint:gocyclo // verbatim copy from docker/cli tests
-	// A single volume
-	arr, tryit := setupPlatformVolume([]string{`/tmp`}, []string{`c:\tmp`})
-	if config, hostConfig, _ := mustParse(t, tryit); hostConfig.Binds != nil {
-		t.Fatalf("Error parsing volume flags, %q should not mount-bind anything. Received %v", tryit, hostConfig.Binds)
-	} else if _, exists := config.Volumes[arr[0]]; !exists {
-		t.Fatalf("Error parsing volume flags, %q is missing from volumes. Received %v", tryit, config.Volumes)
-	}
-
-	// Two volumes
-	arr, tryit = setupPlatformVolume([]string{`/tmp`, `/var`}, []string{`c:\tmp`, `c:\var`})
-	if config, hostConfig, _ := mustParse(t, tryit); hostConfig.Binds != nil {
-		t.Fatalf("Error parsing volume flags, %q should not mount-bind anything. Received %v", tryit, hostConfig.Binds)
-	} else if _, exists := config.Volumes[arr[0]]; !exists {
-		t.Fatalf("Error parsing volume flags, %s is missing from volumes. Received %v", arr[0], config.Volumes)
-	} else if _, exists := config.Volumes[arr[1]]; !exists {
-		t.Fatalf("Error parsing volume flags, %s is missing from volumes. Received %v", arr[1], config.Volumes)
-	}
-
-	// A single bind mount
-	arr, tryit = setupPlatformVolume([]string{`/hostTmp:/containerTmp`}, []string{os.Getenv("TEMP") + `:c:\containerTmp`})
-	if config, hostConfig, _ := mustParse(t, tryit); hostConfig.Binds == nil || hostConfig.Binds[0] != arr[0] {
-		t.Fatalf("Error parsing volume flags, %q should mount-bind the path before the colon into the path after the colon. Received %v %v", arr[0], hostConfig.Binds, config.Volumes)
-	}
-
-	// Two bind mounts.
-	arr, tryit = setupPlatformVolume([]string{`/hostTmp:/containerTmp`, `/hostVar:/containerVar`}, []string{os.Getenv("ProgramData") + `:c:\ContainerPD`, os.Getenv("TEMP") + `:c:\containerTmp`})
-	if _, hostConfig, _ := mustParse(t, tryit); hostConfig.Binds == nil || compareRandomizedStrings(hostConfig.Binds[0], hostConfig.Binds[1], arr[0], arr[1]) != nil {
-		t.Fatalf("Error parsing volume flags, `%s and %s` did not mount-bind correctly. Received %v", arr[0], arr[1], hostConfig.Binds)
-	}
-
-	// Two bind mounts, first read-only, second read-write.
-	// TODO Windows: The Windows version uses read-write as that's the only mode it supports. Can change this post TP4
-	arr, tryit = setupPlatformVolume(
-		[]string{`/hostTmp:/containerTmp:ro`, `/hostVar:/containerVar:rw`},
-		[]string{os.Getenv("TEMP") + `:c:\containerTmp:rw`, os.Getenv("ProgramData") + `:c:\ContainerPD:rw`})
-	if _, hostConfig, _ := mustParse(t, tryit); hostConfig.Binds == nil || compareRandomizedStrings(hostConfig.Binds[0], hostConfig.Binds[1], arr[0], arr[1]) != nil {
-		t.Fatalf("Error parsing volume flags, `%s and %s` did not mount-bind correctly. Received %v", arr[0], arr[1], hostConfig.Binds)
-	}
-
-	// Similar to previous test but with alternate modes which are only supported by Linux
-	if runtime.GOOS != "windows" {
-		arr, tryit = setupPlatformVolume([]string{`/hostTmp:/containerTmp:ro,Z`, `/hostVar:/containerVar:rw,Z`}, []string{})
-		if _, hostConfig, _ := mustParse(t, tryit); hostConfig.Binds == nil || compareRandomizedStrings(hostConfig.Binds[0], hostConfig.Binds[1], arr[0], arr[1]) != nil {
-			t.Fatalf("Error parsing volume flags, `%s and %s` did not mount-bind correctly. Received %v", arr[0], arr[1], hostConfig.Binds)
+func TestParseWithVolumes(t *testing.T) {
+	for _, tc := range []struct {
+		unix, windows []string
+		binds         int
+	}{
+		{[]string{`/tmp`}, []string{`c:\tmp`}, 0},
+		{[]string{`/tmp`, `/var`}, []string{`c:\tmp`, `c:\var`}, 0},
+		{[]string{`/hostTmp:/containerTmp`}, []string{os.Getenv("TEMP") + `:c:\containerTmp`}, 1},
+		{[]string{`/hostTmp:/containerTmp`, `/hostVar:/containerVar`}, []string{os.Getenv("ProgramData") + `:c:\ContainerPD`, os.Getenv("TEMP") + `:c:\containerTmp`}, 2},
+		{[]string{`/hostTmp:/containerTmp:ro`, `/hostVar:/containerVar:rw`}, []string{os.Getenv("TEMP") + `:c:\containerTmp:rw`, os.Getenv("ProgramData") + `:c:\ContainerPD:rw`}, 2},
+		{[]string{`/hostTmp:/containerTmp:ro,Z`, `/hostVar:/containerVar:rw,Z`}, nil, 2},
+		{[]string{`/hostTmp:/containerTmp:Z`, `/hostVar:/containerVar:z`}, nil, 2},
+		{[]string{`/hostTmp:/containerTmp`, `/containerVar`}, []string{os.Getenv("TEMP") + `:c:\containerTmp`, `c:\containerTmp`}, 1},
+		{nil, []string{os.Getenv("SystemDrive") + `\:d:`}, 1},
+	} {
+		volumes := tc.unix
+		if runtime.GOOS == "windows" {
+			volumes = tc.windows
 		}
-
-		arr, tryit = setupPlatformVolume([]string{`/hostTmp:/containerTmp:Z`, `/hostVar:/containerVar:z`}, []string{})
-		if _, hostConfig, _ := mustParse(t, tryit); hostConfig.Binds == nil || compareRandomizedStrings(hostConfig.Binds[0], hostConfig.Binds[1], arr[0], arr[1]) != nil {
-			t.Fatalf("Error parsing volume flags, `%s and %s` did not mount-bind correctly. Received %v", arr[0], arr[1], hostConfig.Binds)
+		if len(volumes) == 0 {
+			continue
 		}
+		t.Run(strings.Join(volumes, ","), func(t *testing.T) {
+			var args []string
+			for _, volume := range volumes {
+				args = append(args, "-v", volume)
+			}
+			config, hostConfig, _, err := parseRun(args)
+			require.NoError(t, err)
+			if tc.binds == 0 {
+				assert.Nil(t, hostConfig.Binds)
+			} else {
+				assert.ElementsMatch(t, volumes[:tc.binds], hostConfig.Binds)
+			}
+			expectedVolumes := map[string]struct{}{}
+			for _, volume := range volumes[tc.binds:] {
+				expectedVolumes[volume] = struct{}{}
+			}
+			assert.Equal(t, expectedVolumes, config.Volumes)
+		})
 	}
-
-	// One bind mount and one volume
-	arr, tryit = setupPlatformVolume([]string{`/hostTmp:/containerTmp`, `/containerVar`}, []string{os.Getenv("TEMP") + `:c:\containerTmp`, `c:\containerTmp`})
-	if config, hostConfig, _ := mustParse(t, tryit); hostConfig.Binds == nil || len(hostConfig.Binds) > 1 || hostConfig.Binds[0] != arr[0] {
-		t.Fatalf("Error parsing volume flags, %s and %s should only one and only one bind mount %s. Received %s", arr[0], arr[1], arr[0], hostConfig.Binds)
-	} else if _, exists := config.Volumes[arr[1]]; !exists {
-		t.Fatalf("Error parsing volume flags %s and %s. %s is missing from volumes. Received %v", arr[0], arr[1], arr[1], config.Volumes)
-	}
-
-	// Root to non-c: drive letter (Windows specific)
-	if runtime.GOOS == "windows" {
-		arr, tryit = setupPlatformVolume([]string{}, []string{os.Getenv("SystemDrive") + `\:d:`})
-		if config, hostConfig, _ := mustParse(t, tryit); hostConfig.Binds == nil || len(hostConfig.Binds) > 1 || hostConfig.Binds[0] != arr[0] || len(config.Volumes) != 0 {
-			t.Fatalf("Error parsing %s. Should have a single bind mount and no volumes", arr[0])
-		}
-	}
-}
-
-// setupPlatformVolume takes two arrays of volume specs - a Unix style
-// spec and a Windows style spec. Depending on the platform being unit tested,
-// it returns one of them, along with a volume string that would be passed
-// on the docker CLI (e.g. -v /bar -v /foo).
-func setupPlatformVolume(u, w []string) ([]string, string) {
-	var a []string
-	if runtime.GOOS == "windows" {
-		a = w
-	} else {
-		a = u
-	}
-	s := ""
-	for _, v := range a {
-		s = s + "-v " + v + " "
-	}
-	return a, s
-}
-
-// check if (a == c && b == d) || (a == d && b == c)
-// because maps are randomized
-func compareRandomizedStrings(a, b, c, d string) error {
-	if a == c && b == d {
-		return nil
-	}
-	if a == d && b == c {
-		return nil
-	}
-	return errors.New("strings don't match")
 }
 
 // Simple parse with MacAddress validation
@@ -414,46 +323,29 @@ func TestParseWithMemorySwap(t *testing.T) {
 }
 
 func TestParseHostname(t *testing.T) {
-	validHostnames := map[string]string{
-		"hostname":    "hostname",
-		"host-name":   "host-name",
-		"hostname123": "hostname123",
-		"123hostname": "123hostname",
-		"hostname-of-63-bytes-long-should-be-valid-and-without-any-error": "hostname-of-63-bytes-long-should-be-valid-and-without-any-error",
-	}
-	hostnameWithDomain := "--hostname=hostname.domainname"
-	hostnameWithDomainTld := "--hostname=hostname.domainname.tld"
-	for hostname, expectedHostname := range validHostnames {
-		if config, _, _ := mustParse(t, "--hostname="+hostname); config.Hostname != expectedHostname {
-			t.Fatalf("Expected the config to have 'hostname' as %q, got %q", expectedHostname, config.Hostname)
-		}
-	}
-	if config, _, _ := mustParse(t, hostnameWithDomain); config.Hostname != "hostname.domainname" || config.Domainname != "" {
-		t.Fatalf("Expected the config to have 'hostname' as hostname.domainname, got %q", config.Hostname)
-	}
-	if config, _, _ := mustParse(t, hostnameWithDomainTld); config.Hostname != "hostname.domainname.tld" || config.Domainname != "" {
-		t.Fatalf("Expected the config to have 'hostname' as hostname.domainname.tld, got %q", config.Hostname)
-	}
-}
-
-func TestParseHostnameDomainname(t *testing.T) {
-	validDomainnames := map[string]string{
-		"domainname":    "domainname",
-		"domain-name":   "domain-name",
-		"domainname123": "domainname123",
-		"123domainname": "123domainname",
-		"domainname-63-bytes-long-should-be-valid-and-without-any-errors": "domainname-63-bytes-long-should-be-valid-and-without-any-errors",
-	}
-	for domainname, expectedDomainname := range validDomainnames {
-		if config, _, _ := mustParse(t, "--domainname="+domainname); config.Domainname != expectedDomainname {
-			t.Fatalf("Expected the config to have 'domainname' as %q, got %q", expectedDomainname, config.Domainname)
-		}
-	}
-	if config, _, _ := mustParse(t, "--hostname=some.prefix --domainname=domainname"); config.Hostname != "some.prefix" || config.Domainname != "domainname" {
-		t.Fatalf("Expected the config to have 'hostname' as 'some.prefix' and 'domainname' as 'domainname', got %q and %q", config.Hostname, config.Domainname)
-	}
-	if config, _, _ := mustParse(t, "--hostname=another-prefix --domainname=domainname.tld"); config.Hostname != "another-prefix" || config.Domainname != "domainname.tld" {
-		t.Fatalf("Expected the config to have 'hostname' as 'another-prefix' and 'domainname' as 'domainname.tld', got %q and %q", config.Hostname, config.Domainname)
+	for _, tc := range []struct {
+		input, hostname, domainname string
+	}{
+		{"--hostname=hostname", "hostname", ""},
+		{"--hostname=host-name", "host-name", ""},
+		{"--hostname=hostname123", "hostname123", ""},
+		{"--hostname=123hostname", "123hostname", ""},
+		{"--hostname=hostname-of-63-bytes-long-should-be-valid-and-without-any-error", "hostname-of-63-bytes-long-should-be-valid-and-without-any-error", ""},
+		{"--hostname=hostname.domainname", "hostname.domainname", ""},
+		{"--hostname=hostname.domainname.tld", "hostname.domainname.tld", ""},
+		{"--domainname=domainname", "", "domainname"},
+		{"--domainname=domain-name", "", "domain-name"},
+		{"--domainname=domainname123", "", "domainname123"},
+		{"--domainname=123domainname", "", "123domainname"},
+		{"--domainname=domainname-63-bytes-long-should-be-valid-and-without-any-errors", "", "domainname-63-bytes-long-should-be-valid-and-without-any-errors"},
+		{"--hostname=some.prefix --domainname=domainname", "some.prefix", "domainname"},
+		{"--hostname=another-prefix --domainname=domainname.tld", "another-prefix", "domainname.tld"},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			config, _, _ := mustParse(t, tc.input)
+			require.Equal(t, tc.hostname, config.Hostname)
+			require.Equal(t, tc.domainname, config.Domainname)
+		})
 	}
 }
 
@@ -497,9 +389,15 @@ func TestParseWithExpose(t *testing.T) {
 	})
 
 	t.Run("merge with published", func(t *testing.T) {
-		// Merge with actual published port
-		config, _, _, err := parseRun([]string{"--publish=80", "--expose=80-81/tcp", "img", "cmd"})
+		config, hostConfig, _, err := parseRun([]string{"--publish=80", "--publish=127.0.0.1:8080:80", "--publish=[::1]:8081:80", "--expose=80-81/tcp"})
 		require.NoError(t, err)
+		assert.Equal(t, networktypes.PortMap{
+			networktypes.MustParsePort("80/tcp"): {
+				{},
+				{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: "8080"},
+				{HostIP: netip.MustParseAddr("::1"), HostPort: "8081"},
+			},
+		}, hostConfig.PortBindings)
 		assert.Len(t, config.ExposedPorts, 2)
 		ports := []networktypes.Port{networktypes.MustParsePort("80/tcp"), networktypes.MustParsePort("81/tcp")}
 		for _, port := range ports {
@@ -984,41 +882,29 @@ func TestParseRestartPolicyAutoRemove(t *testing.T) {
 }
 
 func TestParseHealth(t *testing.T) {
-	checkOk := func(args ...string) *container.HealthConfig {
-		config, _, _, err := parseRun(args)
-		if err != nil {
-			t.Fatalf("%#v: %v", args, err)
-		}
-		return config.Healthcheck
-	}
-	checkError := func(expected string, args ...string) {
-		config, _, _, err := parseRun(args)
-		if err == nil {
-			t.Fatalf("Expected error, but got %#v", config)
-		}
-		if err.Error() != expected {
-			t.Fatalf("Expected %#v, got %#v", expected, err)
-		}
-	}
-	health := checkOk("--no-healthcheck", "img", "cmd")
-	if health == nil || len(health.Test) != 1 || health.Test[0] != "NONE" {
-		t.Fatalf("--no-healthcheck failed: %#v", health)
-	}
-
-	health = checkOk("--health-cmd=/check.sh -q", "img", "cmd")
-	if len(health.Test) != 2 || health.Test[0] != "CMD-SHELL" || health.Test[1] != "/check.sh -q" {
-		t.Fatalf("--health-cmd: got %#v", health.Test)
-	}
-	if health.Timeout != 0 {
-		t.Fatalf("--health-cmd: timeout = %s", health.Timeout)
-	}
-
-	checkError("--no-healthcheck conflicts with --health-* options",
-		"--no-healthcheck", "--health-cmd=/check.sh -q", "img", "cmd")
-
-	health = checkOk("--health-timeout=2s", "--health-retries=3", "--health-interval=4.5s", "--health-start-period=5s", "--health-start-interval=1s", "img", "cmd")
-	if health.Timeout != 2*time.Second || health.Retries != 3 || health.Interval != 4500*time.Millisecond || health.StartPeriod != 5*time.Second || health.StartInterval != 1*time.Second {
-		t.Fatalf("--health-*: got %#v", health)
+	for _, tc := range []struct {
+		args     []string
+		expected *container.HealthConfig
+		wantErr  string
+	}{
+		{[]string{"--no-healthcheck", "img", "cmd"}, &container.HealthConfig{Test: []string{"NONE"}}, ""},
+		{[]string{"--health-cmd=/check.sh -q", "img", "cmd"}, &container.HealthConfig{Test: []string{"CMD-SHELL", "/check.sh -q"}}, ""},
+		{[]string{"--no-healthcheck", "--health-cmd=/check.sh -q", "img", "cmd"}, nil, "--no-healthcheck conflicts with --health-* options"},
+		{
+			[]string{"--health-timeout=2s", "--health-retries=3", "--health-interval=4.5s", "--health-start-period=5s", "--health-start-interval=1s", "img", "cmd"},
+			&container.HealthConfig{Timeout: 2 * time.Second, Retries: 3, Interval: 4500 * time.Millisecond, StartPeriod: 5 * time.Second, StartInterval: time.Second},
+			"",
+		},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			config, _, _, err := parseRun(tc.args)
+			if tc.wantErr != "" {
+				require.EqualError(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tc.expected, config.Healthcheck)
+			}
+		})
 	}
 }
 
@@ -1037,82 +923,53 @@ func TestParseLoggingOpts(t *testing.T) {
 	}
 }
 
-func TestParseEnvfileVariables(t *testing.T) { //nolint:dupl // verbatim copy from docker/cli tests
-	expErr := "--env-file: open nonexistent: no such file or directory"
-	if runtime.GOOS == "windows" {
-		expErr = "--env-file: open nonexistent: The system cannot find the file specified."
-	}
-	// env ko
-	if _, _, _, err := parseRun([]string{"--env-file=nonexistent", "img", "cmd"}); err == nil || err.Error() != expErr {
-		t.Fatalf("Expected an error with message '%s', got %v", expErr, err)
-	}
-	// env ok
-	config, _, _, err := parseRun([]string{"--env-file=testdata/valid.env", "img", "cmd"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(config.Env) != 1 || config.Env[0] != "ENV1=value1" {
-		t.Fatalf("Expected a config with [ENV1=value1], got %v", config.Env)
-	}
-	config, _, _, err = parseRun([]string{"--env-file=testdata/valid.env", "--env=ENV2=value2", "img", "cmd"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(config.Env) != 2 || config.Env[0] != "ENV1=value1" || config.Env[1] != "ENV2=value2" {
-		t.Fatalf("Expected a config with [ENV1=value1 ENV2=value2], got %v", config.Env)
+func TestParseFileVariables(t *testing.T) {
+	for _, tc := range []struct {
+		flag, file, key string
+	}{
+		{"env", "valid.env", "ENV"},
+		{"label", "valid.label", "LABEL"},
+	} {
+		t.Run(tc.flag, func(t *testing.T) {
+			expectedError := "no such file or directory"
+			if runtime.GOOS == "windows" {
+				expectedError = "The system cannot find the file specified."
+			}
+			_, _, _, err := parseRun([]string{"--" + tc.flag + "-file=nonexistent"})
+			require.EqualError(t, err, "--"+tc.flag+"-file: open nonexistent: "+expectedError)
+			for _, extra := range []bool{false, true} {
+				args := []string{"--" + tc.flag + "-file=testdata/" + tc.file}
+				expected := []string{tc.key + "1=value1"}
+				if extra {
+					args = append(args, "--"+tc.flag+"="+tc.key+"2=value2")
+					expected = append(expected, tc.key+"2=value2")
+				}
+				config, _, _, err := parseRun(args)
+				require.NoError(t, err)
+				if tc.flag == "env" {
+					assert.Equal(t, expected, config.Env)
+				} else {
+					assert.Len(t, config.Labels, len(expected))
+					for _, label := range expected {
+						key, value, _ := strings.Cut(label, "=")
+						assert.Equal(t, value, config.Labels[key])
+					}
+				}
+			}
+		})
 	}
 }
 
 func TestParseEnvfileVariablesWithBOMUnicode(t *testing.T) {
-	// UTF8 with BOM
-	config, _, _, err := parseRun([]string{"--env-file=testdata/utf8.env", "img", "cmd"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	env := []string{"FOO=BAR", "HELLO=" + string([]byte{0xe6, 0x82, 0xa8, 0xe5, 0xa5, 0xbd}), "BAR=FOO"}
-	if len(config.Env) != len(env) {
-		t.Fatalf("Expected a config with %d env variables, got %v: %v", len(env), len(config.Env), config.Env)
-	}
-	for i, v := range env {
-		if config.Env[i] != v {
-			t.Fatalf("Expected a config with [%s], got %v", v, []byte(config.Env[i]))
-		}
-	}
+	config, _, _, err := parseRun([]string{"--env-file=testdata/utf8.env"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"FOO=BAR", "HELLO=您好", "BAR=FOO"}, config.Env)
 
-	// UTF16 with BOM
-	e := "invalid utf8 bytes at line"
-	if _, _, _, err := parseRun([]string{"--env-file=testdata/utf16.env", "img", "cmd"}); err == nil || !strings.Contains(err.Error(), e) {
-		t.Fatalf("Expected an error with message '%s', got %v", e, err)
-	}
-	// UTF16BE with BOM
-	if _, _, _, err := parseRun([]string{"--env-file=testdata/utf16be.env", "img", "cmd"}); err == nil || !strings.Contains(err.Error(), e) {
-		t.Fatalf("Expected an error with message '%s', got %v", e, err)
-	}
-}
-
-func TestParseLabelfileVariables(t *testing.T) { //nolint:dupl // verbatim copy from docker/cli tests
-	expErr := "--label-file: open nonexistent: no such file or directory"
-	if runtime.GOOS == "windows" {
-		expErr = "--label-file: open nonexistent: The system cannot find the file specified."
-	}
-	// label ko
-	if _, _, _, err := parseRun([]string{"--label-file=nonexistent", "img", "cmd"}); err == nil || err.Error() != expErr {
-		t.Fatalf("Expected an error with message '%s', got %v", expErr, err)
-	}
-	// label ok
-	config, _, _, err := parseRun([]string{"--label-file=testdata/valid.label", "img", "cmd"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(config.Labels) != 1 || config.Labels["LABEL1"] != "value1" {
-		t.Fatalf("Expected a config with [LABEL1:value1], got %v", config.Labels)
-	}
-	config, _, _, err = parseRun([]string{"--label-file=testdata/valid.label", "--label=LABEL2=value2", "img", "cmd"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(config.Labels) != 2 || config.Labels["LABEL1"] != "value1" || config.Labels["LABEL2"] != "value2" {
-		t.Fatalf("Expected a config with [LABEL1:value1 LABEL2:value2], got %v", config.Labels)
+	for _, file := range []string{"utf16.env", "utf16be.env"} {
+		t.Run(file, func(t *testing.T) {
+			_, _, _, err := parseRun([]string{"--env-file=testdata/" + file})
+			require.ErrorContains(t, err, "invalid utf8 bytes at line")
+		})
 	}
 }
 

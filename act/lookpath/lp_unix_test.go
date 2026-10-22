@@ -13,35 +13,23 @@ import (
 	"testing"
 )
 
-func TestLookPath2SearchesPathAndEmptyElement(t *testing.T) {
+func TestLookPath2SearchesPathAndEmptyElementOrUsesDirectPath(t *testing.T) {
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "tool")
 	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := LookPath2("tool", map[string]string{"PATH": string(filepath.ListSeparator) + dir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != exe {
-		t.Fatalf("LookPath2() = %q, want %q", got, exe)
-	}
-}
-
-func TestLookPath2DirectPathDoesNotSearchPath(t *testing.T) {
-	dir := t.TempDir()
-	exe := filepath.Join(dir, "tool")
-	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := LookPath2(exe, map[string]string{"PATH": ""})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != exe {
-		t.Fatalf("LookPath2() = %q, want %q", got, exe)
+	for file, searchPath := range map[string]string{"tool": string(filepath.ListSeparator) + dir, exe: ""} {
+		t.Run(file, func(t *testing.T) {
+			got, err := LookPath2(file, map[string]string{"PATH": searchPath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != exe {
+				t.Fatalf("LookPath2() = %q, want %q", got, exe)
+			}
+		})
 	}
 }
 
