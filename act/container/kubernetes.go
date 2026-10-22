@@ -387,13 +387,38 @@ func (c *kubernetesContainer) Start(_ bool) common.Executor {
 		if err := c.pod.waitStarted(ctx); err != nil {
 			return err
 		}
-		var stdout bytes.Buffer
-		if err := c.pod.client.exec(ctx, c.pod.name, c.name, []string{"sh", "-c", `printf '%s\n%s' "$(uname -m)" "$PATH"`}, nil, &stdout, io.Discard); err != nil {
+		output, err := c.pod.probe(ctx, c.name)
+		if err != nil {
 			return err
 		}
-		machine, path, _ := strings.Cut(stdout.String(), "\n")
+		machine, path, _ := strings.Cut(output, "\n")
 		c.pod.arch, c.pod.path = goArchToActionArch(machine), path
 		return nil
+	}
+}
+
+// probe retries exec while it fails short of the container, as a new node runs pods before its kubelet has a serving certificate.
+func (p *KubernetesPod) probe(ctx context.Context, container string) (string, error) {
+	var failure string
+	deadline := time.Now().Add(time.Minute)
+	for delay := 100 * time.Millisecond; ; delay = min(2*delay, 2*time.Second) {
+		var stdout bytes.Buffer
+		err := p.client.exec(ctx, p.name, container, []string{"sh", "-c", `printf '%s\n%s' "$(uname -m)" "$PATH"`}, nil, &stdout, io.Discard)
+		var exitErr ExitCodeError
+		var apiErr *apiError
+		if err == nil || ctx.Err() != nil || errors.As(err, &exitErr) || time.Now().After(deadline) ||
+			errors.As(err, &apiErr) && apiErr.code < http.StatusInternalServerError {
+			return stdout.String(), err
+		}
+		if err.Error() != failure {
+			failure = err.Error()
+			common.Logger(ctx).Infof("Waiting for exec into pod %s: %v", p.name, err)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(delay):
+		}
 	}
 }
 

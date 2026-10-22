@@ -43,14 +43,50 @@ type podManifest struct {
 }
 
 type fakeCluster struct {
-	mu       sync.Mutex
-	requests map[string][]string
+	mu           sync.Mutex
+	requests     map[string][]string
+	execFailures []http.HandlerFunc
 }
 
 func (f *fakeCluster) record(request, content string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests[request] = append(f.requests[request], content)
+}
+
+func (f *fakeCluster) failExec(failures ...http.HandlerFunc) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execFailures = failures
+}
+
+func (f *fakeCluster) nextExecFailure() http.HandlerFunc {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.execFailures) == 0 {
+		return nil
+	}
+	failure := f.execFailures[0]
+	f.execFailures = f.execFailures[1:]
+	return failure
+}
+
+// execFailure answers like the API server, code 0 for a failure reported after the websocket upgrade.
+func execFailure(t *testing.T, code int, status string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if code != 0 {
+			w.WriteHeader(code)
+			_, _ = io.WriteString(w, status)
+			return
+		}
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{execProtocol}})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		_ = conn.Write(r.Context(), websocket.MessageBinary, append([]byte{3}, status...))
+	}
 }
 
 func fakeKubernetes(t *testing.T, podStatus string) (string, *fakeCluster) {
@@ -70,7 +106,11 @@ func fakeKubernetes(t *testing.T, podStatus string) (string, *fakeCluster) {
 			_, _ = io.WriteString(w, `{"items":[{"metadata":{"name":"old","creationTimestamp":"2020-01-01T00:00:00Z"}},{"metadata":{"name":"new","creationTimestamp":"2999-01-01T00:00:00Z"}}]}`)
 		case strings.HasSuffix(r.URL.Path, "/exec"):
 			cluster.record("exec", r.URL.RawQuery)
-			serveLocalExec(t, w, r)
+			if failure := cluster.nextExecFailure(); failure != nil {
+				failure(w, r)
+			} else {
+				serveLocalExec(t, w, r)
+			}
 		case strings.HasSuffix(r.URL.Path, "/log"):
 			_, _ = io.WriteString(w, "log of "+r.URL.Query().Get("container"))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, pods+"/"):
@@ -213,7 +253,12 @@ func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(filepath.Join(workdir, "env"), []byte("#!/bin/sh\necho \"$@\" > \"$0-args\"\nexec /usr/bin/env \"$@\"\n"), 0o755))
 	t.Setenv("PATH", workdir+":"+os.Getenv("PATH"))
+	cluster.failExec(
+		execFailure(t, http.StatusInternalServerError, `{"message":"error dialing backend: remote error: tls: internal error"}`),
+		execFailure(t, 0, `{"status":"Failure","reason":"InternalError","message":"Internal error occurred: error sending request: remote error: tls: internal error"}`),
+	)
 	require.NoError(t, job.Start(false)(ctx))
+	assert.Len(t, cluster.requests["exec"], 3)
 
 	stepEnv := map[string]string{"INPUT_WHO-TO-GREET": "it's\nme", "SECRET": "hunter2", "UID": "5"}
 	require.NoError(t, job.Exec([]string{"printenv", "SECRET"}, stepEnv, "", "")(ctx))
@@ -294,6 +339,21 @@ func TestKubernetesPodFailsBeforeSteps(t *testing.T) {
 			pod.ServiceContainer(service, &NewContainerInput{Image: "postgres", WorkflowOptions: test.options})
 		}
 		require.ErrorContains(t, job.Create(nil, nil)(t.Context()), test.err)
+	}
+	running, cluster := fakeKubernetes(t, `{"spec":{"containers":[{}]},"status":{"containerStatuses":[{"name":"job","state":{"running":{}}}]}}`)
+	for _, test := range []struct {
+		failure http.HandlerFunc
+		err     string
+	}{
+		{execFailure(t, http.StatusForbidden, `{"message":"pods \"job\" is forbidden"}`), "is forbidden"},
+		{execFailure(t, 0, `{"status":"Failure","details":{"causes":[{"reason":"ExitCode","message":"126"}]}}`), ExitCodeError(126).Error()},
+	} {
+		cluster.failExec(test.failure)
+		pod, err := NewKubernetesPod(KubernetesOptions{Kubeconfig: running})
+		require.NoError(t, err)
+		job := pod.JobContainer(&NewContainerInput{Image: "node"})
+		require.NoError(t, job.Create(nil, nil)(t.Context()))
+		require.ErrorContains(t, job.Start(false)(t.Context()), test.err)
 	}
 	pod, err := NewKubernetesPod(KubernetesOptions{Kubeconfig: kubeconfig, Namespace: "ci"})
 	require.NoError(t, err)
