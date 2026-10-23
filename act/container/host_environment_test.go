@@ -82,14 +82,36 @@ func TestHostEnvironmentExecExitCode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX shell")
 	}
-	ctx := t.Context()
-	e := &HostEnvironment{Path: t.TempDir(), StdOut: io.Discard}
+	for name, allocatePTY := range map[string]bool{"without PTY": false, "with PTY": true} {
+		t.Run(name, func(t *testing.T) {
+			reader, writer := io.Pipe()
+			defer reader.Close()
+			e := &HostEnvironment{Path: t.TempDir(), StdOut: writer, AllocatePTY: allocatePTY}
+			t.Cleanup(func() { assert.NoError(t, e.Remove()(t.Context())) })
 
-	err := e.Exec([]string{"sh", "-c", "exit 3"}, map[string]string{"PATH": os.Getenv("PATH")}, "", "")(ctx)
-	var exitErr ExitCodeError
-	require.ErrorAs(t, err, &exitErr)
-	assert.Equal(t, ExitCodeError(3), exitErr)
-	assert.Equal(t, "Process completed with exit code 3.", err.Error())
+			result := make(chan error, 1)
+			go func() {
+				defer writer.Close()
+				result <- e.Exec([]string{"sh", "-c", "printf 'failed\\n'; exit 3"}, map[string]string{"PATH": os.Getenv("PATH")}, "", "")(t.Context())
+			}()
+			first := make([]byte, 1)
+			_, err := io.ReadFull(reader, first)
+			require.NoError(t, err)
+			select {
+			case err := <-result:
+				t.Fatalf("Exec returned before its output was consumed: %v", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+			remaining, err := io.ReadAll(reader)
+			require.NoError(t, err)
+			err = <-result
+			var exitErr ExitCodeError
+			require.ErrorAs(t, err, &exitErr)
+			assert.Equal(t, ExitCodeError(3), exitErr)
+			assert.Equal(t, "Process completed with exit code 3.", err.Error())
+			assert.Equal(t, "failed\n", string(first)+string(remaining))
+		})
+	}
 }
 
 func TestHostEnvironmentAllocatePTY(t *testing.T) {

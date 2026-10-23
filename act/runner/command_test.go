@@ -136,21 +136,28 @@ func TestEscapeCommandData(t *testing.T) {
 
 func TestUnsecureCommands(t *testing.T) {
 	tests := []struct {
-		name    string
-		jobEnv  map[string]string
-		stepEnv map[string]string
-		optedIn bool
+		name            string
+		jobEnv          map[string]string
+		globalEnv       map[string]string
+		stepEnv         map[string]string
+		processEnv      string
+		caseInsensitive bool
+		optedIn         bool
 	}{
 		{name: "refused with no opt-in"},
-		// GitHub reads the opt-in with bool.TryParse, so "1" is not one.
 		{name: "refused for a value bool.TryParse rejects", jobEnv: map[string]string{allowUnsecureCommandsVar: "1"}},
 		{name: "opted in through the step environment", stepEnv: map[string]string{allowUnsecureCommandsVar: "true"}, optedIn: true},
 		{name: "opted in through the job environment", jobEnv: map[string]string{allowUnsecureCommandsVar: "TRUE"}, optedIn: true},
+		{name: "step opt-out overrides the job and global environment", jobEnv: map[string]string{allowUnsecureCommandsVar: "true"}, globalEnv: map[string]string{allowUnsecureCommandsVar: "true"}, stepEnv: map[string]string{allowUnsecureCommandsVar: "false"}},
+		{name: "the runner's own opt-in overrides a step opt-out", stepEnv: map[string]string{allowUnsecureCommandsVar: "false"}, processEnv: "true", optedIn: true},
+		{name: "a differently cased opt-in counts where env names are case-insensitive", jobEnv: map[string]string{"Actions_Allow_Unsecure_Commands": "true"}, caseInsensitive: true, optedIn: true},
+		{name: "a differently cased opt-in is ignored where env names are case-sensitive", jobEnv: map[string]string{"Actions_Allow_Unsecure_Commands": "true"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(allowUnsecureCommandsVar, tt.processEnv)
 			a := assert.New(t)
-			rc := &RunContext{Config: &Config{}, Env: tt.jobEnv}
+			rc := &RunContext{Config: &Config{}, Env: tt.jobEnv, GlobalEnv: tt.globalEnv, JobContainer: fakeContainer{caseInsensitive: tt.caseInsensitive}}
 			rc.setCurrentStepEnv(tt.stepEnv)
 			handler := rc.commandHandler(t.Context())
 
@@ -160,7 +167,6 @@ func TestUnsecureCommands(t *testing.T) {
 			if !tt.optedIn {
 				a.Empty(rc.Env["x"])
 				a.Empty(rc.ExtraPath)
-				// The refusal fails the step that produced it, once.
 				require.ErrorContains(t, rc.takeUnsecureCommandError(), "set-env")
 				a.NoError(rc.takeUnsecureCommandError())
 				return

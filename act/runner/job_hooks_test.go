@@ -14,6 +14,7 @@ import (
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/common/logging/logtest"
+	"gitea.com/gitea/runner/act/container"
 
 	"gitea.dev/actionslib/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -27,6 +28,7 @@ type hookContainer struct {
 	cmd     []string
 	env     map[string]string
 	err     error
+	copyErr error
 	envFile map[string]string
 	pathTar []byte
 	output  string
@@ -56,6 +58,10 @@ func (c *hookContainer) ReplaceLogWriter(stdout, _ io.Writer) (io.Writer, io.Wri
 	old := c.stdout
 	c.stdout = stdout
 	return old, nil
+}
+
+func (c *hookContainer) Copy(_destPath string, _files ...*container.FileEntry) common.Executor {
+	return common.NewErrorExecutor(c.copyErr)
 }
 
 func (c *hookContainer) UpdateFromEnv(_ string, env *map[string]string) common.Executor {
@@ -116,6 +122,44 @@ func TestRunJobHook(t *testing.T) {
 		assert.Same(t, jobWriter, jobContainer.stdout)
 	})
 
+	t.Run("fails on refused commands and honors the container opt-in", func(t *testing.T) {
+		for _, allow := range []bool{false, true} {
+			jobContainer := &hookContainer{output: "::set-env name=FROM_HOOK::1\n::add-path::/opt/hook/bin"}
+			rc, ctx := newHookRunContext(jobContainer, &Config{JobStartedHook: "/started.sh"})
+			if allow {
+				rc.containerSpec.Env = map[string]string{allowUnsecureCommandsVar: "true"}
+			}
+
+			err := rc.runJobStartedHook(ctx)
+			if allow {
+				require.NoError(t, err)
+				assert.Equal(t, "1", rc.Env["FROM_HOOK"])
+				assert.Equal(t, []string{"/opt/hook/bin"}, rc.ExtraPath)
+			} else {
+				require.ErrorContains(t, err, "workflow command is disabled")
+				assert.Equal(t, "failure", rc.getJobContext().Status)
+				require.ErrorContains(t, common.JobError(ctx), "workflow command is disabled")
+				assert.NotContains(t, rc.Env, "FROM_HOOK")
+				assert.Empty(t, rc.ExtraPath)
+			}
+			assert.Nil(t, rc.currentStepEnv())
+			require.NoError(t, rc.takeUnsecureCommandError())
+		}
+	})
+
+	t.Run("the completed hook has no preceding step identity", func(t *testing.T) {
+		jobContainer := &hookContainer{output: "::set-output name=value::after\n::save-state name=value::after"}
+		rc, ctx := newHookRunContext(jobContainer, &Config{JobCompletedHook: "/completed.sh"})
+		rc.CurrentStep = "last-step"
+		rc.StepResults = map[string]*model.StepResult{"last-step": {Outputs: map[string]string{"value": "before"}}}
+
+		require.NoError(t, rc.runJobCompletedHook(ctx))
+		assert.Empty(t, jobContainer.env["GITHUB_ACTION"])
+		assert.Equal(t, "before", rc.StepResults["last-step"].Outputs["value"])
+		assert.Empty(t, rc.IntraActionState)
+		assert.Equal(t, "last-step", rc.CurrentStep)
+	})
+
 	// Each hook reads its own variable, so a swapped constant cannot pass.
 	t.Run("falls back to the GitHub environment variables", func(t *testing.T) {
 		for name, hook := range map[string]struct {
@@ -159,6 +203,15 @@ func TestRunJobHook(t *testing.T) {
 		// run and the task would be reported successful despite the missing setup.
 		assert.Equal(t, "failure", rc.getJobContext().Status)
 		require.ErrorContains(t, common.JobError(ctx), "boom")
+	})
+
+	t.Run("a hook whose file commands cannot be reset neither runs nor exports stale ones", func(t *testing.T) {
+		jobContainer := &hookContainer{copyErr: errors.New("boom"), envFile: map[string]string{"STALE": "1"}}
+		rc, ctx := newHookRunContext(jobContainer, &Config{JobStartedHook: "/hooks/started.sh"})
+
+		require.ErrorContains(t, rc.runJobStartedHook(ctx), "boom")
+		assert.Nil(t, jobContainer.cmd)
+		assert.NotContains(t, rc.Env, "STALE")
 	})
 
 	t.Run("is a no-op without a hook", func(t *testing.T) {

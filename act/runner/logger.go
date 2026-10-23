@@ -60,6 +60,8 @@ type masksContextKey string
 
 const masksContextKeyVal = masksContextKey("logrus.FieldLogger")
 
+type valueMaskerContextKey struct{}
+
 // Logger returns the appropriate logger for current context
 func Masks(ctx context.Context) *[]string {
 	if masks, ok := ctx.Value(masksContextKeyVal).(*[]string); ok {
@@ -88,6 +90,8 @@ func WithJobLoggerFactory(ctx context.Context, factory JobLoggerFactory) context
 
 // WithJobLogger attaches a new logger to context that is aware of steps
 func WithJobLogger(ctx context.Context, jobID, jobName string, config *Config, masks *[]string, matrix map[string]any) context.Context {
+	masker := valueMasker(config.InsecureSecrets, config.maskers())
+	ctx = context.WithValue(ctx, valueMaskerContextKey{}, masker)
 	ctx = WithMasks(ctx, masks)
 
 	var output logging.Handler
@@ -109,7 +113,7 @@ func WithJobLogger(ctx context.Context, jobID, jobName string, config *Config, m
 	}
 	handlers = append(handlers, &maskedHandler{
 		Handler: output,
-		masker:  valueMasker(config.InsecureSecrets, config.maskers()),
+		masker:  masker,
 	})
 
 	level := logging.LevelTrace
@@ -140,6 +144,9 @@ func WithCompositeStepLogger(ctx context.Context, stepID string) context.Context
 }
 
 func withStepLogger(ctx context.Context, stepNumber int, stepID, stepName, stageName string) context.Context {
+	if masker, ok := ctx.Value(valueMaskerContextKey{}).(entryProcessor); ok {
+		stepName = masker(ctx, logging.Record{Message: stepName}).Message
+	}
 	stepIDs := []string{stepID}
 	ctx = common.WithStepIDs(ctx, stepIDs)
 

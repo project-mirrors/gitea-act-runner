@@ -100,15 +100,16 @@ func (h *Handler) v2CreateCacheEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now().Unix()
+	now := time.Now()
 	cache := &Cache{
-		Repo:      cred.Repo,
-		Key:       req.Key,
-		Version:   req.Version,
-		Owner:     owner,
-		Size:      -1, // the size is only known at finalize time
-		CreatedAt: now,
-		UsedAt:    now,
+		Repo:           cred.Repo,
+		Key:            req.Key,
+		Version:        req.Version,
+		Owner:          owner,
+		Size:           -1, // the size is only known at finalize time
+		CreatedAt:      now.Unix(),
+		CreatedAtNanos: now.Nanosecond(),
+		UsedAt:         now.Unix(),
 	}
 	if err := h.insertCache(db, cache); err != nil {
 		h.twirpError(w, r, twirpInternal, err)

@@ -326,11 +326,10 @@ func runExecList(planner model.WorkflowPlanner, execArgs *executeArgs) error {
 		// collect all events from loaded workflows
 		events := planner.GetEvents()
 
-		// set default event type to first event from many available
-		// this way user dont have to specify the event.
-		logging.Infof("Using first detected workflow event for filtering: %s", events[0])
-
-		filterEventName = events[0]
+		if len(events) > 0 {
+			logging.Infof("Using first detected workflow event for filtering: %s", events[0])
+			filterEventName = events[0]
+		}
 	}
 
 	var err error

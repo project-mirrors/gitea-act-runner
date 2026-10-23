@@ -4,6 +4,8 @@
 package report
 
 import (
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,7 +24,13 @@ var (
 func registerGlobalMasks(r *Reporter) {
 	globalMu.Lock()
 	defer globalMu.Unlock()
-	globalMasks[r] = r.oldnew
+	masks := slices.Clip(r.oldnew)
+	for i := 0; i < len(r.oldnew); i += 2 { // the console handler Go-quotes values with special characters
+		if quoted := strconv.Quote(r.oldnew[i]); quoted[1:len(quoted)-1] != r.oldnew[i] {
+			masks = append(masks, quoted[1:len(quoted)-1], r.oldnew[i+1])
+		}
+	}
+	globalMasks[r] = masks
 	rebuildGlobalReplacer()
 }
 

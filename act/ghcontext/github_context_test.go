@@ -42,6 +42,30 @@ func TestSetRef(t *testing.T) {
 			refName: "1234/merge",
 		},
 		{
+			eventName: "pull_request_review",
+			event:     map[string]any{"pull_request": map[string]any{"number": 1234.}},
+			ref:       "refs/pull/1234/merge",
+			refName:   "1234/merge",
+		},
+		{
+			eventName: "pull_request",
+			event:     map[string]any{"number": 1234., "action": "closed", "pull_request": map[string]any{"merged": true}},
+			ref:       "refs/heads/master",
+			refName:   "master",
+		},
+		{
+			eventName: "pull_request",
+			event:     map[string]any{"number": 1234., "action": "closed", "pull_request": map[string]any{"merged": false}},
+			ref:       "refs/pull/1234/merge",
+			refName:   "1234/merge",
+		},
+		{
+			eventName: "pull_request_review_comment",
+			event:     map[string]any{"pull_request": map[string]any{"number": 1234.}},
+			ref:       "refs/pull/1234/merge",
+			refName:   "1234/merge",
+		},
+		{
 			eventName: "deployment",
 			event: map[string]any{
 				"deployment": map[string]any{
@@ -68,6 +92,24 @@ func TestSetRef(t *testing.T) {
 			},
 			ref:     "refs/heads/somebranch",
 			refName: "somebranch",
+		},
+		{
+			eventName: "create",
+			event:     map[string]any{"ref": "feature/new", "ref_type": "branch"},
+			ref:       "refs/heads/feature/new",
+			refName:   "feature/new",
+		},
+		{
+			eventName: "create",
+			event:     map[string]any{"ref": "v1", "ref_type": "tag"},
+			ref:       "refs/tags/v1",
+			refName:   "v1",
+		},
+		{
+			eventName: "create",
+			event:     map[string]any{"ref": "refs/tags/v1", "ref_type": "tag"},
+			ref:       "refs/tags/v1",
+			refName:   "v1",
 		},
 		{
 			eventName: "unknown",

@@ -500,7 +500,7 @@ func (c *kubernetesContainer) GetContainerArchive(ctx context.Context, srcPath s
 }
 
 func (c *kubernetesContainer) UpdateFromEnv(srcPath string, env *map[string]string) common.Executor {
-	return parseEnvFile(c, srcPath, env)
+	return parseEnvFile(c, srcPath, env, false)
 }
 
 func (c *kubernetesContainer) UpdateFromImageEnv(env *map[string]string) common.Executor {

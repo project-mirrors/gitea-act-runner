@@ -101,9 +101,13 @@ func TestMainStepsExecutorRunsAlwaysStepsAfterInterruption(t *testing.T) {
 			assert.Equal(t, []string{"step1", "always-step"}, ran)
 			require.NoError(t, laterStepCtxErr)
 			assert.Equal(t, wantError == context.Canceled, rc.jobCancelled)
+			setJobResult(t.Context(), rc, rc, true)
 			if wantError == context.DeadlineExceeded {
 				assert.True(t, rc.jobFailed)
 				assert.Equal(t, "failure", rc.getJobContext().Status)
+				assert.Equal(t, "failure", rc.Run.Job().Result)
+			} else {
+				assert.Equal(t, "cancelled", rc.Run.Job().Result)
 			}
 		})
 	}

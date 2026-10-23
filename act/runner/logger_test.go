@@ -255,7 +255,11 @@ func TestWithJobLoggerFansOutAndMasksOnlyOutput(t *testing.T) {
 
 func TestJobLogJSONHandler(t *testing.T) {
 	buf := &bytes.Buffer{}
-	logger := logging.New(newJobLogJSONHandler(buf)).With("job", "build", "msg", "clash").WithError(errors.New("boom"))
+	rc := &RunContext{Config: &Config{Secrets: map[string]string{"TOKEN": "s3cr3t-value"}}}
+	ctx := WithJobLoggerFactory(t.Context(), factoryFunc(func() logging.Handler { return newJobLogJSONHandler(buf) }))
+	ctx = WithJobLogger(ctx, "j1", "build", rc.Config, &rc.Masks, nil)
+	logger := common.Logger(withStepLogger(ctx, 1, "s1", "deploy s3cr3t-value", StageMain)).
+		With("msg", "clash").WithError(errors.New("boom"))
 	logger.Warnf("careful %d", 1)
 
 	var got map[string]any
@@ -263,7 +267,15 @@ func TestJobLogJSONHandler(t *testing.T) {
 	assert.Equal(t, "careful 1", got["msg"])
 	assert.Equal(t, "warning", got["level"])
 	assert.Equal(t, "build", got["job"])
+	assert.Equal(t, "deploy ***", got["step"])
 	assert.Equal(t, "boom", got["error"])
 	assert.Equal(t, "clash", got["fields.msg"])
 	assert.NotEmpty(t, got["time"])
+
+	rc.AddMask(ctx, "runtime-value")
+	buf.Reset()
+	common.Logger(withStepLogger(ctx, 2, "s2", "deploy s3cr3t-value runtime-value", StageMain)).Info("done")
+
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+	assert.Equal(t, "deploy *** ***", got["step"])
 }

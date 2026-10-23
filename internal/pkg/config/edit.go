@@ -460,6 +460,9 @@ func resolvePath(segments []string) (*fieldInfo, error) {
 					strings.Join(segments[:i+1], "."), strings.Join(yamlNames(typ), ", "))
 			}
 			typ = field.Type
+			if typ.Kind() == reflect.Pointer {
+				typ = typ.Elem()
+			}
 		case reflect.Map:
 			// The segment names a user-defined entry, so the walk ends here.
 			if i != len(segments)-1 {

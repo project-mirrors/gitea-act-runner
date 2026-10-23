@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/runner"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -61,4 +62,10 @@ func TestGlobalMasks(t *testing.T) {
 	writers.Wait()
 	assert.Contains(t, format("saw runtime-secret"), "runtime-secret")
 	assert.Equal(t, "saw *** ***", third.mask("saw runtime-secret another-secret"))
+
+	secret := "pass\a\v\x1b\u00a0word"
+	register(runner.AppendSecretMasker(nil, secret)...)
+	out.Reset()
+	logging.With("token", secret).Info(secret)
+	assert.Equal(t, "level=info msg=\"***\" token=\"***\"\n", out.String())
 }

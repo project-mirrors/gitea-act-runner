@@ -8,12 +8,34 @@ package container
 import (
 	"archive/tar"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestDockerBuildReportsDaemonError(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("API-Version", "1.47")
+		if strings.HasSuffix(request.URL.Path, "/build") {
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(writer, `{"message":"build rejected"}`)
+		}
+	}))
+	t.Cleanup(daemon.Close)
+	t.Setenv("DOCKER_HOST", daemon.URL)
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+	t.Setenv("DOCKER_AUTH_CONFIG", "")
+
+	require.ErrorContains(t, NewDockerBuildExecutor(NewDockerBuildExecutorInput{
+		ImageTag: "action:test", Dockerfile: "Dockerfile", BuildContext: strings.NewReader(""),
+	})(t.Context()), "build rejected")
+}
 
 func TestCreateBuildContextFollowsDockerignoreAndSymlinkedRootButKeepsDockerfile(t *testing.T) {
 	dir := t.TempDir()

@@ -40,6 +40,9 @@ func (rc *RunContext) runJobHook(ctx context.Context, hookPath, name string) err
 	if hookPath == "" {
 		return nil
 	}
+	previousStep := rc.CurrentStep
+	rc.CurrentStep = ""
+	defer func() { rc.CurrentStep = previousStep }()
 
 	cmd, shell := hookCommand(hookPath)
 	rawLogger := common.Logger(ctx).With(rawOutputField, true)
@@ -56,12 +59,12 @@ func (rc *RunContext) runJobHook(ctx context.Context, hookPath, name string) err
 
 	err := rc.setupHookFileCommands(ctx, env)
 	if err == nil {
-		err = rc.withCommandLogWriter(ctx, rc.JobContainer.Exec(cmd, env, "", ""))
-	}
-	// Processed even on failure, so a hook that exports what it managed to set up before
-	// failing still hands it to the job.
-	if processErr := rc.processHookFileCommands(ctx); err == nil {
-		err = processErr
+		err = rc.runWithCommands(ctx, env, func(ctx context.Context) error {
+			return rc.withCommandLogWriter(ctx, rc.JobContainer.Exec(cmd, env, "", ""))
+		})
+		if processErr := rc.processHookFileCommands(ctx); err == nil { // a failed hook still exports what it set up
+			err = processErr
+		}
 	}
 	if err == nil {
 		return nil

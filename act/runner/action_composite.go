@@ -52,6 +52,11 @@ func evaluateCompositeInputAndEnv(ctx context.Context, parent *RunContext, step 
 			}
 		}
 	}
+	for envKey, value := range (&model.Step{With: step.getStepModel().With}).GetEnv() {
+		if _, ok := env[envKey]; !ok {
+			env[envKey] = value
+		}
+	}
 	gh := step.getGithubContext(ctx)
 	env["GITHUB_ACTION_REPOSITORY"] = gh.ActionRepository
 	env["GITHUB_ACTION_REF"] = gh.ActionRef

@@ -1197,6 +1197,18 @@ func TestReporter_ReportedSteps(t *testing.T) {
 		assert.Equal(t, []runnerv1.Result{failure, skipped, success}, []runnerv1.Result{got[0].result, got[1].result, got[2].result})
 	})
 
+	t.Run("cleanup failure gets a stop timestamp", func(t *testing.T) {
+		reporter, _ := newReporter(t, newTestSteps(1))
+		send(t, reporter, logging.LevelError, "##[error]job completed hook failed", map[string]any{"stage": runner.StageComplete})
+		send(t, reporter, logging.LevelInfo, "Job failed", map[string]any{"stage": runner.StageComplete, "jobResult": model.StepStatusFailure})
+		require.NoError(t, reporter.Close(""))
+
+		step := reporter.state.ReportedSteps[len(reporter.state.ReportedSteps)-1]
+		assert.Equal(t, failure, step.Result)
+		require.NotNil(t, step.StartedAt)
+		assert.NotNil(t, step.StoppedAt)
+	})
+
 	t.Run("step not reached in a succeeding job", func(t *testing.T) {
 		reporter, _ := newReporter(t, newTestSteps(1))
 		send(t, reporter, logging.LevelInfo, "Job succeeded", map[string]any{"stage": runner.StageComplete, "jobResult": model.StepStatusSuccess})

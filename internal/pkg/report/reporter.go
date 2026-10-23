@@ -279,6 +279,9 @@ func (r *Reporter) enterReportedStep(step *runnerv1.StepState, timestamp time.Ti
 // cleanup is left running unless closing, as it still logs after the job result. Caller holds stateMu.
 func (r *Reporter) finishReportedSteps(jobResult runnerv1.Result, timestamp time.Time, closing bool) {
 	for _, v := range r.state.ReportedSteps {
+		if closing && v.StartedAt != nil && v.StoppedAt == nil {
+			v.StoppedAt = timestamppb.New(timestamp)
+		}
 		if v.Result != runnerv1.Result_RESULT_UNSPECIFIED || !closing && v.StartedAt != nil && v.Stage == runnerv1.StepStage_STEP_STAGE_CLEANUP {
 			continue
 		}
@@ -716,6 +719,7 @@ func (r *Reporter) Close(lastWords string) error {
 	trailer := fmt.Sprintf("task %d finished: %s", r.state.Id, metrics.ResultToStatusLabel(r.state.Result))
 	if err != nil {
 		trailer += fmt.Sprintf(", the final flush to Gitea failed: %v", err)
+		err = errors.New(r.mask(err.Error())) // the caller logs it after this task's masks leave the global masker
 	}
 	r.jobLog.close(r.mask(trailer))
 	r.stateMu.Unlock()

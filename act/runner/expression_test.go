@@ -5,9 +5,20 @@
 package runner
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
+	"gitea.com/gitea/runner/act/container"
 
 	"gitea.dev/actionslib/pkg/exprparser"
 	"gitea.dev/actionslib/pkg/model"
@@ -140,6 +151,92 @@ func TestEvaluateRunContext(t *testing.T) {
 			out, err := ee.evaluate(t.Context(), table.in, exprparser.DefaultStatusCheckNone)
 			require.NoError(t, err)
 			assert.Equal(t, table.out, out)
+		})
+	}
+}
+
+type hashFilesContainer struct {
+	fakeContainer
+	stdout, stderr io.Writer
+	copyErr        error
+	execute        func([]string, map[string]string, string, string) common.Executor
+}
+
+func (c *hashFilesContainer) Copy(_destPath string, _files ...*container.FileEntry) common.Executor {
+	return common.NewErrorExecutor(c.copyErr)
+}
+
+func (c *hashFilesContainer) Exec(command []string, env map[string]string, user, workdir string) common.Executor {
+	return c.execute(command, env, user, workdir)
+}
+
+func (c *hashFilesContainer) ReplaceLogWriter(stdout, stderr io.Writer) (io.Writer, io.Writer) {
+	previousOut, previousErr := c.stdout, c.stderr
+	c.stdout, c.stderr = stdout, stderr
+	return previousOut, previousErr
+}
+
+func TestGetHashFilesFunction(t *testing.T) {
+	const failureMessage = "hashFiles('dir''file, *.sum') failed. Fail to hash files under directory '/workspace'"
+	for _, test := range []struct {
+		name    string
+		output  string
+		execErr error
+		copyErr error
+		hash    string
+		err     string
+		warning bool
+		expired bool
+	}{
+		{name: "success", output: "patterns __OUTPUT__wrong__OUTPUT__ echoed\n__OUTPUT__digest__OUTPUT__", hash: "digest"},
+		{name: "no matches", output: "__OUTPUT____OUTPUT__"},
+		{name: "script failure", output: "Cannot find: node in PATH\n__OUTPUT__digest__OUTPUT__", execErr: container.ExitCodeError(1), err: failureMessage},
+		{name: "timeout", execErr: context.DeadlineExceeded, err: "hashFiles('dir''file, *.sum') couldn't finish within 120 seconds"},
+		{name: "job deadline", execErr: context.DeadlineExceeded, expired: true, err: context.DeadlineExceeded.Error()},
+		{name: "node missing", execErr: fmt.Errorf("wrapped: %w", container.ExitCodeError(127)), warning: true},
+		{name: "node not executable", execErr: container.ExitCodeError(126), warning: true},
+		{name: "host node missing", execErr: errors.New("Cannot find: node in PATH"), warning: true},
+		{name: "copy failure", copyErr: errors.New("open /runner/cache: permission denied"), err: failureMessage},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			logger, hook := logtest.NewLogger()
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			jobContainer := &hashFilesContainer{stdout: stdout, stderr: stderr, copyErr: test.copyErr}
+			jobContainer.execute = func(command []string, env map[string]string, user, workdir string) common.Executor {
+				assert.Equal(t, []string{"node", "/var/run/act/workflow/hashfiles/index.js"}, command)
+				assert.Equal(t, map[string]string{"patterns": "dir'file\n*.sum", "followSymbolicLinks": "true"}, env)
+				assert.Empty(t, user)
+				assert.Empty(t, workdir)
+				return func(_ctx context.Context) error {
+					_, err := io.WriteString(jobContainer.stderr, test.output)
+					require.NoError(t, err)
+					return test.execErr
+				}
+			}
+			ctx := common.WithLogger(t.Context(), logger)
+			if test.expired {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, time.Now())
+				defer cancel()
+			}
+			result, err := getHashFilesFunction(ctx, &RunContext{
+				Config:       &Config{Workdir: "/workspace"},
+				JobContainer: jobContainer,
+			})([]reflect.Value{reflect.ValueOf("--follow-symbolic-links"), reflect.ValueOf("dir'file"), reflect.ValueOf("*.sum")})
+			if test.err == "" {
+				require.NoError(t, err)
+			} else {
+				require.EqualError(t, err, test.err)
+			}
+			assert.Equal(t, test.hash, result)
+			assert.Same(t, stdout, jobContainer.stdout)
+			assert.Same(t, stderr, jobContainer.stderr)
+			if test.warning {
+				require.Len(t, hook.AllRecords(), 1)
+				assert.Equal(t, "##[warning]hashFiles could not run because node is unavailable in the job environment. Returning an empty string.", hook.LastRecord().Message)
+			} else {
+				assert.Empty(t, hook.AllRecords())
+			}
 		})
 	}
 }

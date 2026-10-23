@@ -15,6 +15,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -710,9 +711,10 @@ func (h *Handler) reserve(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
-	now := time.Now().Unix()
-	cache.CreatedAt = now
-	cache.UsedAt = now
+	now := time.Now()
+	cache.CreatedAt = now.Unix()
+	cache.CreatedAtNanos = now.Nanosecond()
+	cache.UsedAt = now.Unix()
 	if err := h.insertCache(db, cache); err != nil {
 		h.responseJSON(w, r, 500, err)
 		return
@@ -778,6 +780,17 @@ func (h *Handler) commit(w http.ResponseWriter, r *http.Request) {
 		h.responseJSON(w, r, 400, err)
 		return
 	}
+	var request struct {
+		Size *int64 `json:"size"`
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err == nil && len(body) > 0 {
+		err = json.Unmarshal(body, &request)
+	}
+	if err != nil {
+		h.responseJSON(w, r, http.StatusBadRequest, err)
+		return
+	}
 
 	db, err := h.openDB()
 	if err != nil {
@@ -803,6 +816,14 @@ func (h *Handler) commit(w http.ResponseWriter, r *http.Request) {
 	if cache.Complete {
 		h.responseJSON(w, r, 400, fmt.Errorf("cache %v %q: already complete", cache.ID, cache.Key))
 		return
+	}
+
+	if request.Size != nil {
+		if *request.Size < 0 || cache.Size >= 0 && cache.Size != *request.Size {
+			h.responseJSON(w, r, http.StatusBadRequest, errors.New("invalid cache size"))
+			return
+		}
+		cache.Size = *request.Size
 	}
 
 	db.Close()
@@ -1067,7 +1088,7 @@ func findCache(db *cacheDB, repo string, keys []string, version string) (*Cache,
 		if err != nil {
 			return nil, fmt.Errorf("find cache: %w", err)
 		}
-		if cache := latest(caches, func(cache *Cache) int64 { return cache.CreatedAt }); cache != nil {
+		if cache := latest(caches, (*Cache).createdAtNano); cache != nil {
 			return cache, nil
 		}
 	}
@@ -1078,7 +1099,9 @@ func latest(caches []*Cache, stamp func(*Cache) int64) *Cache {
 	if len(caches) == 0 {
 		return nil
 	}
-	return slices.MaxFunc(caches, func(left, right *Cache) int { return cmp.Compare(stamp(left), stamp(right)) })
+	return slices.MaxFunc(caches, func(left, right *Cache) int {
+		return cmp.Or(cmp.Compare(stamp(left), stamp(right)), cmp.Compare(left.ID, right.ID))
+	})
 }
 
 // findExactCache returns the entry for exactly this key and version, or (nil, nil) if there is
@@ -1097,7 +1120,7 @@ func findExactCache(db *cacheDB, repo, key, version string, complete bool) (*Cac
 	}
 	stamp := func(cache *Cache) int64 { return cache.UsedAt }
 	if complete {
-		stamp = func(cache *Cache) int64 { return cache.CreatedAt }
+		stamp = (*Cache).createdAtNano
 	}
 	return latest(caches, stamp), nil
 }
@@ -1267,7 +1290,9 @@ func (h *Handler) evictSuperseded(db *cacheDB) {
 		groups[group] = append(groups[group], cache)
 	}
 	for _, caches := range groups {
-		slices.SortFunc(caches, func(left, right *Cache) int { return cmp.Compare(left.CreatedAt, right.CreatedAt) })
+		slices.SortFunc(caches, func(left, right *Cache) int {
+			return cmp.Or(cmp.Compare(left.createdAtNano(), right.createdAtNano()), cmp.Compare(left.ID, right.ID))
+		})
 		for _, cache := range caches[:len(caches)-1] {
 			if inUse(cache) {
 				continue

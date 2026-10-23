@@ -98,3 +98,32 @@ func TestKillerKillsTree(t *testing.T) {
 		return !processAlive(childPID)
 	}, 20*time.Second, 100*time.Millisecond, "backgrounded child should be terminated")
 }
+
+func TestTreeKillCancelBeforeCaptureKillsTree(t *testing.T) {
+	stdin, input, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stdin.Close() })
+	t.Cleanup(func() { _ = input.Close() })
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", "cat <&0 & echo $!; read value")
+	cmd.Stdin = stdin
+	cmd.SysProcAttr = SysProcAttr("", false)
+	output, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	treeKill := NewTreeKill(cmd)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Wait()
+	})
+	var childPID int
+	_, err = fmt.Fscan(output, &childPID)
+	require.NoError(t, err)
+	require.True(t, processAlive(childPID))
+
+	require.NoError(t, cmd.Cancel())
+	killer, err := treeKill.Capture(cmd.Process)
+	require.NoError(t, err)
+	defer killer.Close()
+	require.Error(t, cmd.Wait())
+	require.Eventually(t, func() bool { return !processAlive(childPID) }, 5*time.Second, 10*time.Millisecond)
+}

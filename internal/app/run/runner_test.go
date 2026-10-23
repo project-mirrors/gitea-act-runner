@@ -6,6 +6,7 @@ package run
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -185,6 +186,29 @@ func TestCleanupJobVolumesJoinsErrorsAfterCancellation(t *testing.T) {
 	})
 	require.ErrorIs(t, err, io.EOF)
 	require.ErrorIs(t, err, io.ErrClosedPipe)
+}
+
+func TestRunnerReturnsMaskedFinalReportingError(t *testing.T) {
+	cfg, err := config.LoadDefault("")
+	require.NoError(t, err)
+	cfg.Cache.Enabled = new(false)
+	cfg.Runner.ReportCloseTimeout = time.Millisecond
+	cli := clientmocks.NewClient(t)
+	cli.AddressValue = "https://gitea.example/"
+	reportErr := errors.New("reporting unavailable for hunter2")
+	cli.On("UpdateLog", mock.Anything, mock.Anything).Return(nil, reportErr)
+	cli.On("UpdateTask", mock.Anything, mock.Anything).Return(nil, reportErr)
+	r := NewRunner(cfg, &config.Registration{}, cli)
+
+	err = r.Run(t.Context(), &runnerv1.Task{
+		Context:         &structpb.Struct{},
+		WorkflowPayload: []byte("["),
+		Secrets:         map[string]string{"PASSWORD": "hunter2"},
+	})
+
+	require.ErrorContains(t, err, "reporting unavailable for ***")
+	assert.NotContains(t, err.Error(), "hunter2")
+	assert.Zero(t, r.RunningCount())
 }
 
 func TestNewRunnerInitializesLabelsAndEnvironment(t *testing.T) {

@@ -74,8 +74,10 @@ func NewDockerBuildExecutor(input NewDockerBuildExecutorInput) common.Executor {
 
 		logger.Debugf("Creating image from context dir '%s' with tag '%s' and platform '%s'", input.ContextDir, input.ImageTag, input.Platform)
 		resp, err := cli.ImageBuild(ctx, buildContext, options)
-
-		return logDockerResponse(logger, resp.Body, err != nil)
+		if err != nil {
+			return err
+		}
+		return logDockerResponse(logger, resp.Body, false)
 	}
 }
 

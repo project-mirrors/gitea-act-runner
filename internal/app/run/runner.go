@@ -287,7 +287,7 @@ func (r *Runner) cleanupStaleDirs(ctx context.Context, root string, match func(n
 	}
 }
 
-func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) error {
+func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) (err error) {
 	if _, ok := r.runningTasks.LoadOrStore(task.Id, struct{}{}); ok {
 		return fmt.Errorf("task %d is already running", task.Id)
 	}
@@ -302,7 +302,7 @@ func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) error {
 	defer cancel()
 	ctx, endJob := telemetry.StartJob(ctx, task)
 	// A proxy URL may carry credentials, and every job is given it; keep them out of the log.
-	reporter := report.NewReporter(ctx, cancel, r.client, task, r.cfg, proxyPasswords()...)
+	reporter := report.NewReporter(ctx, cancel, r.client, task, r.cfg, proxyPasswords(r.envs)...)
 	var volumeCleanup []common.Executor
 	var volumeCleanupMu sync.Mutex
 	if r.cfg.Runner.PostTaskScript == "" {
@@ -318,7 +318,7 @@ func (r *Runner) Run(ctx context.Context, task *runnerv1.Task) error {
 		if runErr != nil {
 			lastWords = runErr.Error()
 		}
-		_ = reporter.Close(lastWords)
+		err = reporter.Close(lastWords)
 		if err := cleanupJobVolumes(ctx, volumeCleanup); err != nil {
 			logging.Warnf("task %d volume cleanup after reporting: %v", task.Id, err)
 		}
@@ -584,7 +584,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		Env:                  envs,
 		ProxyEnv:             proxyEnv,
 		Secrets:              task.Secrets,
-		ExtraMasks:           append(proxyPasswords(), preset.Token),
+		ExtraMasks:           append(proxyPasswords(r.envs), preset.Token),
 		GitHubInstance:       strings.TrimSuffix(r.client.Address(), "/"),
 		NoSkipCheckout:       true,
 		DisableActEnv:        r.cfg.Runner.SetActEnv != nil && !*r.cfg.Runner.SetActEnv,

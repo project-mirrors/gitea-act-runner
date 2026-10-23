@@ -91,7 +91,7 @@ env:
 	sr := &stepRun{
 		Step:               &step,
 		RunContext:         &RunContext{},
-		shellCommand:       "pwsh -command . '{0}'",
+		shellCommand:       `pwsh -command ". '{0}'"`,
 		interpolatedScript: "echo one\necho two\n",
 		env: map[string]string{
 			"PATH_PREFIX":  "/custom/bin",
@@ -106,7 +106,7 @@ env:
 		"[j1]   | ::group::Run echo one",
 		"[j1]   | echo one",
 		"[j1]   | echo two",
-		"[j1]   | shell: pwsh -command . '{0}'",
+		`[j1]   | shell: pwsh -command ". '{0}'"`,
 		"[j1]   | env:",
 		"[j1]   |   PATH_PREFIX: /custom/bin",
 		"[j1]   |   GREETING: hello",

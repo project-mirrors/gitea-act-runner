@@ -187,6 +187,9 @@ func TestRunExecListUsesJobEventAndAllPlans(t *testing.T) {
 		require.NoError(t, runExecList(planner, &executeArgs{event: "push"}))
 		require.NoError(t, runExecList(planner, &executeArgs{autodetectEvent: true}))
 		require.NoError(t, runExecList(planner, &executeArgs{}))
+		emptyPlanner, err := model.NewWorkflowPlanner(t.TempDir(), false)
+		require.NoError(t, err)
+		require.NoError(t, runExecList(emptyPlanner, &executeArgs{autodetectEvent: true}))
 	})
 
 	require.Contains(t, out, "Build")

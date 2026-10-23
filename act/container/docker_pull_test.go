@@ -6,12 +6,17 @@ package container
 
 import (
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/common/logging/logtest"
 
+	"github.com/moby/moby/api/pkg/authconfig"
+	"github.com/moby/moby/api/types/registry"
 	assert "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,6 +69,21 @@ func TestGetImagePullOptions(t *testing.T) {
 	})
 	assert.NoError(t, err, "Failed to create ImagePullOptions") //nolint:testifylint // pre-existing issue from nektos/act
 	assert.Equal(t, "eyJ1c2VybmFtZSI6InVzZXJuYW1lIiwicGFzc3dvcmQiOiJwYXNzd29yZFxuIiwic2VydmVyYWRkcmVzcyI6Imh0dHBzOi8vaW5kZXguZG9ja2VyLmlvL3YxLyJ9", options.RegistryAuth, "RegistryAuth should be taken from local docker config")
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"auths":{"identity.example.com":{"identitytoken":"identity-token"},"registry.example.com":{"registrytoken":"registry-token"}}}`), 0o600))
+	t.Setenv("DOCKER_CONFIG", dir)
+	for host, want := range map[string]registry.AuthConfig{
+		"identity.example.com": {IdentityToken: "identity-token", ServerAddress: "identity.example.com"},
+		"registry.example.com": {RegistryToken: "registry-token", ServerAddress: "registry.example.com"},
+	} {
+		options, err := getImagePullOptions(ctx, NewDockerPullExecutorInput{Image: host + "/app"})
+		require.NoError(t, err)
+		require.NotEmpty(t, options.RegistryAuth, host)
+		got, err := authconfig.Decode(options.RegistryAuth)
+		require.NoError(t, err)
+		assert.Equal(t, want, *got)
+	}
 }
 
 // A digest-pinned image is immutable, so its local copy is always current.
@@ -82,4 +102,8 @@ func TestLogDockerResponseError(t *testing.T) {
 	require.EqualError(t, streamErr(`{"error":"toomanyrequests: rate limit exceeded"}`), "toomanyrequests: rate limit exceeded")
 	require.EqualError(t, streamErr(`{"errorDetail":{"message":"unexpected EOF"}}`), "unexpected EOF")
 	require.NoError(t, streamErr(`{"status":"Downloading"}`))
+	require.NoError(t, streamErr(`{"stream":"`+strings.Repeat("x", 70000)+`"}`))
+	require.ErrorIs(t, logDockerResponse(logger, io.NopCloser(io.MultiReader(
+		strings.NewReader(`{"status":"Downloading"}`+"\n"), iotest.ErrReader(io.ErrUnexpectedEOF),
+	)), false), io.ErrUnexpectedEOF)
 }

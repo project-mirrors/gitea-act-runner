@@ -140,6 +140,9 @@ func TestPoller_CalculateInterval(t *testing.T) {
 			assert.Equal(t, tc.wantInterval, p.calculateInterval(s))
 		})
 	}
+
+	cfg.Runner.FetchIntervalMax = 2 * time.Minute
+	assert.Equal(t, 2*time.Minute, p.calculateInterval(&workerState{consecutiveEmpty: 7}))
 }
 
 func atomicMax(target *atomic.Int64, val int64) {

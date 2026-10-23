@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -299,6 +300,37 @@ func TestHandler(t *testing.T) {
 			require.NoError(t, err)
 			defer resp.Body.Close()
 			assert.Equal(t, 500, resp.StatusCode)
+		}
+	})
+
+	t.Run("chunked commit validates size omitted at reservation", func(t *testing.T) {
+		for _, size := range []int64{5, 10} {
+			t.Run(strconv.FormatInt(size, 10), func(t *testing.T) {
+				id := reserveCache(t, testClient, base, strings.ToLower(t.Name()), version, 0)
+				req, err := http.NewRequest(http.MethodPatch, fmt.Sprintf("%s/caches/%d", base, id), strings.NewReader("cache"))
+				require.NoError(t, err)
+				req.Header.Set("Content-Range", "bytes 0-4/*")
+				resp, err := testClient.Do(req)
+				require.NoError(t, err)
+				resp.Body.Close()
+				require.Equal(t, http.StatusOK, resp.StatusCode)
+
+				resp, err = testClient.Post(fmt.Sprintf("%s/caches/%d", base, id), "application/json", io.MultiReader(strings.NewReader(fmt.Sprintf(`{"size":%d}`, size))))
+				require.NoError(t, err)
+				resp.Body.Close()
+				if size == 5 {
+					require.Equal(t, http.StatusOK, resp.StatusCode)
+				} else {
+					require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+				}
+
+				db, err := handler.openDB()
+				require.NoError(t, err)
+				defer db.Close()
+				cache, err := db.get(id)
+				require.NoError(t, err)
+				require.Equal(t, size == 5, cache.Complete)
+			})
 		}
 	})
 
@@ -707,6 +739,20 @@ func TestHandler_FindProtectsFromEviction(t *testing.T) {
 	require.NoError(t, db.Close())
 
 	assert.Equal(t, []string{wanted.Key}, keptKeys(t, handler, []*Cache{wanted, other}), "the entry just promised to a job survives, the next least recently used goes instead")
+}
+
+func TestHandler_PrefixUsesNewestReservationWithinSecond(t *testing.T) {
+	created := time.Now().Add(-time.Hour).Unix()
+	older := &Cache{Repo: testRepo, Key: "deps-old", Version: "v", Complete: true, CreatedAt: created}
+	newer := &Cache{Repo: testRepo, Key: "deps-new", Version: "v", Complete: true, CreatedAt: created}
+	handler := newTestHandler(t, Policy{}, older, newer)
+
+	db, err := handler.openDB()
+	require.NoError(t, err)
+	defer db.Close()
+	cache, err := findCache(db, testRepo, []string{"deps-"}, "v")
+	require.NoError(t, err)
+	require.Equal(t, newer, cache)
 }
 
 func TestHandler_evictOnCommit(t *testing.T) {

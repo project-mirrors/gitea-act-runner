@@ -18,7 +18,8 @@ import (
 	"golang.org/x/text/transform"
 )
 
-func parseEnvFile(e Container, srcPath string, env *map[string]string) common.Executor {
+// parseEnvFile reads a GITHUB_ENV style file, splitting lines like GitHub's runner on Windows or elsewhere.
+func parseEnvFile(e Container, srcPath string, env *map[string]string, windows bool) common.Executor {
 	localEnv := *env
 	return func(ctx context.Context) error {
 		envTar, err := e.GetContainerArchive(ctx, srcPath)
@@ -38,8 +39,15 @@ func parseEnvFile(e Container, srcPath string, env *map[string]string) common.Ex
 		s := bufio.NewScanner(decoded)
 		// Default 64 KiB max token size is too small for realistic env-file lines; allow up to 16 MiB.
 		s.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+		s.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+			advance, token, err := bufio.ScanLines(data, atEOF)
+			if token != nil {
+				return advance, data[:advance], err
+			}
+			return advance, token, err
+		})
 		for s.Scan() {
-			line := s.Text()
+			line := trimEnvLineEnding(s.Text(), windows)
 			// GitHub's runner ignores blank lines
 			if strings.TrimSpace(line) == "" {
 				continue
@@ -52,10 +60,13 @@ func parseEnvFile(e Container, srcPath string, env *map[string]string) common.Ex
 			case multiLineEnv != -1:
 				var multiLineEnvContent []string
 				multiLineEnvDelimiter := line[multiLineEnv+2:]
+				if multiLineEnv == 0 || multiLineEnvDelimiter == "" {
+					return fmt.Errorf("invalid format '%v', name and delimiter must not be empty", line)
+				}
 				delimiterFound := false
 				for s.Scan() {
 					content := s.Text()
-					if content == multiLineEnvDelimiter {
+					if trimEnvLineEnding(content, windows) == multiLineEnvDelimiter {
 						delimiterFound = true
 						break
 					}
@@ -67,7 +78,7 @@ func parseEnvFile(e Container, srcPath string, env *map[string]string) common.Ex
 				if !delimiterFound {
 					return fmt.Errorf("invalid format delimiter '%v' not found before end of file", multiLineEnvDelimiter)
 				}
-				localEnv[line[:multiLineEnv]] = strings.Join(multiLineEnvContent, "\n")
+				localEnv[line[:multiLineEnv]] = trimEnvLineEnding(strings.Join(multiLineEnvContent, ""), windows)
 			default:
 				return fmt.Errorf("invalid format '%v', expected a line with '=' or '<<'", line)
 			}
@@ -77,4 +88,11 @@ func parseEnvFile(e Container, srcPath string, env *map[string]string) common.Ex
 		}
 		return nil
 	}
+}
+
+func trimEnvLineEnding(line string, windows bool) string {
+	if windows && strings.HasSuffix(line, "\r\n") {
+		return line[:len(line)-2]
+	}
+	return strings.TrimSuffix(line, "\n")
 }

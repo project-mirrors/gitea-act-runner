@@ -400,6 +400,7 @@ func runMainStepsAfterInterrupt(ctx context.Context, rc *RunContext, steps []com
 
 func setJobResult(ctx context.Context, info jobInfo, rc *RunContext, success bool) {
 	logger := common.Logger(ctx)
+	success = success && !rc.jobFailed
 
 	// Matrix combinations share one *model.Job and run in parallel; serialize the
 	// read-modify-write of the job result so a failing combination is not lost-updated by a

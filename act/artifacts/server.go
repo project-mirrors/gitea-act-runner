@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,16 +85,25 @@ func uploads(router *http.ServeMux, baseDir string) {
 		if err := os.MkdirAll(filepath.Dir(safePath), os.ModePerm); err != nil {
 			panic(err)
 		}
-		flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
-		appendUpload := req.Header.Get("Content-Range")
-		if appendUpload != "" && !strings.HasPrefix(appendUpload, "bytes 0-") {
-			flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+		var start int64
+		if contentRange := req.Header.Get("Content-Range"); contentRange != "" {
+			if _, err := fmt.Sscanf(contentRange, "bytes %d-", &start); err != nil || start < 0 {
+				http.Error(w, "invalid content range", http.StatusBadRequest)
+				return
+			}
+		}
+		flags := os.O_CREATE | os.O_WRONLY
+		if start == 0 {
+			flags |= os.O_TRUNC
 		}
 		file, err := os.OpenFile(safePath, flags, 0o644)
 		if err != nil {
 			panic(err)
 		}
 		defer file.Close()
+		if _, err := file.Seek(start, io.SeekStart); err != nil {
+			panic(err)
+		}
 		if req.Body == nil {
 			panic(errors.New("no body given"))
 		}
@@ -120,7 +130,7 @@ func downloads(router *http.ServeMux, baseDir string) {
 		runID := req.PathValue("runId")
 
 		entries, err := os.ReadDir(safeResolve(baseDir, runID))
-		if err != nil {
+		if err != nil && !os.IsNotExist(err) {
 			panic(err)
 		}
 
@@ -145,6 +155,9 @@ func downloads(router *http.ServeMux, baseDir string) {
 
 		var files []ContainerItem
 		err := filepath.WalkDir(safePath, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
 			if !entry.IsDir() {
 				rel, err := filepath.Rel(safePath, path)
 				if err != nil {
@@ -157,12 +170,12 @@ func downloads(router *http.ServeMux, baseDir string) {
 				files = append(files, ContainerItem{
 					Path:            filepath.ToSlash(filepath.Join(itemPath, rel)),
 					ItemType:        "file",
-					ContentLocation: fmt.Sprintf("http://%s/artifact/%s/%s/%s", req.Host, container, itemPath, filepath.ToSlash(rel)),
+					ContentLocation: (&url.URL{Scheme: "http", Host: req.Host, Path: "/artifact/" + container + "/" + itemPath + "/" + filepath.ToSlash(rel)}).String(),
 				})
 			}
 			return nil
 		})
-		if err != nil {
+		if err != nil && !os.IsNotExist(err) {
 			panic(err)
 		}
 

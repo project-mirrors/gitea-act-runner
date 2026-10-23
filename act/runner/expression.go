@@ -7,6 +7,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"path"
@@ -127,7 +128,7 @@ func (rc *RunContext) newStepExpressionEvaluator(ctx context.Context, step step,
 func getHashFilesFunction(ctx context.Context, rc *RunContext) func(v []reflect.Value) (any, error) {
 	return func(v []reflect.Value) (any, error) {
 		if rc.JobContainer != nil {
-			timeed, cancel := context.WithTimeout(ctx, time.Minute)
+			timeoutCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 			defer cancel()
 			name := "workflow/hashfiles/index.js"
 			hout := &bytes.Buffer{}
@@ -154,25 +155,40 @@ func getHashFilesFunction(ctx context.Context, rc *RunContext) func(v []reflect.
 			}
 
 			stdout, stderr := rc.JobContainer.ReplaceLogWriter(hout, herr)
-			_ = rc.JobContainer.Copy(rc.JobContainer.GetActPath(), &container.FileEntry{
+			defer rc.JobContainer.ReplaceLogWriter(stdout, stderr)
+			err := rc.JobContainer.Copy(rc.JobContainer.GetActPath(), &container.FileEntry{
 				Name: name,
 				Mode: 0o644,
 				Body: hashfiles,
-			}).
-				Then(rc.JobContainer.Exec([]string{"node", path.Join(rc.JobContainer.GetActPath(), name)},
-					env, "", "")).
-				Finally(func(context.Context) error {
-					rc.JobContainer.ReplaceLogWriter(stdout, stderr)
-					return nil
-				})(timeed)
-			if _, output, found := strings.Cut(hout.String()+"\n"+herr.String(), "__OUTPUT__"); found {
-				if hash, _, found := strings.Cut(output, "__OUTPUT__"); found {
-					return hash, nil
+			}).Then(rc.JobContainer.Exec([]string{"node", path.Join(rc.JobContainer.GetActPath(), name)}, env, "", ""))(timeoutCtx)
+			quotedPatterns := expressionStringEscape(strings.Join(patterns, ", "))
+			switch {
+			case err == nil:
+			case ctx.Err() != nil:
+				return "", ctx.Err()
+			case timeoutCtx.Err() != nil || errors.Is(err, context.DeadlineExceeded):
+				return "", fmt.Errorf("hashFiles('%s') couldn't finish within 120 seconds", quotedPatterns)
+			case hashFilesNodeMissing(err):
+				common.Logger(ctx).With(rawOutputField, true).Warnf("##[warning]hashFiles could not run because node is unavailable in the job environment. Returning an empty string.")
+				return "", nil
+			default:
+				return "", fmt.Errorf("hashFiles('%s') failed. Fail to hash files under directory '%s'", quotedPatterns, rc.githubWorkspace())
+			}
+			for line := range strings.Lines(hout.String() + "\n" + herr.String()) {
+				if hash, ok := strings.CutPrefix(strings.TrimRight(line, "\r\n"), "__OUTPUT__"); ok {
+					if hash, ok = strings.CutSuffix(hash, "__OUTPUT__"); ok {
+						return hash, nil
+					}
 				}
 			}
 		}
 		return "", nil
 	}
+}
+
+func hashFilesNodeMissing(err error) bool {
+	exitErr, ok := errors.AsType[container.ExitCodeError](err)
+	return ok && (exitErr == 126 || exitErr == 127) || err.Error() == "Cannot find: node in PATH"
 }
 
 type expressionEvaluator struct {

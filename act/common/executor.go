@@ -164,7 +164,10 @@ func (e Executor) Finally(finally Executor) Executor {
 		err := e(ctx)
 		err2 := finally(ctx)
 		if err2 != nil {
-			return fmt.Errorf("error occurred running finally: %v (original error: %v)", err2, err)
+			if err != nil {
+				return fmt.Errorf("error occurred running finally: %w (original error: %w)", err2, err)
+			}
+			return fmt.Errorf("error occurred running finally: %w (original error: %v)", err2, err)
 		}
 		return err
 	}

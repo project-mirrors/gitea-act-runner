@@ -32,6 +32,7 @@ type stepActionRemote struct {
 	remoteAction        *remoteAction
 	actionDir           string // the repository at the resolved commit, shared by the job's actions in it
 	resolvedSha         string // set on the first step preparing the repository
+	preStepStarted      bool
 }
 
 type actionDownload struct {
@@ -142,7 +143,10 @@ func (sar *stepActionRemote) pre() common.Executor {
 
 	return common.NewPipelineExecutor(
 		sar.prepareActionExecutor(),
-		runStepExecutor(sar, stepStagePre, runPreStep(sar)).If(hasPreStep(sar)).If(shouldRunPreStep(sar)))
+		runStepExecutor(sar, stepStagePre, func(ctx context.Context) error {
+			sar.preStepStarted = true
+			return runPreStep(sar)(ctx)
+		}).If(hasPreStep(sar)).If(shouldRunPreStep(sar)))
 }
 
 func (sar *stepActionRemote) main() common.Executor {

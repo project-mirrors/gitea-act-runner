@@ -8,6 +8,8 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"maps"
+	"os"
 	"strings"
 	"unicode"
 
@@ -158,10 +160,17 @@ const allowUnsecureCommandsVar = "ACTIONS_ALLOW_UNSECURE_COMMANDS"
 // not run, recording the error that fails the step. GitHub disabled both because a step that
 // echoes untrusted content can use them to set NODE_OPTIONS or PATH for every later step.
 func (rc *RunContext) refuseUnsecureCommand(ctx context.Context, command string) bool {
-	if isTruthyEnv(rc.currentStepEnv()[allowUnsecureCommandsVar]) ||
-		isTruthyEnv(rc.Env[allowUnsecureCommandsVar]) ||
-		isTruthyEnv(rc.GlobalEnv[allowUnsecureCommandsVar]) {
+	if isTruthyEnv(os.Getenv(allowUnsecureCommandsVar)) { // the runner's own opt-in wins, as on GitHub
 		return false
+	}
+	caseInsensitive := rc.JobContainer != nil && rc.JobContainer.IsEnvironmentCaseInsensitive()
+	for _, env := range []map[string]string{rc.currentStepEnv(), rc.Env, rc.GlobalEnv} {
+		if value, ok := lookupFold(env, allowUnsecureCommandsVar, caseInsensitive); ok {
+			if isTruthyEnv(value) {
+				return false
+			}
+			break
+		}
 	}
 
 	// The step executor logs the failure itself, so keep this line's wording distinct.
@@ -189,6 +198,18 @@ func (rc *RunContext) takeUnsecureCommandError() error {
 	defer rc.unsecureCommandMu.Unlock()
 	err := rc.unsecureCommandErr
 	rc.unsecureCommandErr = nil
+	return err
+}
+
+// runWithCommands runs executor judging its workflow commands by env, failing it on a refused one.
+func (rc *RunContext) runWithCommands(ctx context.Context, env map[string]string, executor common.Executor) error {
+	rc.setCurrentStepEnv(maps.Clone(env)) // the executor keeps writing to env while the command handler reads it
+	defer rc.setCurrentStepEnv(nil)
+	_ = rc.takeUnsecureCommandError() // a refusal from before belongs to no step
+	err := executor(ctx)
+	if refusal := rc.takeUnsecureCommandError(); err == nil {
+		return refusal
+	}
 	return err
 }
 

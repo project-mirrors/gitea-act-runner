@@ -318,20 +318,20 @@ func (e *HostEnvironment) exec(ctx context.Context, command []string, cmdline st
 		defer k.Close()
 	}
 	err = treeKill.Wait(ctx, cmd)
-	if err != nil {
-		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-			return ExitCodeError(exitErr.ExitCode())
-		}
-		return err
-	}
 	if tty != nil {
 		writer.AutoStop.Store(true)
 		if _, err := tty.WriteString("\x04"); err != nil {
 			common.Logger(ctx).Debug("Failed to write EOT")
 		}
-		<-logctx.Done()
+		select {
+		case <-logctx.Done():
+		case <-ctx.Done(): // a cancelled step does not wait on output nobody consumes
+		}
 		ppty.Close()
 		ppty = nil
+	}
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		return ExitCodeError(exitErr.ExitCode())
 	}
 	return err
 }
@@ -355,7 +355,7 @@ func (e *HostEnvironment) ExecWithCmdLine(command []string, cmdline string, env 
 }
 
 func (e *HostEnvironment) UpdateFromEnv(srcPath string, env *map[string]string) common.Executor {
-	return parseEnvFile(e, srcPath, env)
+	return parseEnvFile(e, srcPath, env, runtime.GOOS == "windows")
 }
 
 // removeAll is a var so tests can substitute a blocking stub.

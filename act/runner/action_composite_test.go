@@ -7,7 +7,9 @@ import (
 	"context"
 	"testing"
 
+	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/git"
+	"gitea.com/gitea/runner/act/common/logging/logtest"
 
 	"gitea.dev/actionslib/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -17,10 +19,11 @@ import (
 
 func TestCompositeActionParity(t *testing.T) {
 	t.Run("inherits contexts without leaking inputs", func(t *testing.T) {
-		ctx := t.Context()
+		logger, hook := logtest.NewLogger()
+		ctx := common.WithLogger(t.Context(), logger)
 		strategy := &model.Strategy{MaxParallelString: "3", RawMatrix: yaml.Node{Kind: yaml.MappingNode}}
 		parent := &RunContext{
-			Config:        &Config{},
+			Config:        &Config{PresetGitHubContext: &model.GithubContext{}},
 			Matrix:        map[string]any{"os": "linux"},
 			Run:           &model.Run{JobID: "job", Workflow: &model.Workflow{Name: "workflow", Jobs: map[string]*model.Job{"job": {Strategy: strategy}}}},
 			JobContainer:  &jobContainerMock{},
@@ -28,21 +31,26 @@ func TestCompositeActionParity(t *testing.T) {
 			jobIndex:      1,
 			jobTotal:      4,
 		}
-		composite, err := newCompositeRunContext(ctx, parent, &stepActionRemote{
-			Step:       &model.Step{With: map[string]string{"SHARED": "outer"}},
+		step := &stepActionLocal{
+			Step:       &model.Step{Uses: "./action", With: map[string]string{"SHARED": "outer", "extra": "literal${{ github.job }}"}},
 			RunContext: parent,
-			action:     &model.Action{Inputs: map[string]model.Input{"shared": {Default: "outer-default"}}},
+			action:     &model.Action{Inputs: map[string]model.Input{"shared": {Default: "outer-default"}}, Runs: model.ActionRuns{Using: "composite"}},
 			env:        map[string]string{"INPUT_SHARED": "outer"},
-		}, "/action")
+		}
+		require.NoError(t, runActionImpl(step, "/action", nil)(ctx))
+		require.Len(t, hook.AllRecords(), 1)
+		assert.Equal(t, "##[warning]Unexpected input(s) 'extra', valid inputs are ['shared']", hook.LastRecord().Message)
+		composite, err := step.getCompositeRunContext(ctx)
 		require.NoError(t, err)
 
 		assert.Same(t, strategy, composite.Run.Job().Strategy)
 		assert.True(t, composite.IsHostEnv())
 		interpolated, err := composite.NewExpressionEvaluator(ctx).Interpolate(ctx,
-			"${{ matrix.os }}|${{ strategy.max-parallel }}|${{ strategy.job-index }}|${{ inputs.shared }}")
+			"${{ matrix.os }}|${{ strategy.max-parallel }}|${{ strategy.job-index }}|${{ inputs.shared }}|${{ inputs.extra }}")
 		require.NoError(t, err)
-		assert.Equal(t, "linux|3|1|outer", interpolated)
+		assert.Equal(t, "linux|3|1|outer|literal${{ github.job }}", interpolated)
 		assert.NotContains(t, composite.Env, "INPUT_SHARED")
+		assert.NotContains(t, composite.Env, "INPUT_EXTRA")
 
 		nestedEnv := composite.GetEnv()
 		require.NoError(t, populateEnvsFromInput(ctx, &nestedEnv, &model.Action{Inputs: map[string]model.Input{"shared": {Default: "inner-default"}}}, composite))

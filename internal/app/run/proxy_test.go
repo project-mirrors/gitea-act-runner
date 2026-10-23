@@ -169,10 +169,19 @@ func TestProxyPasswords(t *testing.T) {
 	clearProxyEnv(t)
 	t.Setenv("http_proxy", "http://user:hunter2@proxy:3128")
 	t.Setenv("https_proxy", "http://user:s3cret@proxy:3128")
-	assert.Equal(t, []string{"hunter2", "s3cret"}, proxyPasswords())
+	assert.Equal(t, []string{"hunter2", "s3cret"}, proxyPasswords(nil))
+
+	t.Setenv("http_proxy", "user:hunter2@proxy:3128")
+	t.Setenv("https_proxy", "user:s3cret@proxy:3128")
+	assert.Equal(t, []string{"hunter2", "s3cret"}, proxyPasswords(nil))
 
 	t.Setenv("https_proxy", "http://proxy:3128")
-	assert.Equal(t, []string{"hunter2"}, proxyPasswords())
+	assert.Equal(t, []string{"hunter2"}, proxyPasswords(nil))
+
+	clearProxyEnv(t)
+	assert.Equal(t, []string{"configured"}, proxyPasswords(map[string]string{
+		"Http_Proxy": "http://user:configured@proxy:3128",
+	}))
 }
 
 func TestAppendNoProxy(t *testing.T) {

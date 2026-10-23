@@ -60,13 +60,13 @@ func (sd *stepDocker) runUsesContainer() common.Executor {
 			return errKubernetesDocker
 		}
 		image := strings.TrimPrefix(step.Uses, "docker://")
-		cmd, err := shellquote.Split(step.With["args"])
+		cmd, err := shellquote.Split(stepInput(step, "args"))
 		if err != nil {
 			return err
 		}
 
 		var entrypoint []string
-		if entry := step.With["entrypoint"]; entry != "" {
+		if entry := stepInput(step, "entrypoint"); entry != "" {
 			entrypoint = []string{entry}
 		}
 

@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/signal"
 	goruntime "runtime"
 	"strings"
 
@@ -48,25 +47,17 @@ func runRegister(ctx context.Context, regArgs *registerArgs, configFile *string)
 		}
 
 		if regArgs.NoInteractive {
-			if err := registerNoInteractive(ctx, *configFile, regArgs); err != nil {
-				return err
-			}
-		} else {
-			go func() {
-				if err := registerInteractive(ctx, *configFile, regArgs); err != nil {
-					logging.Error(err)
-					os.Exit(1)
-					return
-				}
-				os.Exit(0)
-			}()
-
-			c := make(chan os.Signal, 1)
-			signal.Notify(c, os.Interrupt)
-			<-c
+			return registerNoInteractive(ctx, *configFile, regArgs)
 		}
 
-		return nil
+		result := make(chan error, 1)
+		go func() { result <- registerInteractive(ctx, *configFile, regArgs) }()
+		select {
+		case err := <-result:
+			return err
+		case <-ctx.Done():
+			return nil
+		}
 	}
 }
 
@@ -214,7 +205,7 @@ func initInputs(regArgs *registerArgs) (*registerInputs, error) {
 		token = regArgs.Token
 	default:
 		token = os.Getenv(registerTokenEnvVar)
-		if token == "" {
+		if token == "" && regArgs.NoInteractive {
 			return nil, fmt.Errorf("missing token, token-file argument, or %s environment variable", registerTokenEnvVar)
 		}
 	}

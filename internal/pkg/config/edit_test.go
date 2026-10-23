@@ -219,6 +219,11 @@ func TestGetValue(t *testing.T) {
 	_, err = GetValue(file, "metrics.addr")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "is not set")
+
+	require.NoError(t, SetValue(file, "cache.s3.endpoint", "https://cache.example"))
+	value, err = GetValue(file, "cache.s3.endpoint")
+	require.NoError(t, err)
+	assert.Equal(t, "https://cache.example", value)
 }
 
 func TestEditValuesFileHandling(t *testing.T) {

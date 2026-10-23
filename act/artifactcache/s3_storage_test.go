@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -51,13 +52,32 @@ func TestHandler_S3SharesEntriesAndDropsExpiredOnes(t *testing.T) {
 	saver, restorer := startTestHandler(t, opts), startTestHandler(t, opts)
 	entry := map[string]any{"key": "deps", "version": "v1"}
 
+	started := time.Now()
 	finalized, _ := saveV2(t, saver, "deps", "v1", []byte("archive"))
 	require.Equal(t, true, finalized["ok"])
 	assert.EqualValues(t, 1, uploads.Load())
+	id, err := strconv.ParseUint(finalized["entry_id"].(string), 10, 64)
+	require.NoError(t, err)
+	cache, err := saver.s3.fetch(t.Context(), id)
+	require.NoError(t, err)
+	assert.WithinRange(t, time.Unix(cache.CreatedAt, int64(cache.CreatedAtNanos)), started, time.Now())
 	require.NoError(t, restorer.importMetadata(t.Context()))
 	found := v2Call(t, restorer, testClient, "GetCacheEntryDownloadURL", entry)
 	require.Equal(t, true, found["ok"])
 	assert.Equal(t, []byte("archive"), getURL(t, found["signed_download_url"].(string)))
+
+	for _, cache := range []*Cache{
+		{ID: 2, Repo: testRepo, Key: "deps-old", Version: "v1", Complete: true, CreatedAt: cache.CreatedAt},
+		{ID: 1, Repo: testRepo, Key: "deps-new", Version: "v1", Complete: true, CreatedAt: cache.CreatedAt, CreatedAtNanos: 1},
+	} {
+		require.NoError(t, saver.s3.publish(cache))
+		objects.Store(saver.s3.blobKey(cache.ID), []byte(cache.Key))
+	}
+	require.NoError(t, restorer.importMetadata(t.Context()))
+	found = v2Call(t, restorer, testClient, "GetCacheEntryDownloadURL", map[string]any{"key": "deps-", "version": "v1"})
+	require.Equal(t, true, found["ok"])
+	assert.Equal(t, "deps-new", found["matched_key"])
+	assert.Equal(t, []byte("deps-new"), getURL(t, found["signed_download_url"].(string)))
 
 	objects.Clear()
 	require.NoError(t, restorer.importMetadata(t.Context()))

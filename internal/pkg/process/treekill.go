@@ -44,6 +44,10 @@ func NewTreeKill(cmd *exec.Cmd) *TreeKill {
 			return k.Kill()
 		}
 		if cmd.Process != nil {
+			if killer, err := NewKiller(cmd.Process); err == nil {
+				defer killer.Close()
+				return killer.Kill()
+			}
 			return cmd.Process.Kill()
 		}
 		return nil

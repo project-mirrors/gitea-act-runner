@@ -92,6 +92,16 @@ func (m *mockDockerClient) ContainerAttach(ctx context.Context, containerID stri
 	return args.Get(0).(mobyclient.ContainerAttachResult), args.Error(1)
 }
 
+func (m *mockDockerClient) ContainerLogs(ctx context.Context, containerID string, opts mobyclient.ContainerLogsOptions) (mobyclient.ContainerLogsResult, error) {
+	args := m.Called(ctx, containerID, opts)
+	return args.Get(0).(mobyclient.ContainerLogsResult), args.Error(1)
+}
+
+func (m *mockDockerClient) ContainerStart(ctx context.Context, containerID string, opts mobyclient.ContainerStartOptions) (mobyclient.ContainerStartResult, error) {
+	args := m.Called(ctx, containerID, opts)
+	return args.Get(0).(mobyclient.ContainerStartResult), args.Error(1)
+}
+
 func (m *mockDockerClient) ContainerWait(ctx context.Context, containerID string, opts mobyclient.ContainerWaitOptions) mobyclient.ContainerWaitResult {
 	args := m.Called(ctx, containerID, opts)
 	return args.Get(0).(mobyclient.ContainerWaitResult)
@@ -158,6 +168,7 @@ func (r *interruptReader) Read(_ []byte) (int, error) {
 type mockConn struct {
 	net.Conn
 	mock.Mock
+	closed atomic.Bool
 }
 
 func (m *mockConn) Write(b []byte) (n int, err error) {
@@ -166,6 +177,7 @@ func (m *mockConn) Write(b []byte) (n int, err error) {
 }
 
 func (m *mockConn) Close() (err error) {
+	m.closed.Store(true)
 	return nil
 }
 
@@ -236,6 +248,21 @@ func TestDockerExecFailure(t *testing.T) {
 	client.AssertExpectations(t)
 }
 
+func TestDockerExecStreamFailure(t *testing.T) {
+	ctx := t.Context()
+	client := &mockDockerClient{}
+	client.On("ExecCreate", ctx, "123", mock.AnythingOfType("client.ExecCreateOptions")).
+		Return(mobyclient.ExecCreateResult{ID: "id"}, nil)
+	client.On("ExecAttach", ctx, "id", mock.AnythingOfType("client.ExecAttachOptions")).
+		Return(mobyclient.ExecAttachResult{
+			Conn:   &mockConn{},
+			Reader: bufio.NewReader(bytes.NewReader(stdcopyFrame(stdcopy.Systemerr, "unable to start exec"))),
+		}, nil)
+	require.ErrorContains(t, (&containerReference{id: "123", cli: client, input: &NewContainerInput{}}).
+		exec([]string{"sh"}, nil, "", "")(ctx), "unable to start exec")
+	client.AssertExpectations(t)
+}
+
 // stdcopyFrame wraps payload in a single Docker multiplexed-stream frame, the
 // format StdCopy expects: an 8-byte header (stream type + 4-byte big-endian
 // length) followed by the payload.
@@ -248,60 +275,88 @@ func stdcopyFrame(stream stdcopy.StdType, payload string) []byte {
 }
 
 func TestDockerAttachFlushesTrailingLine(t *testing.T) {
-	ctx := t.Context()
+	for _, testcase := range []struct {
+		name string
+		tty  bool
+	}{
+		{name: "multiplexed"},
+		{name: "tty from container options", tty: true},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			ctx := t.Context()
+			output := []byte("line one\nlast line without newline")
+			if !testcase.tty {
+				output = stdcopyFrame(stdcopy.Stdout, string(output))
+			}
+			var lines []string
+			logWriter := common.NewLineWriter(func(line string) bool {
+				lines = append(lines, line)
+				return true
+			})
+			client := &mockDockerClient{}
+			client.On("ContainerInspect", ctx, "123", mobyclient.ContainerInspectOptions{}).
+				Return(mobyclient.ContainerInspectResult{Container: container.InspectResponse{Config: &container.Config{Tty: testcase.tty}}}, nil)
+			conn := &mockConn{}
+			client.On("ContainerAttach", ctx, "123", mock.AnythingOfType("client.ContainerAttachOptions")).
+				Return(mobyclient.ContainerAttachResult{
+					Conn:   conn,
+					Reader: bufio.NewReader(bytes.NewReader(output)),
+				}, nil)
+			client.On("ContainerLogs", ctx, "123", mobyclient.ContainerLogsOptions{ShowStdout: true, ShowStderr: true}).
+				Return(io.NopCloser(bytes.NewReader(output)), nil)
+			statusCh := make(chan container.WaitResponse, 1)
+			statusCh <- container.WaitResponse{StatusCode: 0}
+			client.On("ContainerWait", ctx, "123", mobyclient.ContainerWaitOptions{Condition: container.WaitConditionNotRunning}).
+				Return(mobyclient.ContainerWaitResult{Result: statusCh})
+			cr := &containerReference{id: "123", cli: client, input: &NewContainerInput{Stdout: logWriter, Stderr: logWriter}}
 
-	framed := bytes.NewBuffer(stdcopyFrame(stdcopy.Stdout, "line one\nlast line without newline"))
-
-	var lines []string
-	logWriter := common.NewLineWriter(func(s string) bool {
-		lines = append(lines, s)
-		return true
-	})
-
-	client := &mockDockerClient{}
-	client.On("ContainerAttach", ctx, "123", mock.AnythingOfType("client.ContainerAttachOptions")).
-		Return(mobyclient.ContainerAttachResult{
-			Conn:   &mockConn{},
-			Reader: bufio.NewReader(framed),
-		}, nil)
-
-	statusCh := make(chan container.WaitResponse, 1)
-	statusCh <- container.WaitResponse{StatusCode: 0}
-	client.On("ContainerWait", ctx, "123", mobyclient.ContainerWaitOptions{Condition: container.WaitConditionNotRunning}).
-		Return(mobyclient.ContainerWaitResult{Result: statusCh})
-
-	cr := &containerReference{
-		id:  "123",
-		cli: client,
-		input: &NewContainerInput{
-			Stdout: logWriter,
-			Stderr: logWriter,
-		},
+			require.NoError(t, cr.attach()(ctx))
+			require.NoError(t, cr.wait()(ctx))
+			assert.Equal(t, []string{"line one\n", "last line without newline"}, lines)
+			assert.True(t, conn.closed.Load())
+			require.NoError(t, cr.DumpLogs(ctx))
+			assert.Equal(t, []string{"line one\n", "last line without newline", "line one\n", "last line without newline"}, lines)
+			client.AssertExpectations(t)
+		})
 	}
+}
 
-	require.NoError(t, cr.attach()(ctx))
-	require.NoError(t, cr.wait()(ctx))
+func TestDockerAttachStreamClosesWithItsContext(t *testing.T) {
+	conn, peer := net.Pipe()
+	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { _ = peer.Close() })
+	client := &mockDockerClient{}
+	client.On("ContainerInspect", mock.Anything, "123", mobyclient.ContainerInspectOptions{}).
+		Return(mobyclient.ContainerInspectResult{Container: container.InspectResponse{Config: &container.Config{}}}, nil)
+	client.On("ContainerAttach", mock.Anything, "123", mock.AnythingOfType("client.ContainerAttachOptions")).
+		Return(mobyclient.ContainerAttachResult{HijackedResponse: mobyclient.NewHijackedResponse(conn, "")}, nil)
+	client.On("ContainerStart", mock.Anything, "123", mobyclient.ContainerStartOptions{}).
+		Return(mobyclient.ContainerStartResult{}, errors.New("container start failed"))
+	cr := &containerReference{id: "123", cli: client, input: &NewContainerInput{}}
 
-	assert.Equal(t, []string{"line one\n", "last line without newline"}, lines)
-
+	ctx, cancel := context.WithCancel(t.Context())
+	require.ErrorContains(t, cr.Start(true)(ctx), "container start failed")
+	cancel()
+	<-cr.attachDone
 	client.AssertExpectations(t)
 }
 
 func TestDockerWaitFailure(t *testing.T) {
 	ctx := t.Context()
-
 	statusCh := make(chan container.WaitResponse, 1)
 	statusCh <- container.WaitResponse{StatusCode: 2}
 	client := &mockDockerClient{}
 	client.On("ContainerWait", ctx, "123", mobyclient.ContainerWaitOptions{Condition: container.WaitConditionNotRunning}).
 		Return(mobyclient.ContainerWaitResult{Result: statusCh})
+	cr := &containerReference{id: "123", cli: client}
 
-	err := (&containerReference{id: "123", cli: client}).wait()(ctx)
+	err := cr.wait()(ctx)
 	var exitErr ExitCodeError
 	require.ErrorAs(t, err, &exitErr)
 	assert.Equal(t, ExitCodeError(2), exitErr)
 	assert.Equal(t, "Process completed with exit code 2.", err.Error())
-
+	statusCh <- container.WaitResponse{Error: &container.WaitExitError{Message: "container wait failed"}}
+	require.EqualError(t, cr.wait()(ctx), "failed to wait for container: container wait failed")
 	client.AssertExpectations(t)
 }
 
@@ -368,6 +423,13 @@ func TestRemoveWithoutIDUsesName(t *testing.T) {
 
 	require.NoError(t, cr.remove()(ctx))
 	client.AssertExpectations(t)
+}
+
+func TestRemovePreservesClientCreationError(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "://")
+
+	require.ErrorContains(t, (&containerReference{input: &NewContainerInput{Name: "job-1"}}).
+		Remove()(t.Context()), "failed to connect to docker daemon")
 }
 
 func TestFindRevalidatesStaleID(t *testing.T) {
@@ -477,7 +539,8 @@ func TestPublicCopyPipelineHandlesStaleID(t *testing.T) {
 		{name: "sibling prefix", directory: true, destination: "/var/run/actor/action", extractionRoot: "/", entry: "var/run/actor/action/x"},
 	} {
 		t.Run(testcase.name, func(t *testing.T) {
-			ctx := t.Context()
+			hook := logtest.NewWithLevel(logging.LevelError)
+			ctx := common.WithLogger(t.Context(), logging.New(hook))
 			client := &mockDockerClient{}
 			client.On("ContainerInspect", ctx, "stale", mobyclient.ContainerInspectOptions{}).
 				Return(mobyclient.ContainerInspectResult{}, cerrdefs.ErrNotFound.WithMessage("gone"))
@@ -501,6 +564,7 @@ func TestPublicCopyPipelineHandlesStaleID(t *testing.T) {
 				require.NoError(t, cr.Copy(testcase.destination, &FileEntry{Name: "x", Mode: 0o644})(ctx))
 			}
 			assert.Equal(t, "fresh", cr.id)
+			assert.Empty(t, hook.AllRecords())
 			client.AssertExpectations(t)
 		})
 	}

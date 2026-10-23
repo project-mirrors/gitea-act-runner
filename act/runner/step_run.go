@@ -259,6 +259,9 @@ func (sr *stepRun) setupShellCommand(ctx context.Context) (name, script string, 
 	}
 
 	scCmd := step.ShellCommand()
+	if step.Shell == "pwsh" || step.Shell == "powershell" {
+		scCmd = step.Shell + ` -command ". '{0}'"`
+	}
 	if implicitShell && (step.Shell == "bash" || step.Shell == "sh") {
 		scCmd = step.Shell + " -e {0}"
 	}

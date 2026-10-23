@@ -68,6 +68,7 @@ func TestStepRun(t *testing.T) {
 func TestStepRunShellParity(t *testing.T) {
 	tests := []struct {
 		name, run, shell, workingDir string
+		actPath                      string
 		env                          map[string]string
 		host                         bool
 		probeErr                     error
@@ -88,6 +89,19 @@ func TestStepRunShellParity(t *testing.T) {
 			name:     "implicit container sh fallback",
 			probeErr: assert.AnError,
 			wantCmd:  []string{"sh", "-e", "/var/run/act/workflow/1.sh"},
+		},
+		{
+			name:    "builtin pwsh",
+			shell:   "pwsh",
+			actPath: "/var/run/act with spaces",
+			wantExt: ".ps1",
+			wantCmd: []string{"pwsh", "-command", ". '/var/run/act with spaces/workflow/1.ps1'"},
+		},
+		{
+			name:    "builtin powershell",
+			shell:   "powershell",
+			wantExt: ".ps1",
+			wantCmd: []string{"powershell", "-command", ". '/var/run/act/workflow/1.ps1'"},
 		},
 		{
 			name:    "custom pwsh template",
@@ -134,14 +148,17 @@ func TestStepRunShellParity(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			cm := &containerMock{}
 			var jobContainer container.ExecutionsEnvironment = &shellContainerMock{cm}
-			if test.host {
+			switch {
+			case test.actPath != "":
+				jobContainer = &container.HostEnvironment{ActPath: test.actPath}
+			case test.host:
 				if runtime.GOOS == "windows" {
 					t.Skip("Linux host shell selection")
 				}
 				test.env = map[string]string{"PATH": t.TempDir()}
 				require.NoError(t, os.WriteFile(filepath.Join(test.env["PATH"], "bash"), nil, 0o755))
 				jobContainer = &container.HostEnvironment{ActPath: "/var/run/act"}
-			} else if test.shell == "" {
+			case test.shell == "":
 				cm.On("Exec", []string{"sh", "-c", "command -v bash >/dev/null 2>&1"},
 					mock.AnythingOfType("map[string]string"), "", "").Return(func(context.Context) error {
 					return test.probeErr

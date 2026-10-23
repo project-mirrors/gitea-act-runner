@@ -33,6 +33,7 @@ func logDockerResponse(logger *logging.Logger, dockerResponse io.ReadCloser, isE
 	defer dockerResponse.Close()
 
 	scanner := bufio.NewScanner(dockerResponse)
+	scanner.Buffer(nil, 64*1024*1024) // a build echoes long instructions in one record
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		var msg dockerMessage
@@ -65,7 +66,7 @@ func logDockerResponse(logger *logging.Logger, dockerResponse io.ReadCloser, isE
 		}
 	}
 
-	return nil
+	return scanner.Err()
 }
 
 func writeLog(logger *logging.Logger, isError bool, format string, args ...any) {

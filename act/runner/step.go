@@ -170,25 +170,16 @@ func runStepExecutor(step step, stage stepStage, executor common.Executor) commo
 			initialFiles = append([]*container.FileEntry{{Name: summaryFileCommand, Mode: 0o666}}, files...)
 			topRC.summaryFileInitialized[stepSummaryIndex] = true
 		}
-		if err := rc.JobContainer.Copy(actPath, initialFiles...)(ctx); err != nil && len(initialFiles) > len(files) {
-			_ = rc.JobContainer.Copy(actPath, files...)(ctx) // the summary goes first and the resets retry alone, so neither failure blocks the other
+		fileCommandInitErr := rc.JobContainer.Copy(actPath, initialFiles...)(ctx)
+		if fileCommandInitErr != nil && len(initialFiles) > len(files) {
+			fileCommandInitErr = rc.JobContainer.Copy(actPath, files...)(ctx) // a broken summary must not block the resets
 		}
 
-		// The command handler needs the step's env to judge ACTIONS_ALLOW_UNSECURE_COMMANDS.
-		// Cloned: the step executor keeps writing to its own env map after this point, on a
-		// different goroutine from the command handler that reads it.
-		rc.setCurrentStepEnv(maps0.Clone(*step.getEnv()))
-		defer rc.setCurrentStepEnv(nil)
-		_ = rc.takeUnsecureCommandError() // a refusal from before any step belongs to no step
-
-		timeoutctx, cancelTimeOut := evaluateStepTimeout(ctx, rc.ExprEval, stepModel)
+		timeoutctx, cancelTimeOut := evaluateStepTimeout(ctx, step)
 		defer cancelTimeOut()
-		err = executor(timeoutctx)
-		// Always take it, so the job-scoped error cannot leak onto a later step. A refusal
-		// fails the step as it does on GitHub, but the executor's own error wins.
-		insecureErr := rc.takeUnsecureCommandError()
+		err = fileCommandInitErr
 		if err == nil {
-			err = insecureErr
+			err = rc.runWithCommands(timeoutctx, *step.getEnv(), executor)
 		}
 		fileCommandCtx := ctx
 		if ctx.Err() != nil { // an interrupted step still records its file commands, a live deadline stays in force
@@ -196,17 +187,19 @@ func runStepExecutor(step step, stage stepStage, executor common.Executor) commo
 			fileCommandCtx, cancelFileCommands = context.WithTimeout(context.WithoutCancel(ctx), jobCleanupTimeout)
 			defer cancelFileCommands()
 		}
-		if fileErr := processRunnerEnvFileCommand(fileCommandCtx, envFileCommand, rc, rc.setEnvFile); fileErr != nil && err == nil {
-			err = fileErr
-		}
-		if fileErr := processRunnerEnvFileCommand(fileCommandCtx, stateFileCommand, rc, rc.saveState); fileErr != nil && err == nil {
-			err = fileErr
-		}
-		if fileErr := processRunnerEnvFileCommand(fileCommandCtx, outputFileCommand, rc, rc.setOutput); fileErr != nil && err == nil {
-			err = fileErr
-		}
-		if fileErr := rc.UpdateExtraPath(fileCommandCtx, path.Join(actPath, pathFileCommand)); fileErr != nil && err == nil {
-			err = fileErr
+		if fileCommandInitErr == nil {
+			if fileErr := processRunnerEnvFileCommand(fileCommandCtx, envFileCommand, rc, rc.setEnvFile); fileErr != nil && err == nil {
+				err = fileErr
+			}
+			if fileErr := processRunnerEnvFileCommand(fileCommandCtx, stateFileCommand, rc, rc.saveState); fileErr != nil && err == nil {
+				err = fileErr
+			}
+			if fileErr := processRunnerEnvFileCommand(fileCommandCtx, outputFileCommand, rc, rc.setOutput); fileErr != nil && err == nil {
+				err = fileErr
+			}
+			if fileErr := rc.UpdateExtraPath(fileCommandCtx, path.Join(actPath, pathFileCommand)); fileErr != nil && err == nil {
+				err = fileErr
+			}
 		}
 		_ = rc.JobContainer.Copy(actPath, files...)(fileCommandCtx)
 
@@ -239,8 +232,11 @@ func runStepExecutor(step step, stage stepStage, executor common.Executor) commo
 	}
 }
 
-func evaluateStepTimeout(ctx context.Context, exprEval *expressionEvaluator, stepModel *model.Step) (context.Context, context.CancelFunc) {
-	timeout, err := exprEval.Interpolate(ctx, stepModel.TimeoutMinutes)
+func evaluateStepTimeout(ctx context.Context, step step) (context.Context, context.CancelFunc) {
+	if step.getStepModel().TimeoutMinutes == "" {
+		return ctx, func() {}
+	}
+	timeout, err := step.getRunContext().NewStepExpressionEvaluator(ctx, step).Interpolate(ctx, step.getStepModel().TimeoutMinutes)
 	if err != nil {
 		common.Logger(ctx).Errorf("An error occurred when attempting to determine the step timeout: %s", err)
 	} else if timeout != "" {
@@ -262,9 +258,15 @@ func setupEnv(ctx context.Context, step step) error {
 	var err error
 	exprEval := rc.NewExpressionEvaluator(ctx)
 	stepEnv := step.getStepModel().Environment()
-	for k, v := range stepEnv {
-		if stepEnv[k], err = exprEval.Interpolate(ctx, v); err != nil {
-			return fmt.Errorf("unable to interpolate env %s: %w", k, err)
+	if envNode := step.getStepModel().Env; strings.Contains(envNode.Value, "${{") { // only a whole-map expression has a value
+		if err := model.DecodeEvaluated("step env", envNode, exprEval.shared(ctx).EvaluateYamlNode, &stepEnv); err != nil {
+			return err
+		}
+	} else {
+		for k, v := range stepEnv {
+			if stepEnv[k], err = exprEval.Interpolate(ctx, v); err != nil {
+				return fmt.Errorf("unable to interpolate env %s: %w", k, err)
+			}
 		}
 	}
 	// merge step env last, since it should not be overwritten

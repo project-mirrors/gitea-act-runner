@@ -1,0 +1,20 @@
+on: push
+jobs:
+  _:
+    runs-on: ubuntu-latest
+    env:
+      CI: 'false'
+    steps:
+    - run: test "$CI" = false
+    - run: printf 'MULTI<<EOF\r\na\r\nb\r\nEOF\r\n' >> "$GITHUB_ENV"
+    - run: test "$MULTI" = "$(printf 'a\r\nb\r')"
+    - run: |
+        runs:
+          using: composite
+          steps:
+          - run: test "${{ '${{ inputs.undeclared }}' }}" = given
+            shell: bash
+      shell: cp {0} action.yml
+    - uses: ./
+      with:
+        undeclared: given

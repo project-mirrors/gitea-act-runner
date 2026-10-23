@@ -207,6 +207,60 @@ func TestStepActionRemotePrepare(t *testing.T) {
 	assert.Equal(t, "restore", path.Base(restoreContainerDir))
 }
 
+func TestStepActionRemotePreCleanup(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		preIf    string
+		preError error
+	}{
+		{name: "pre ran and main skipped", preIf: "always()"},
+		{name: "pre failed before main", preIf: "always()", preError: assert.AnError},
+		{name: "pre skipped and main skipped", preIf: "false"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cm := &containerMock{}
+			sar := &stepActionRemote{
+				Step: &model.Step{ID: "step", Uses: "remote/action@v1", If: yaml.Node{Value: "false"}},
+				RunContext: &RunContext{
+					Config:       &Config{},
+					Run:          &model.Run{JobID: "job", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job": {}}}},
+					StepResults:  map[string]*model.StepResult{},
+					JobContainer: cm,
+				},
+				action: &model.Action{Runs: model.ActionRuns{
+					Using: "node24", Pre: "pre.js", PreIf: test.preIf, Post: "post.js", PostIf: "always()",
+				}},
+				remoteAction: mustNewRemoteAction(t, "remote/action@v1"),
+				actionDir:    t.TempDir(),
+			}
+			sar.RunContext.ExprEval = sar.RunContext.NewExpressionEvaluator(t.Context())
+			if test.preIf != "false" {
+				_, actionDir := getContainerActionPaths(sar)
+				expectStepFileCommands(t, cm)
+				cm.On("CopyDir", actionDir+"/", sar.actionDir+"/", false, true).Return(noopExecutor)
+				cm.On("Exec", nodeActionCommand(path.Join(actionDir, "pre.js")), mock.Anything, "", "").Return(func(_ctx context.Context) error { return test.preError }).Once()
+				cm.On("Exec", nodeActionCommand(path.Join(actionDir, "post.js")), mock.Anything, "", "").Return(noopExecutor).Once()
+			}
+
+			assert.Equal(t, test.preError, sar.pre()(t.Context()))
+			if test.preError == nil {
+				require.NoError(t, sar.main()(t.Context()))
+				assert.Equal(t, model.StepStatusSkipped, sar.RunContext.StepResults["step"].Conclusion)
+			}
+			require.NoError(t, sar.post()(t.Context()))
+			cm.AssertExpectations(t)
+		})
+	}
+
+	skippedComposite := &stepActionRemote{
+		Step:           &model.Step{ID: "step"},
+		RunContext:     &RunContext{StepResults: map[string]*model.StepResult{"step": {Conclusion: model.StepStatusSkipped}}},
+		action:         &model.Action{Runs: model.ActionRuns{Using: "composite"}},
+		preStepStarted: true,
+	}
+	assert.False(t, shouldRunPostStep(skippedComposite)(t.Context()))
+}
+
 func Test_newRemoteAction(t *testing.T) {
 	check := func(action string, want *remoteAction, wantCloneURL string) {
 		t.Run(action, func(t *testing.T) {

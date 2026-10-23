@@ -7,6 +7,7 @@ package common
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -134,9 +135,13 @@ func TestExecutorConditionalsAndFinally(t *testing.T) {
 }
 
 func TestExecutorFinallyReturnsFinallyErrorWithOriginal(t *testing.T) {
-	mainErr := errors.New("main failed")
 	finalErr := errors.New("cleanup failed")
-
-	err := NewErrorExecutor(mainErr).Finally(NewErrorExecutor(finalErr))(t.Context())
-	require.EqualError(t, err, "error occurred running finally: cleanup failed (original error: main failed)")
+	for _, mainErr := range []error{context.Canceled, nil} {
+		err := NewErrorExecutor(mainErr).Finally(NewErrorExecutor(finalErr))(t.Context())
+		require.EqualError(t, err, fmt.Sprintf("error occurred running finally: cleanup failed (original error: %v)", mainErr))
+		require.ErrorIs(t, err, finalErr)
+		if mainErr != nil {
+			require.ErrorIs(t, err, mainErr)
+		}
+	}
 }

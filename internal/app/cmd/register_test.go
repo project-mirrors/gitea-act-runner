@@ -4,6 +4,8 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,10 +13,42 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/internal/pkg/config"
 
 	"github.com/stretchr/testify/require"
 )
+
+type cancelRegistrationPrompt struct {
+	cancel context.CancelFunc
+}
+
+func (w cancelRegistrationPrompt) Write(data []byte) (int, error) {
+	if bytes.Contains(data, []byte("Enter the Gitea instance URL")) {
+		w.cancel()
+	}
+	return len(data), nil
+}
+
+func TestRunRegisterCancelsWhilePrompting(t *testing.T) {
+	t.Setenv(registerTokenEnvVar, "")
+	t.Chdir(t.TempDir())
+	stdin, input, err := os.Pipe()
+	require.NoError(t, err)
+	previousStdin := os.Stdin
+	os.Stdin = stdin
+	t.Cleanup(func() {
+		_ = input.Close()
+		_ = stdin.Close()
+		os.Stdin = previousStdin
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	previousOutput := logging.Output()
+	logging.SetOutput(cancelRegistrationPrompt{cancel})
+	t.Cleanup(func() { logging.SetOutput(previousOutput) })
+	require.NoError(t, runRegister(ctx, &registerArgs{}, new(string))(nil, nil))
+}
 
 func TestRegisterNonInteractiveReturnsLabelValidationError(t *testing.T) {
 	err := registerNoInteractive(t.Context(), "", &registerArgs{
@@ -148,6 +182,7 @@ func TestRegisterInputsAssignToNext(t *testing.T) {
 }
 
 func TestInitInputs(t *testing.T) {
+	t.Setenv(registerTokenEnvVar, "")
 	for _, tc := range []struct {
 		name, tokenFile, wantErr string
 		env                      *string
@@ -164,11 +199,12 @@ func TestInitInputs(t *testing.T) {
 				t.Setenv(registerTokenEnvVar, *tc.env)
 			}
 			_, err := initInputs(&registerArgs{
-				InstanceAddr: "http://localhost:3000",
-				TokenFile:    tc.tokenFile,
-				RunnerName:   "runner",
-				Ephemeral:    true,
-				Labels:       " ubuntu:host , ubuntu:docker://node:18 ",
+				NoInteractive: true,
+				InstanceAddr:  "http://localhost:3000",
+				TokenFile:     tc.tokenFile,
+				RunnerName:    "runner",
+				Ephemeral:     true,
+				Labels:        " ubuntu:host , ubuntu:docker://node:18 ",
 			})
 			require.EqualError(t, err, tc.wantErr)
 		})
@@ -178,12 +214,16 @@ func TestInitInputs(t *testing.T) {
 		name, address, token, runnerName, wantToken string
 		file                                        bool
 	}{
+		{name: "interactive token prompt", address: "http://localhost:3000", runnerName: "runner"},
 		{name: "valid token", address: " http://localhost:3000 ", token: "from-plain-arg\n", runnerName: "runner\n", wantToken: "from-plain-arg"},
 		{name: "valid token file", address: "http://localhost:3000", runnerName: "runner", file: true, wantToken: "from-file"},
 		{name: "token from environment variable", address: "http://localhost:3000", runnerName: "runner", wantToken: "from-env"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(registerTokenEnvVar, "from-env")
+			if tc.wantToken == "" {
+				t.Setenv(registerTokenEnvVar, "")
+			}
 			var tokenFile string
 			if tc.file {
 				tokenFile = filepath.Join(t.TempDir(), "from-file")

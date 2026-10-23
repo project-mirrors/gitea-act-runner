@@ -313,10 +313,14 @@ func (p *Poller) calculateInterval(s *workerState) time.Duration {
 		return base
 	}
 
-	// Capped exponential backoff: base * 2^(n-1), max shift=5 so multiplier <= 32
-	shift := min(n-1, 5)
-	interval := base * time.Duration(int64(1)<<shift)
-	return min(interval, maxInterval)
+	interval := base
+	for range n - 1 {
+		if interval >= maxInterval-interval {
+			return maxInterval
+		}
+		interval *= 2
+	}
+	return interval
 }
 
 // addJitter adds +/- 20% random jitter to the given duration to avoid thundering herd.

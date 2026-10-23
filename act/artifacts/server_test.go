@@ -48,8 +48,17 @@ func TestArtifactFlow(t *testing.T) {
 		return resp.StatusCode, data
 	}
 
+	t.Run("no-artifacts", func(t *testing.T) {
+		status, data := request(t, http.MethodGet, baseURL+"/_apis/pipelines/workflows/0/artifacts", nil, nil)
+		require.Equal(t, http.StatusOK, status, string(data))
+		var list NamedFileContainerResourceURLResponse
+		require.NoError(t, json.Unmarshal(data, &list))
+		require.Zero(t, list.Count)
+		require.Empty(t, list.Value)
+	})
+
 	t.Run("upload-and-download", func(t *testing.T) {
-		const runID, item, content = "1", "my-artifact/data.txt", "hello artifact\n"
+		const runID, item, content = "1", "my-artifact/data#1%25.txt", "hello artifact\n"
 
 		status, data := request(t, http.MethodPost, baseURL+"/_apis/pipelines/workflows/"+runID+"/artifacts", nil, nil)
 		require.Equal(t, http.StatusOK, status, string(data))
@@ -81,13 +90,13 @@ func TestArtifactFlow(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &items))
 		require.Len(t, items.Value, 1)
 		require.Equal(t, "file", items.Value[0].ItemType)
-		require.Equal(t, "my-artifact/data.txt", items.Value[0].Path)
+		require.Equal(t, item, items.Value[0].Path)
 
 		status, data = request(t, http.MethodGet, items.Value[0].ContentLocation, nil, nil)
 		require.Equal(t, http.StatusOK, status)
 		require.Equal(t, content, string(data))
 
-		stored, err := os.ReadFile(filepath.Join(artifactPath, runID, "my-artifact", "data.txt"))
+		stored, err := os.ReadFile(filepath.Join(artifactPath, runID, filepath.FromSlash(item)))
 		require.NoError(t, err)
 		require.Equal(t, content, string(stored))
 	})
@@ -95,16 +104,25 @@ func TestArtifactFlow(t *testing.T) {
 	t.Run("content-range", func(t *testing.T) {
 		const rawURL = "/upload/4?itemPath=chunks.txt"
 		status, data := request(t, http.MethodPut, baseURL+rawURL, strings.NewReader("first"),
-			http.Header{"Content-Range": []string{"bytes 0-4/11"}})
+			http.Header{"Content-Range": []string{"bytes 0-4/12"}})
 		require.Equal(t, http.StatusOK, status, string(data))
 
-		status, data = request(t, http.MethodPut, baseURL+rawURL, strings.NewReader("-second"),
-			http.Header{"Content-Range": []string{"bytes 5-11/11"}})
-		require.Equal(t, http.StatusOK, status, string(data))
+		for range 2 {
+			status, data = request(t, http.MethodPut, baseURL+rawURL, strings.NewReader("-second"),
+				http.Header{"Content-Range": []string{"bytes 5-11/12"}})
+			require.Equal(t, http.StatusOK, status, string(data))
+		}
 
 		stored, err := os.ReadFile(filepath.Join(artifactPath, "4", "chunks.txt"))
 		require.NoError(t, err)
 		require.Equal(t, "first-second", string(stored))
+
+		status, data = request(t, http.MethodPut, baseURL+rawURL, strings.NewReader(""),
+			http.Header{"Content-Range": []string{"bytes 0--1/0"}})
+		require.Equal(t, http.StatusOK, status, string(data))
+		stored, err = os.ReadFile(filepath.Join(artifactPath, "4", "chunks.txt"))
+		require.NoError(t, err)
+		require.Empty(t, stored)
 	})
 
 	t.Run("gzip-roundtrip", func(t *testing.T) {

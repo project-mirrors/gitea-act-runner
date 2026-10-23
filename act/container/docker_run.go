@@ -205,18 +205,30 @@ func (cr *containerReference) DumpLogs(ctx context.Context) error {
 	if cr.id == "" {
 		return cr.missingContainerError("read its logs")
 	}
+	tty, err := cr.containerTTY(ctx)
+	if err != nil {
+		return err
+	}
 
 	logs, err := cr.cli.ContainerLogs(ctx, cr.id, client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true})
 	if err != nil {
 		return err
 	}
 	defer logs.Close()
-	return cr.copyOutput(logs)
+	return cr.copyOutput(logs, tty)
+}
+
+func (cr *containerReference) containerTTY(ctx context.Context) (bool, error) {
+	inspect, err := cr.cli.ContainerInspect(ctx, cr.id, client.ContainerInspectOptions{})
+	if err != nil {
+		return false, fmt.Errorf("failed to inspect container: %w", err)
+	}
+	return inspect.Container.Config != nil && inspect.Container.Config.Tty, nil
 }
 
 // copyOutput writes a container stream to the writers the container was created with,
 // demultiplexing it unless the container has a TTY, which sends a single raw stream.
-func (cr *containerReference) copyOutput(stream io.Reader) error {
+func (cr *containerReference) copyOutput(stream io.Reader, tty bool) error {
 	outWriter := cr.input.Stdout
 	if outWriter == nil {
 		outWriter = os.Stdout
@@ -227,7 +239,7 @@ func (cr *containerReference) copyOutput(stream io.Reader) error {
 	}
 
 	var err error
-	if !cr.input.AllocatePTY || os.Getenv("NORAW") != "" {
+	if !tty || os.Getenv("NORAW") != "" {
 		_, err = stdcopy.StdCopy(outWriter, errWriter, stream)
 	} else {
 		_, err = io.Copy(outWriter, stream)
@@ -296,7 +308,7 @@ func containerInfoFromInspect(inspect container.InspectResponse) *Info {
 }
 
 func (cr *containerReference) UpdateFromEnv(srcPath string, env *map[string]string) common.Executor {
-	return parseEnvFile(cr, srcPath, env).IfNot(common.Dryrun)
+	return parseEnvFile(cr, srcPath, env, false).IfNot(common.Dryrun)
 }
 
 func (cr *containerReference) UpdateFromImageEnv(env *map[string]string) common.Executor {
@@ -499,7 +511,7 @@ func (cr *containerReference) remove() common.Executor {
 		if idOrName == "" && cr.input != nil {
 			idOrName = cr.input.Name
 		}
-		if idOrName == "" {
+		if idOrName == "" || cr.cli == nil {
 			return nil
 		}
 
@@ -851,7 +863,7 @@ func (cr *containerReference) waitForCommand(ctx context.Context, resp client.Hi
 	cmdResponse := make(chan error, 1)
 
 	go func() {
-		cmdResponse <- cr.copyOutput(resp.Reader)
+		cmdResponse <- cr.copyOutput(resp.Reader, cr.input.AllocatePTY)
 	}()
 
 	select {
@@ -876,11 +888,7 @@ func (cr *containerReference) waitForCommand(ctx context.Context, resp client.Hi
 		// from executing
 		return ctx.Err()
 	case err := <-cmdResponse:
-		if err != nil {
-			logger.Error(err)
-		}
-
-		return nil
+		return err
 	}
 }
 
@@ -897,7 +905,7 @@ func (cr *containerReference) copyDir(dstPath, srcPath string, useGitIgnore, ski
 		}
 		logger.Debugf("Writing tarball %s from %s", tarFile.Name(), srcPath)
 		defer func() {
-			if err := tarFile.Close(); !errors.Is(err, os.ErrClosed) {
+			if err := tarFile.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
 				logger.Error(err)
 			}
 			if err := os.Remove(tarFile.Name()); err != nil {
@@ -944,6 +952,10 @@ func (cr *containerReference) upload(ctx context.Context, dstPath string, conten
 
 func (cr *containerReference) attach() common.Executor {
 	return func(ctx context.Context) error {
+		tty, err := cr.containerTTY(ctx)
+		if err != nil {
+			return err
+		}
 		out, err := cr.cli.ContainerAttach(ctx, cr.id, client.ContainerAttachOptions{
 			Stream: true,
 			Stdout: true,
@@ -954,9 +966,12 @@ func (cr *containerReference) attach() common.Executor {
 		}
 		done := make(chan struct{})
 		cr.attachDone = done
+		stopClose := context.AfterFunc(ctx, out.Close)
 		go func() {
 			defer close(done)
-			if copyErr := cr.copyOutput(out.Reader); copyErr != nil {
+			defer out.Close()
+			defer stopClose()
+			if copyErr := cr.copyOutput(out.Reader, tty); copyErr != nil && ctx.Err() == nil {
 				common.Logger(ctx).Error(copyErr)
 			}
 		}()
@@ -991,6 +1006,9 @@ func (cr *containerReference) wait() common.Executor {
 				return fmt.Errorf("failed to wait for container: %w", err)
 			}
 		case status := <-waitResult.Result:
+			if status.Error != nil {
+				return fmt.Errorf("failed to wait for container: %s", status.Error.Message)
+			}
 			statusCode = status.StatusCode
 		}
 

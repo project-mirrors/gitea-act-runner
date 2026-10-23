@@ -114,7 +114,7 @@ func getImagePullOptions(ctx context.Context, input NewDockerPullExecutorInput) 
 		if err != nil {
 			return imagePullOptions, err
 		}
-		if authConfig.Username == "" && authConfig.Password == "" {
+		if authConfig.Username == "" && authConfig.Password == "" && authConfig.IdentityToken == "" && authConfig.RegistryToken == "" {
 			return imagePullOptions, nil
 		}
 		logger.Info("using DockerAuthConfig authentication for docker pull")
