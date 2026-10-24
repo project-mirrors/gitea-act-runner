@@ -1,0 +1,26 @@
+name: cache-seeder
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - go.mod
+      - go.sum
+      - .golangci.yml
+      - Makefile
+      - .gitea/actions/go-setup/action.yml
+      - .gitea/workflows/cache-seeder.yml
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.gitea/actions/go-setup
+      - run: make deps-tools lint build
+      - name: compile the test binaries without running them
+        run: |
+          make test GOTEST_FLAGS='-race -exec true'
+          go test -tags e2e -exec true ./e2e/...

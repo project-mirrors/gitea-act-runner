@@ -17,10 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: 'go.mod'
-          check-latest: true
+      - uses: ./.gitea/actions/go-setup
       - name: prepare anonymous docker config
         run: mkdir -p "$DOCKER_CONFIG" && echo '{}' > "$DOCKER_CONFIG/config.json"
       # Pre-pull act/runner's two largest base images so a slow pull can't dominate `make test`;
@@ -68,10 +65,7 @@ jobs:
           - gitea/gitea:main-nightly
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: 'go.mod'
-          check-latest: true
+      - uses: ./.gitea/actions/go-setup
       - name: prepare anonymous docker config
         run: mkdir -p "$DOCKER_CONFIG" && echo '{}' > "$DOCKER_CONFIG/config.json"
       - name: e2e compatibility
