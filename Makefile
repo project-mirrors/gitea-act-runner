@@ -4,7 +4,7 @@ GO ?= go
 HAS_GO = $(shell hash $(GO) > /dev/null 2>&1 && echo "GO" || echo "NOGO" )
 
 PODMAN_TEST_IMAGE ?= quay.io/containers/podman:v5.8.9-immutable@sha256:87f42f37fa85b421664c30b8f5f9cfc23920057f5e5fcadf0b6f68d9edc6d415 # renovate: datasource=docker
-E2E_JOB_IMAGE ?= docker.gitea.com/runner-images:ubuntu-latest@sha256:0e62e56b382ebf485bff1e51a05cbe27c708545a2e91425467fd31eb3e249521 # renovate: datasource=docker
+E2E_JOB_IMAGE ?= docker.gitea.com/runner-images:ubuntu-latest@sha256:8856b200466e9a5af9cc0d4de4ca96f73547833bcdddf9a567189ff772c4d372 # renovate: datasource=docker
 SERVICE_IMAGE ?= nginx:1.31.7-alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d # renovate: datasource=docker
 E2E_GITEA_IMAGE ?= gitea/gitea:main-nightly
 E2E_K3S_IMAGE ?= rancher/k3s:v1.37.1-k3s1@sha256:ca7f37d993d82ef0dcdcfecb2e0e2618ea541dbaffc620c8cedebe01a82acd0d # renovate: datasource=docker
@@ -15,8 +15,8 @@ DOCKER_IMAGE ?= gitea/runner
 DOCKER_TAG ?= nightly
 DOCKER_REF := $(DOCKER_IMAGE):$(DOCKER_TAG)
 
-GOLANGCI_LINT_PACKAGE ?= github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 # renovate: datasource=go
-GOVULNCHECK_PACKAGE ?= golang.org/x/vuln/cmd/govulncheck@v1.8.0 # renovate: datasource=go
+GOLANGCI_LINT_PACKAGE ?= github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 # renovate: datasource=go
+GOVULNCHECK_PACKAGE ?= golang.org/x/vuln/cmd/govulncheck@v1.9.0 # renovate: datasource=go
 
 GOTEST_FLAGS ?= -race -timeout 20m -parallel 8
 

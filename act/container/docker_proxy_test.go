@@ -371,6 +371,9 @@ func TestDockerProxyWithDaemon(t *testing.T) {
 
 	job := "proxy-test-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	proxy, err := StartDockerProxy(daemonSocketPath(t, direct), dir, job)
+	if os.Geteuid() != 0 && errors.Is(err, os.ErrPermission) {
+		t.Skipf("non-root runners that cannot take the daemon socket's ownership get it directly: %v", err)
+	}
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
 	viaProxy, err := mobyclient.New(mobyclient.WithHost("unix://" + proxy.Socket))

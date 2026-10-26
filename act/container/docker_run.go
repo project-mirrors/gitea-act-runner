@@ -879,7 +879,10 @@ func (cr *containerReference) waitForCommand(ctx context.Context, resp client.Hi
 		// truncate the tail of the log. The goroutine exits once the hijacked
 		// stream is closed by resp.Close() in the caller's defer.
 		select {
-		case <-cmdResponse:
+		case err := <-cmdResponse:
+			if err != nil {
+				logger.Debugf("Failed to drain command output after cancellation: %v", err)
+			}
 		case <-time.After(drainGracePeriod):
 			logger.Warn("Timed out draining command output after cancellation")
 		}

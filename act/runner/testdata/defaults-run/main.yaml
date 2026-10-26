@@ -8,7 +8,7 @@ jobs:
   without-defaults:
     runs-on: ubuntu-latest
     steps:
-    - run: echo $SHELL | grep -v bash || exit 1
+    - run: '[ -z ${BASH+x} ] || shopt -oq posix || exit 1'
   with-defaults:
     runs-on: ubuntu-latest
     defaults:
@@ -17,7 +17,7 @@ jobs:
         working-directory: /tmp
     steps:
     - run: |
-        echo $SHELL | grep bash || exit 1
+        [ -n ${BASH+x} ] && ! shopt -oq posix || exit 1
         [ $(pwd) = /tmp ] || exit 2
   override-in-step:
     runs-on: ubuntu-latest
@@ -25,5 +25,5 @@ jobs:
       run:
         shell: bash
     steps:
-    - run: echo $SHELL | grep -v bash || exit 1
+    - run: '[ -z ${BASH+x} ] || shopt -oq posix || exit 1'
       shell: sh
