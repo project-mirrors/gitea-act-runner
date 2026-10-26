@@ -31,7 +31,7 @@ func evaluateCompositeInputAndEnv(ctx context.Context, parent *RunContext, step 
 	ee := parent.NewStepExpressionEvaluator(ctx, step)
 
 	for inputID, input := range step.getActionModel().Inputs {
-		envKey := "INPUT_" + inputEnvPattern.ReplaceAllString(strings.ToUpper(inputID), "_")
+		envKey := inputEnvKey(inputID)
 
 		// lookup if key is defined in the step but the already
 		// evaluated value from the environment

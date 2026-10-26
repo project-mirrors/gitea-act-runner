@@ -153,12 +153,9 @@ func (sar *stepActionRemote) main() common.Executor {
 	return common.NewPipelineExecutor(
 		sar.prepareActionExecutor(),
 		runStepExecutor(sar, stepStageMain, func(ctx context.Context) error {
-			printRunActionHeader(ctx, sar.Step, sar.env, sar.RunContext)
-			rawLogger := common.Logger(ctx).With(rawOutputField, true)
-			defer rawLogger.Infof("::endgroup::")
-
 			github := sar.getGithubContext(ctx)
 			if sar.skipsLocalCheckout(sar.remoteAction, github) {
+				printRunActionHeader(ctx, sar.Step, nil, sar.env, sar.RunContext)
 				if sar.RunContext.Config.BindWorkdir {
 					common.Logger(ctx).Debugf("Skipping local actions/checkout because you bound your workspace")
 					return nil

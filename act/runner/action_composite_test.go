@@ -9,6 +9,7 @@ import (
 
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/git"
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/common/logging/logtest"
 
 	"gitea.dev/actionslib/pkg/model"
@@ -19,8 +20,8 @@ import (
 
 func TestCompositeActionParity(t *testing.T) {
 	t.Run("inherits contexts without leaking inputs", func(t *testing.T) {
-		logger, hook := logtest.NewLogger()
-		ctx := common.WithLogger(t.Context(), logger)
+		hook := logtest.NewWithLevel(logging.LevelWarn)
+		ctx := common.WithLogger(t.Context(), logging.New(hook))
 		strategy := &model.Strategy{MaxParallelString: "3", RawMatrix: yaml.Node{Kind: yaml.MappingNode}}
 		parent := &RunContext{
 			Config:        &Config{PresetGitHubContext: &model.GithubContext{}},

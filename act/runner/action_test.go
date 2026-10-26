@@ -20,6 +20,7 @@ import (
 
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/git"
+	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/common/logging/logtest"
 	"gitea.com/gitea/runner/act/container"
 
@@ -197,8 +198,8 @@ func TestActionRunner(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			logger, hook := logtest.NewLogger()
-			ctx := common.WithLogger(t.Context(), logger)
+			hook := logtest.NewWithLevel(logging.LevelWarn)
+			ctx := common.WithLogger(t.Context(), logging.New(hook))
 			cm := &containerMock{}
 			containerActionDir := "/var/run/act/actions/" + model.UsesHash("/org/repo/path@ref") + "/"
 			cm.On("CopyDir", containerActionDir, "dir/", false, true).Return(func(_ctx context.Context) error { return nil })
@@ -664,8 +665,8 @@ func TestExecAsDockerStageEntrypoint(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			logger, hook := logtest.NewLogger()
-			ctx := common.WithLogger(t.Context(), logger)
+			hook := logtest.NewWithLevel(logging.LevelWarn)
+			ctx := common.WithLogger(t.Context(), logging.New(hook))
 			tc.runs.Using, tc.runs.Image = "docker", "docker://node:14"
 			cm := &containerMock{}
 			var input *container.NewContainerInput

@@ -87,24 +87,34 @@ func (sr *stepRun) printRunScriptActionDetails(ctx context.Context) {
 }
 
 // printRunActionHeader mirrors actions/runner's "Run <action>" header for `uses:` steps,
-// including the with: inputs and the step-level env: block. The caller is responsible
-// for emitting ::endgroup:: after the action finishes.
-func printRunActionHeader(ctx context.Context, step *model.Step, env map[string]string, rc *RunContext) {
+// including the with: inputs and the step-level env: block.
+func printRunActionHeader(ctx context.Context, step *model.Step, action *model.Action, env map[string]string, rc *RunContext) {
 	if step == nil {
 		return
 	}
 	rawLogger := common.Logger(ctx).With(rawOutputField, true)
 
-	rawLogger.Infof("::group::Run %s", EscapeCommandData(cmp.Or(step.Name, step.Uses)))
+	rawLogger.Infof("::group::Run %s", EscapeCommandData(step.Uses))
 
-	if len(step.With) > 0 {
+	inputs := map[string]string{}
+	maps.Copy(inputs, step.With)
+	if action != nil {
+		for name := range action.Inputs {
+			if _, provided := lookupFold(step.With, name, true); !provided {
+				inputs[name] = env[inputEnvKey(name)]
+			}
+		}
+	}
+	maps.DeleteFunc(inputs, func(_name, value string) bool { return value == "" })
+	if len(inputs) > 0 {
 		rawLogger.Infof("with:")
-		for _, k := range slices.Sorted(maps.Keys(step.With)) {
-			logKeyedValue(rawLogger, k, step.With[k])
+		for _, k := range slices.Sorted(maps.Keys(inputs)) {
+			logKeyedValue(rawLogger, k, inputs[k])
 		}
 	}
 
 	printStepEnvBlock(ctx, step, env, rc)
+	rawLogger.Infof("::endgroup::")
 }
 
 // printStepEnvBlock emits the declared-env block (YAML order, internal vars filtered)

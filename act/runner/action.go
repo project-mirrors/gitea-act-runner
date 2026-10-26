@@ -186,6 +186,7 @@ func runActionImpl(step actionStep, actionDir string, remoteAction *remoteAction
 			return err
 		}
 		warnUnexpectedInputs(ctx, action, stepModel.With)
+		printRunActionHeader(ctx, stepModel, action, *step.getEnv(), rc)
 
 		actionName, containerActionDir := getContainerActionPaths(step)
 
@@ -504,10 +505,14 @@ func populateEnvsFromSavedState(env *map[string]string, step actionStep, rc *Run
 	}
 }
 
+func inputEnvKey(inputID string) string {
+	return "INPUT_" + inputEnvPattern.ReplaceAllString(strings.ToUpper(inputID), "_")
+}
+
 func populateEnvsFromInput(ctx context.Context, env *map[string]string, action *model.Action, rc *RunContext) error {
 	eval := rc.NewExpressionEvaluator(ctx)
 	for inputID, input := range action.Inputs {
-		envKey := "INPUT_" + inputEnvPattern.ReplaceAllString(strings.ToUpper(inputID), "_")
+		envKey := inputEnvKey(inputID)
 		if _, ok := (*env)[envKey]; !ok {
 			var err error
 			if (*env)[envKey], err = eval.Interpolate(ctx, input.Default); err != nil {
@@ -651,6 +656,7 @@ func runPreStep(step actionStep) common.Executor {
 				return err
 			}
 		}
+		printRunActionHeader(ctx, step.getStepModel(), action, *step.getEnv(), rc)
 		switch {
 		case x.IsNode():
 			if err := maybeCopyToActionDir(ctx, step, actionDir, actionPath, containerActionDir); err != nil {
@@ -749,6 +755,9 @@ func runPostStep(step actionStep) common.Executor {
 		actionDir, actionPath, _, containerActionDir := actionStagePaths(step)
 
 		x := action.Runs.Using
+		if !x.IsComposite() { // a composite's children print their own
+			logger.With(rawOutputField, true).Info("Post job cleanup.")
+		}
 		switch {
 		case x.IsNode():
 

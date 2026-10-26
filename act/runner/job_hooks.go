@@ -46,12 +46,12 @@ func (rc *RunContext) runJobHook(ctx context.Context, hookPath, name string) err
 
 	cmd, shell := hookCommand(hookPath)
 	rawLogger := common.Logger(ctx).With(rawOutputField, true)
-	defer rawLogger.Infof("::endgroup::")
-	rawLogger.Infof("::group::Run '%s'", EscapeCommandData(hookPath))
 	rawLogger.Infof("A %s hook has been configured by the runner administrator", name)
+	rawLogger.Infof("::group::Run '%s'", EscapeCommandData(hookPath))
 	if shell != "" {
 		rawLogger.Infof("shell: %s", shell)
 	}
+	rawLogger.Infof("::endgroup::")
 
 	env := mergeMaps(rc.containerSpec.Env, rc.GetEnv())
 	rc.withGithubEnv(ctx, rc.getGithubContext(ctx), env)
