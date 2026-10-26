@@ -12,12 +12,13 @@ import (
 	"slices"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/container"
 
 	"gitea.dev/actionslib/pkg/model"
 )
 
 // Actions bundle the @actions toolkit into their own JavaScript, and two of its lines keep it
-// from working against Gitea. Both are edited out of the bundle the runner downloaded.
+// from working against Gitea. Both are edited out of the copy each job container gets.
 //
 // isGhes() takes any host that is not github.com, *.ghe.com or *.localhost for GitHub
 // Enterprise. @actions/cache then forces the v1 API, and @actions/artifact refuses outright,
@@ -86,9 +87,10 @@ func quoted(pattern string) string {
 	return "(?:'" + pattern + "'|\"" + pattern + "\"|`" + pattern + "`)"
 }
 
-// actionScriptPaths returns a node action's entrypoints and the chunks bundled beside them. Only
-// remote actions get here: a local one lives in the user's checkout, which the runner does not
-// rewrite. Scripts may leave dir for the rest of the checkout, as setup-gradle's ../dist does.
+// actionScriptPaths returns a node action's entrypoints and the chunks bundled beside them,
+// relative to checkout. Only remote actions get here: a local one lives in the user's checkout,
+// which the runner does not rewrite. Scripts may leave dir for the rest of the checkout, as
+// setup-gradle's ../dist does.
 func actionScriptPaths(checkout, dir string, action *model.Action) []string {
 	if action == nil || !action.Runs.Using.IsNode() {
 		return nil
@@ -107,12 +109,12 @@ func actionScriptPaths(checkout, dir string, action *model.Action) []string {
 			continue
 		}
 		// `runs` is the action's own yaml, and a key resolving outside its checkout is not ours.
-		bundleDir := filepath.Dir(path)
-		if rel, err := filepath.Rel(root, bundleDir); err != nil || !filepath.IsLocal(rel) {
+		bundleDir, err := filepath.Rel(root, filepath.Dir(path))
+		if err != nil || !filepath.IsLocal(bundleDir) {
 			continue
 		}
-		paths = append(paths, path)
-		entries, _ := os.ReadDir(bundleDir)
+		paths = append(paths, filepath.Join(bundleDir, filepath.Base(path)))
+		entries, _ := os.ReadDir(filepath.Dir(path))
 		for _, entry := range entries {
 			if entry.Type().IsRegular() && slices.Contains([]string{".js", ".cjs", ".mjs"}, filepath.Ext(entry.Name())) {
 				paths = append(paths, filepath.Join(bundleDir, entry.Name()))
@@ -123,45 +125,38 @@ func actionScriptPaths(checkout, dir string, action *model.Action) []string {
 	return slices.Compact(paths)
 }
 
-// patchActions returns a restore: the tree is shared, so a job with patching off gets no edits.
-func patchActions(ctx context.Context, scripts []string) func() {
-	restore := map[string][]byte{}
+// patchedScripts returns the scripts needing the edit, patched, to copy over the job container's copy.
+func patchedScripts(ctx context.Context, checkout string, scripts []string) []*container.FileEntry {
+	var patched []*container.FileEntry
 	for _, script := range scripts {
-		original, err := patchBundle(script)
-		if original != nil {
-			restore[script] = original // also when the write failed part way through
-		}
+		body, mode, err := patchedScript(filepath.Join(checkout, script))
 		if err != nil {
 			common.Logger(ctx).Warnf("actions toolkit: %s left unpatched: %v", script, err)
+		} else if body != nil {
+			patched = append(patched, &container.FileEntry{Name: filepath.ToSlash(script), Mode: int64(mode), Body: string(body)})
 		}
 	}
-	return func() {
-		for script, original := range restore {
-			if err := os.WriteFile(script, original, 0o644); err != nil { //nolint:gosec // as the checkout wrote it
-				common.Logger(ctx).Warnf("actions toolkit: %s left patched in the shared copy: %v", script, err)
-			}
-		}
-	}
+	return patched
 }
 
-// patchBundle returns the bytes it replaced, or nil when it left the bundle alone.
-func patchBundle(script string) ([]byte, error) {
+// patchedScript returns the bundle patched, or nil when it is left alone.
+func patchedScript(script string) ([]byte, os.FileMode, error) {
 	info, err := os.Stat(script)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if info.Size() > maxBundleSize {
-		return nil, nil
+		return nil, 0, nil
 	}
 	data, err := os.ReadFile(script)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	patched, ok := patchedBundle(data)
 	if !ok {
-		return nil, nil
+		return nil, 0, nil
 	}
-	return data, os.WriteFile(script, patched, info.Mode().Perm())
+	return patched, info.Mode().Perm(), nil
 }
 
 // patchedBundle opens the GHES gate, and where the cache toolkit is present, points the cache

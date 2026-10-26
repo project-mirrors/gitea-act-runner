@@ -154,12 +154,17 @@ func maybeCopyToActionDir(ctx context.Context, step actionStep, actionDir, actio
 	}
 	defer unlock()
 
-	if !rc.Config.NoActionPatch {
-		// Other jobs share the directory, so patch under the copy's lock.
-		defer patchActions(ctx, actionScriptPaths(actionDir, filepath.Join(actionDir, actionPath), step.getActionModel()))()
+	if err := rc.JobContainer.CopyDir(containerActionDirCopy, actionDir+"/", false, true)(ctx); err != nil { // an exported commit has no .git to apply gitignore with
+		return err
 	}
-
-	return rc.JobContainer.CopyDir(containerActionDirCopy, actionDir+"/", false, true)(ctx) // an exported commit has no .git to apply gitignore with
+	if rc.Config.NoActionPatch {
+		return nil
+	}
+	patched := patchedScripts(ctx, actionDir, actionScriptPaths(actionDir, filepath.Join(actionDir, actionPath), step.getActionModel()))
+	if len(patched) == 0 {
+		return nil
+	}
+	return rc.JobContainer.Copy(containerActionDirCopy, patched...)(ctx)
 }
 
 func runActionImpl(step actionStep, actionDir string, remoteAction *remoteAction) common.Executor {

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -206,10 +207,17 @@ func TestFetchAction(t *testing.T) {
 		_, offlineSha, err := FetchAction(t.Context(), input)
 		require.NoError(t, err)
 		assert.Equal(t, movedSha, offlineSha)
+		require.NoError(t, os.Truncate(filepath.Join(moved, "action.yml"), 4)) // fetched again, offline or not
+		_, _, err = FetchAction(t.Context(), input)
+		require.NoError(t, err)
+		require.NoError(t, os.Remove(moved+treeSizes)) // from an older runner, used as it is offline
+		reused, _, err := FetchAction(t.Context(), input)
+		require.NoError(t, err)
+		assert.Equal(t, moved, reused)
 
 		requests, headers := served()
-		assert.Equal(t, 3, requests)
-		require.Len(t, headers, 3)
+		assert.Equal(t, 4, requests)
+		require.Len(t, headers, 4)
 		assert.Equal(t, "Basic "+base64.StdEncoding.EncodeToString([]byte("token:secret")), headers[0].Get("Authorization"))
 		assert.Empty(t, headers[0].Get("If-None-Match"))
 		assert.Equal(t, fmt.Sprintf(`W/"%s-tar.gz-true"`, sha), headers[1].Get("If-None-Match"))
@@ -231,6 +239,68 @@ func TestFetchAction(t *testing.T) {
 		_, headers := served()
 		assert.Len(t, headers, 1)
 		assert.NoDirExists(t, filepath.Join(input.Dir, "git"))
+	})
+
+	t.Run("downloads again over a tree whose files changed size or that has no record, not under a job copying it", func(t *testing.T) {
+		sha := gitRevParse(t, remote, "main")
+		for _, mode := range []string{"prefixed", "none"} {
+			serve(mode, 0)
+			input := newInput(sha)
+			tree, _, err := FetchAction(t.Context(), input)
+			require.NoError(t, err, mode)
+			yml := filepath.Join(tree, "action.yml")
+			require.NoError(t, os.WriteFile(filepath.Join(tree, "trampoline.js"), nil, 0o644)) // the runner's own, no damage
+			_, _, err = FetchAction(t.Context(), input)
+			require.NoError(t, err, mode)
+			for _, damage := range []func() error{
+				func() error { return os.Truncate(yml, 4) },
+				func() error { return os.Remove(tree + treeSizes) },
+			} {
+				require.NoError(t, damage(), mode)
+				_, _, err := FetchAction(t.Context(), input)
+				require.NoError(t, err, mode)
+				body, err := os.ReadFile(yml)
+				require.NoError(t, err, mode)
+				assert.Equal(t, "name: action\n", string(body), mode)
+			}
+			_, headers := served()
+			assert.Len(t, headers, 3, mode)
+		}
+
+		serve("prefixed", 0)
+		input := newInput(sha)
+		tree, _, err := FetchAction(t.Context(), input)
+		require.NoError(t, err)
+		yml := filepath.Join(tree, "action.yml")
+		require.NoError(t, os.Truncate(yml, 4))
+		unlock, err := AcquireCloneLock(t.Context(), tree)
+		require.NoError(t, err)
+		release := sync.OnceFunc(unlock)
+		defer release()
+		waiting := make(chan struct{})
+		lockTree = func(ctx context.Context, dir string) (func(), error) {
+			close(waiting)
+			return AcquireCloneLock(ctx, dir)
+		}
+		t.Cleanup(func() { lockTree = AcquireCloneLock })
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := FetchAction(t.Context(), input)
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			t.Fatalf("FetchAction replaced the tree without waiting for the job holding it: %v", err)
+		case <-waiting:
+		}
+		info, err := os.Stat(yml)
+		require.NoError(t, err)
+		assert.Equal(t, int64(4), info.Size(), "the tree a job holds is left alone")
+		release()
+		require.NoError(t, <-done)
+		body, err := os.ReadFile(yml)
+		require.NoError(t, err)
+		assert.Equal(t, "name: action\n", string(body))
 	})
 
 	t.Run("retries a failing download and drops the token on a redirect to another origin", func(t *testing.T) {
@@ -306,10 +376,30 @@ func TestExtractTreeConfinesEntries(t *testing.T) {
 			require.NoError(t, writer.Close())
 
 			dir := t.TempDir()
-			_, err := extractTree(&archive, dir, false)
+			_, err := extractTree(t.Context(), &archive, dir, false)
 			require.Error(t, err)
 			assert.NoFileExists(t, filepath.Join(dir, "escape"))
 			assert.NoFileExists(t, filepath.Join(outside, "escape"))
 		})
 	}
+}
+
+func TestTreeIntactFindsNamesThatAreNotUTF8(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("macOS and Windows store no name that is not UTF-8")
+	}
+	sha := strings.Repeat("a", 40)
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	require.NoError(t, writer.WriteHeader(&tar.Header{Typeflag: tar.TypeXGlobalHeader, PAXRecords: map[string]string{"comment": sha}}))
+	require.NoError(t, writer.WriteHeader(&tar.Header{Name: "caf\xe9.js", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1, Format: tar.FormatGNU}))
+	_, err := writer.Write([]byte("x"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	dir := t.TempDir()
+	_, err = extractTree(t.Context(), &archive, dir, false)
+	require.NoError(t, err)
+	require.FileExists(t, filepath.Join(dir, sha, "caf\xe9.js"))
+	assert.True(t, treeIntact(dir, sha))
 }

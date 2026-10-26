@@ -122,9 +122,11 @@ func patchedAction(t *testing.T, repo, ref, entrypoint string) string {
 
 	body, err := os.ReadFile(bundleFromGitHub(t, repo, ref, entrypoint))
 	require.NoError(t, err)
+	if patched, ok := patchedBundle(body); ok {
+		body = patched
+	}
 	script := filepath.Join(tempDirPath(t), filepath.Base(entrypoint))
 	require.NoError(t, os.WriteFile(script, body, 0o600))
-	patchActions(t.Context(), []string{script})
 	return script
 }
 
@@ -327,7 +329,9 @@ func TestCodeSplitActionFindsTheCacheService(t *testing.T) {
 	}
 	t.Setenv("CARGO_HOME", tempDirPath(t))
 
-	defer patchActions(t.Context(), actionScriptPaths(dir, dir, action))()
+	for _, entry := range patchedScripts(t.Context(), dir, actionScriptPaths(dir, dir, action)) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, entry.Name), []byte(entry.Body), 0o600))
+	}
 	out := runActionEntrypoint(t, filepath.Join(dir, action.Runs.Main),
 		newActionJobEnv(t, "split-runtime-token", artifactcache.JobCredential{Repo: "testuser/testrepo"}), inputs)
 

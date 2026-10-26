@@ -194,7 +194,8 @@ cache:
   #  secret_key_file: "/run/secrets/cache-s3-secret-key"
   # When true, reuse a cached action instead of fetching from the remote on every job.
   # A moved tag (e.g. a re-tagged "v6") or an updated branch stays at the cached commit
-  # until its cache entry expires or is manually removed.
+  # until its cache entry expires or is manually removed. A cached action whose files changed size
+  # since it was downloaded is still fetched again, unless an older runner cached it without sizes.
   #offline_mode: false
   # Serve the actions cache service v2 API. The actions that use it fall back to v1 on any host
   # they do not take for GitHub, so reaching it means editing that check out of their own bundle,
