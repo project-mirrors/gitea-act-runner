@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"gitea.com/gitea/runner/act/common/logging/logtest"
@@ -216,33 +217,35 @@ func TestPollerReady(t *testing.T) {
 }
 
 func TestPollerPausesAndResumesForLocalAvailability(t *testing.T) {
-	var fetches atomic.Int64
-	cli := mocks.NewClient(t)
-	cli.On("FetchTask", mock.Anything, mock.Anything).Maybe().Run(func(mock.Arguments) {
-		fetches.Add(1)
-	}).Return(&runnerv1.FetchTaskResponse{}, nil)
+	synctest.Test(t, func(t *testing.T) {
+		var fetches atomic.Int64
+		cli := mocks.NewClient(t)
+		cli.On("FetchTask", mock.Anything, mock.Anything).Maybe().Run(func(mock.Arguments) {
+			fetches.Add(1)
+		}).Return(&runnerv1.FetchTaskResponse{}, nil)
 
-	cfg, err := config.LoadDefault("")
-	require.NoError(t, err)
-	cfg.Runner.FetchInterval = 10 * time.Millisecond
-	cfg.Runner.FetchIntervalMax = 10 * time.Millisecond
-	runner := &availabilityRunner{reason: "low disk space"}
-	poller := New(cfg, cli, runner)
+		cfg, err := config.LoadDefault("")
+		require.NoError(t, err)
+		cfg.Runner.FetchInterval = 10 * time.Millisecond
+		cfg.Runner.FetchIntervalMax = 10 * time.Millisecond
+		runner := &availabilityRunner{reason: "low disk space"}
+		poller := New(cfg, cli, runner)
 
-	var wg sync.WaitGroup
-	wg.Go(poller.Poll)
-	time.Sleep(40 * time.Millisecond)
-	assert.Zero(t, fetches.Load(), "an unavailable runner must not fetch a task")
+		var wg sync.WaitGroup
+		wg.Go(poller.Poll)
+		<-time.After(40 * time.Millisecond)
+		assert.Zero(t, fetches.Load(), "an unavailable runner must not fetch a task")
 
-	runner.ready.Store(true)
-	require.Eventually(t, func() bool {
-		return fetches.Load() > 0
-	}, time.Second, 10*time.Millisecond, "polling should resume after local recovery")
+		runner.ready.Store(true)
+		require.Eventually(t, func() bool {
+			return fetches.Load() > 0
+		}, time.Second, 10*time.Millisecond, "polling should resume after local recovery")
 
-	shutdownCtx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-	require.NoError(t, poller.Shutdown(shutdownCtx))
-	wg.Wait()
+		shutdownCtx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		require.NoError(t, poller.Shutdown(shutdownCtx))
+		wg.Wait()
+	})
 }
 
 func (m *mockRunner) Run(ctx context.Context, _ *runnerv1.Task) error {
@@ -276,36 +279,38 @@ func TestPollerCallsOnIdle(t *testing.T) {
 			name = "PollOnce"
 		}
 		t.Run(name, func(t *testing.T) {
-			cli := mocks.NewClient(t)
-			cli.On("FetchTask", mock.Anything, mock.Anything).Return(&runnerv1.FetchTaskResponse{}, nil)
+			synctest.Test(t, func(t *testing.T) {
+				cli := mocks.NewClient(t)
+				cli.On("FetchTask", mock.Anything, mock.Anything).Return(&runnerv1.FetchTaskResponse{}, nil)
 
-			cfg, err := config.LoadDefault("")
-			require.NoError(t, err)
-			if !pollOnce {
-				cfg.Runner.Capacity = 1
-			}
-			cfg.Runner.FetchInterval = 10 * time.Millisecond
-			cfg.Runner.FetchIntervalMax = 10 * time.Millisecond
-
-			runner := &idleAwareRunner{}
-			poller := New(cfg, cli, runner)
-			var wg sync.WaitGroup
-			wg.Go(func() {
-				if pollOnce {
-					poller.PollOnce(func() {})
-				} else {
-					poller.Poll()
+				cfg, err := config.LoadDefault("")
+				require.NoError(t, err)
+				if !pollOnce {
+					cfg.Runner.Capacity = 1
 				}
+				cfg.Runner.FetchInterval = 10 * time.Millisecond
+				cfg.Runner.FetchIntervalMax = 10 * time.Millisecond
+
+				runner := &idleAwareRunner{}
+				poller := New(cfg, cli, runner)
+				var wg sync.WaitGroup
+				wg.Go(func() {
+					if pollOnce {
+						poller.PollOnce(func() {})
+					} else {
+						poller.Poll()
+					}
+				})
+
+				require.Eventually(t, func() bool {
+					return runner.idleCalls.Load() > 0
+				}, time.Second, 10*time.Millisecond)
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				require.NoError(t, poller.Shutdown(ctx))
+				wg.Wait()
 			})
-
-			require.Eventually(t, func() bool {
-				return runner.idleCalls.Load() > 0
-			}, time.Second, 10*time.Millisecond)
-
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-			defer cancel()
-			require.NoError(t, poller.Shutdown(ctx))
-			wg.Wait()
 		})
 	}
 }
@@ -323,109 +328,113 @@ func TestPollerPollOnceCallsOnTaskFetchedBeforeRunningIt(t *testing.T) {
 }
 
 func TestPoller_ConcurrencyLimitedByCapacity(t *testing.T) {
-	const (
-		capacity   = 3
-		totalTasks = 6
-		taskDelay  = 50 * time.Millisecond
-	)
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			capacity   = 3
+			totalTasks = 6
+			taskDelay  = 50 * time.Millisecond
+		)
 
-	var (
-		tasksReturned  atomic.Int64
-		fetchConcur    atomic.Int64
-		maxFetchConcur atomic.Int64
-	)
+		var (
+			tasksReturned  atomic.Int64
+			fetchConcur    atomic.Int64
+			maxFetchConcur atomic.Int64
+		)
 
-	cli := mocks.NewClient(t)
-	cli.On("FetchTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *runnerv1.FetchTaskRequest) (*runnerv1.FetchTaskResponse, error) {
-			atomicMax(&maxFetchConcur, fetchConcur.Add(1))
-			defer fetchConcur.Add(-1)
+		cli := mocks.NewClient(t)
+		cli.On("FetchTask", mock.Anything, mock.Anything).Return(
+			func(_ context.Context, _ *runnerv1.FetchTaskRequest) (*runnerv1.FetchTaskResponse, error) {
+				atomicMax(&maxFetchConcur, fetchConcur.Add(1))
+				defer fetchConcur.Add(-1)
 
-			n := tasksReturned.Add(1)
-			if n <= totalTasks {
-				return &runnerv1.FetchTaskResponse{
-					Task: &runnerv1.Task{Id: n},
-				}, nil
-			}
-			return &runnerv1.FetchTaskResponse{}, nil
-		},
-	)
+				n := tasksReturned.Add(1)
+				if n <= totalTasks {
+					return &runnerv1.FetchTaskResponse{
+						Task: &runnerv1.Task{Id: n},
+					}, nil
+				}
+				return &runnerv1.FetchTaskResponse{}, nil
+			},
+		)
 
-	runner := &mockRunner{delay: taskDelay}
+		runner := &mockRunner{delay: taskDelay}
 
-	cfg, err := config.LoadDefault("")
-	require.NoError(t, err)
-	cfg.Runner.Capacity = capacity
-	cfg.Runner.FetchInterval = 10 * time.Millisecond
-	cfg.Runner.FetchIntervalMax = 10 * time.Millisecond
+		cfg, err := config.LoadDefault("")
+		require.NoError(t, err)
+		cfg.Runner.Capacity = capacity
+		cfg.Runner.FetchInterval = 10 * time.Millisecond
+		cfg.Runner.FetchIntervalMax = 10 * time.Millisecond
 
-	poller := New(cfg, cli, runner)
+		poller := New(cfg, cli, runner)
 
-	var wg sync.WaitGroup
-	wg.Go(poller.Poll)
+		var wg sync.WaitGroup
+		wg.Go(poller.Poll)
 
-	require.Eventually(t, func() bool {
-		return runner.totalCompleted.Load() >= totalTasks
-	}, 2*time.Second, 10*time.Millisecond, "all tasks should complete")
+		require.Eventually(t, func() bool {
+			return runner.totalCompleted.Load() >= totalTasks
+		}, 2*time.Second, 10*time.Millisecond, "all tasks should complete")
 
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-	err = poller.Shutdown(ctx)
-	require.NoError(t, err)
-	wg.Wait()
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		err = poller.Shutdown(ctx)
+		require.NoError(t, err)
+		wg.Wait()
 
-	assert.LessOrEqual(t, runner.maxConcurrent.Load(), int64(capacity),
-		"concurrent running tasks must not exceed capacity")
-	assert.GreaterOrEqual(t, runner.maxConcurrent.Load(), int64(2),
-		"with 6 tasks and capacity 3, at least 2 should overlap")
-	assert.Equal(t, int64(1), maxFetchConcur.Load(),
-		"FetchTask must never be called concurrently (single poller)")
-	assert.Equal(t, int64(totalTasks), runner.totalCompleted.Load(),
-		"all tasks should have been executed")
+		assert.LessOrEqual(t, runner.maxConcurrent.Load(), int64(capacity),
+			"concurrent running tasks must not exceed capacity")
+		assert.GreaterOrEqual(t, runner.maxConcurrent.Load(), int64(2),
+			"with 6 tasks and capacity 3, at least 2 should overlap")
+		assert.Equal(t, int64(1), maxFetchConcur.Load(),
+			"FetchTask must never be called concurrently (single poller)")
+		assert.Equal(t, int64(totalTasks), runner.totalCompleted.Load(),
+			"all tasks should have been executed")
+	})
 }
 
 func TestPoller_ShutdownForcesJobsOnTimeout(t *testing.T) {
-	var served atomic.Bool
-	cli := mocks.NewClient(t)
-	cli.On("FetchTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *runnerv1.FetchTaskRequest) (*runnerv1.FetchTaskResponse, error) {
-			if served.CompareAndSwap(false, true) {
-				return &runnerv1.FetchTaskResponse{
-					Task: &runnerv1.Task{Id: 1},
-				}, nil
-			}
-			return &runnerv1.FetchTaskResponse{}, nil
-		},
-	)
+	synctest.Test(t, func(t *testing.T) {
+		var served atomic.Bool
+		cli := mocks.NewClient(t)
+		cli.On("FetchTask", mock.Anything, mock.Anything).Return(
+			func(_ context.Context, _ *runnerv1.FetchTaskRequest) (*runnerv1.FetchTaskResponse, error) {
+				if served.CompareAndSwap(false, true) {
+					return &runnerv1.FetchTaskResponse{
+						Task: &runnerv1.Task{Id: 1},
+					}, nil
+				}
+				return &runnerv1.FetchTaskResponse{}, nil
+			},
+		)
 
-	runner := &mockRunner{delay: 30 * time.Second}
+		runner := &mockRunner{delay: 30 * time.Second}
 
-	cfg, err := config.LoadDefault("")
-	require.NoError(t, err)
-	cfg.Runner.Capacity = 1
-	cfg.Runner.FetchInterval = 10 * time.Millisecond
-	cfg.Runner.FetchIntervalMax = 10 * time.Millisecond
+		cfg, err := config.LoadDefault("")
+		require.NoError(t, err)
+		cfg.Runner.Capacity = 1
+		cfg.Runner.FetchInterval = 10 * time.Millisecond
+		cfg.Runner.FetchIntervalMax = 10 * time.Millisecond
 
-	poller := New(cfg, cli, runner)
+		poller := New(cfg, cli, runner)
 
-	var wg sync.WaitGroup
-	wg.Go(poller.Poll)
+		var wg sync.WaitGroup
+		wg.Go(poller.Poll)
 
-	require.Eventually(t, func() bool {
-		return runner.running.Load() == 1
-	}, time.Second, 10*time.Millisecond, "task should start running")
+		require.Eventually(t, func() bool {
+			return runner.running.Load() == 1
+		}, time.Second, 10*time.Millisecond, "task should start running")
 
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	err = poller.Shutdown(ctx)
-	elapsed := time.Since(start)
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		err = poller.Shutdown(ctx)
+		elapsed := time.Since(start)
 
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.Less(t, elapsed, 5*time.Second,
-		"Shutdown must not block on the parked task; shutdownJobs() must run on timeout")
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Less(t, elapsed, 5*time.Second,
+			"Shutdown must not block on the parked task; shutdownJobs() must run on timeout")
 
-	wg.Wait()
-	assert.Equal(t, int64(1), runner.totalCompleted.Load(),
-		"the parked task must be cancelled and unwound")
+		wg.Wait()
+		assert.Equal(t, int64(1), runner.totalCompleted.Load(),
+			"the parked task must be cancelled and unwound")
+	})
 }

@@ -45,8 +45,13 @@ cpu.out
 
 /bin
 /dist
+/.tmp
+/.git/hooks
+/.git/logs
+/.git/rr-cache
 /.env
 /.runner
+/.runner.lock
 /config.yaml
 /Dockerfile
 .DS_Store

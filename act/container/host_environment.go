@@ -225,12 +225,16 @@ func setupPty(cmd *exec.Cmd, cmdline string) (*os.File, *os.File, error) {
 	return ppty, tty, nil
 }
 
-func writeKeepAlive(ppty io.Writer) {
-	c := 1
-	var err error
-	for c == 1 && err == nil {
-		c, err = ppty.Write([]byte{4})
-		<-time.After(time.Second)
+func writeKeepAlive(ctx context.Context, ppty io.Writer) {
+	for ctx.Err() == nil {
+		if count, err := ppty.Write([]byte{4}); count != 1 || err != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
 	}
 }
 
@@ -302,7 +306,7 @@ func (e *HostEnvironment) exec(ctx context.Context, command []string, cmdline st
 			defer finishLog()
 			_, _ = io.Copy(writer, ppty)
 		}()
-		go writeKeepAlive(ppty)
+		go writeKeepAlive(logctx, ppty)
 	}
 	if err := cmd.Start(); err != nil {
 		return err

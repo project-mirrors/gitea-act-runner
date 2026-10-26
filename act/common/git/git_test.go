@@ -29,6 +29,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var gitFixtureDir string
+
+func TestMain(m *testing.M) {
+	var err error
+	gitFixtureDir, err = os.MkdirTemp("", "runner-git-fixture-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	code := 1
+	if err = gitCmd("init", "--quiet", "--template=", "--bare", "--initial-branch=main", filepath.Join(gitFixtureDir, "remote")); err == nil {
+		err = gitCmd("init", "--quiet", "--template=", "--initial-branch=main", filepath.Join(gitFixtureDir, "work"))
+	}
+	if err == nil {
+		code = m.Run()
+	} else {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	if err := os.RemoveAll(gitFixtureDir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = 1
+	}
+	os.Exit(code)
+}
+
 func TestFindGitSlug(t *testing.T) {
 	for _, testcase := range []struct {
 		remoteURL string
@@ -141,9 +166,8 @@ func TestGitFindRef(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := filepath.Join(basedir, name)
-			require.NoError(t, os.MkdirAll(dir, 0o755))
-			require.NoError(t, gitCmd("-C", dir, "init", "--initial-branch=master"))
-			require.NoError(t, os.RemoveAll(filepath.Join(dir, ".git", "hooks")))
+			require.NoError(t, os.CopyFS(dir, os.DirFS(filepath.Join(gitFixtureDir, "work"))))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "HEAD"), []byte("ref: refs/heads/master\n"), 0o644))
 			for _, command := range tt.commands {
 				require.NoError(t, gitCmd(append([]string{"-C", dir}, command...)...))
 			}
@@ -180,6 +204,7 @@ func TestGitCloneExecutor(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", hostConfig)
 	t.Setenv("GIT_DIR", t.TempDir())
 
+	var clones sync.WaitGroup
 	for name, tt := range map[string]struct {
 		Err error
 		Ref string
@@ -207,31 +232,34 @@ func TestGitCloneExecutor(t *testing.T) {
 			Ref: fullSha[:4],
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
-			clone := NewGitCloneExecutor(NewGitCloneExecutorInput{
-				URL: "https://example.invalid/action",
-				Ref: tt.Ref,
-				Dir: dir,
-			})
+		clones.Go(func() {
+			t.Run(name, func(t *testing.T) {
+				dir := t.TempDir()
+				clone := NewGitCloneExecutor(NewGitCloneExecutorInput{
+					URL: "https://example.invalid/action",
+					Ref: tt.Ref,
+					Dir: dir,
+				})
 
-			err := clone(t.Context())
-			if tt.Err != nil {
-				require.Error(t, err)
-				assert.Equal(t, tt.Err, err)
-				assert.Equal(t, tt.Err, clone(t.Context()), "a retry on the cache keeps the error")
-				return
-			}
-			require.NoError(t, err)
-			marker := filepath.Join(dir, "marker")
-			require.NoError(t, os.WriteFile(marker, nil, 0o644))
-			require.NoError(t, clone(t.Context()))
-			assert.FileExists(t, marker, "an insteadOf rewrite must not evict the cache")
-			script, err := os.ReadFile(filepath.Join(dir, "action.sh"))
-			require.NoError(t, err)
-			assert.Equal(t, "#!/bin/sh\necho hi\n", string(script), "host core.autocrlf must not convert action files")
+				err := clone(t.Context())
+				if tt.Err != nil {
+					require.Error(t, err)
+					assert.Equal(t, tt.Err, err)
+					assert.Equal(t, tt.Err, clone(t.Context()), "a retry on the cache keeps the error")
+					return
+				}
+				require.NoError(t, err)
+				marker := filepath.Join(dir, "marker")
+				require.NoError(t, os.WriteFile(marker, nil, 0o644))
+				require.NoError(t, clone(t.Context()))
+				assert.FileExists(t, marker, "an insteadOf rewrite must not evict the cache")
+				script, err := os.ReadFile(filepath.Join(dir, "action.sh"))
+				require.NoError(t, err)
+				assert.Equal(t, "#!/bin/sh\necho hi\n", string(script), "host core.autocrlf must not convert action files")
+			})
 		})
 	}
+	clones.Wait()
 }
 
 func TestGitCloneExecutorReclonesWhenOriginURLChanges(t *testing.T) {
@@ -476,9 +504,12 @@ func TestGitCloneExecutorPinnedHashIgnoresShadowingRef(t *testing.T) {
 func newGitRemote(t *testing.T, messages ...string) (string, string) {
 	t.Helper()
 	remoteDir, workDir := t.TempDir(), t.TempDir()
-	require.NoError(t, gitCmd("init", "--bare", "--initial-branch=main", remoteDir))
-	require.NoError(t, gitCmd("clone", remoteDir, workDir))
-	require.NoError(t, gitCmd("-C", workDir, "checkout", "-b", "main"))
+	require.NoError(t, os.CopyFS(remoteDir, os.DirFS(filepath.Join(gitFixtureDir, "remote"))))
+	require.NoError(t, os.CopyFS(workDir, os.DirFS(filepath.Join(gitFixtureDir, "work"))))
+	config, err := os.ReadFile(filepath.Join(workDir, ".git", "config"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, ".git", "config"),
+		fmt.Appendf(config, "\n[remote \"origin\"]\n\turl = %s\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n", strconv.Quote(remoteDir)), 0o644))
 	for _, message := range messages {
 		require.NoError(t, gitCmd("-C", workDir, "commit", "--allow-empty", "-m", message))
 	}

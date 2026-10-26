@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
@@ -79,42 +80,48 @@ func TestGetContainerArchive(t *testing.T) {
 }
 
 func TestHostEnvironmentExecExitCode(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX shell")
 	}
 	for name, allocatePTY := range map[string]bool{"without PTY": false, "with PTY": true} {
 		t.Run(name, func(t *testing.T) {
-			reader, writer := io.Pipe()
-			defer reader.Close()
-			e := &HostEnvironment{Path: t.TempDir(), StdOut: writer, AllocatePTY: allocatePTY}
-			t.Cleanup(func() { assert.NoError(t, e.Remove()(t.Context())) })
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				reader, writer := io.Pipe()
+				defer reader.Close()
+				e := &HostEnvironment{Path: t.TempDir(), StdOut: writer, AllocatePTY: allocatePTY}
+				t.Cleanup(func() { assert.NoError(t, e.Remove()(t.Context())) })
 
-			result := make(chan error, 1)
-			go func() {
-				defer writer.Close()
-				result <- e.Exec([]string{"sh", "-c", "printf 'failed\\n'; exit 3"}, map[string]string{"PATH": os.Getenv("PATH")}, "", "")(t.Context())
-			}()
-			first := make([]byte, 1)
-			_, err := io.ReadFull(reader, first)
-			require.NoError(t, err)
-			select {
-			case err := <-result:
-				t.Fatalf("Exec returned before its output was consumed: %v", err)
-			case <-time.After(100 * time.Millisecond):
-			}
-			remaining, err := io.ReadAll(reader)
-			require.NoError(t, err)
-			err = <-result
-			var exitErr ExitCodeError
-			require.ErrorAs(t, err, &exitErr)
-			assert.Equal(t, ExitCodeError(3), exitErr)
-			assert.Equal(t, "Process completed with exit code 3.", err.Error())
-			assert.Equal(t, "failed\n", string(first)+string(remaining))
+				result := make(chan error, 1)
+				go func() {
+					defer writer.Close()
+					result <- e.Exec([]string{"sh", "-c", "printf 'failed\\n'; exit 3"}, map[string]string{"PATH": os.Getenv("PATH")}, "", "")(t.Context())
+				}()
+				first := make([]byte, 1)
+				_, err := io.ReadFull(reader, first)
+				require.NoError(t, err)
+				synctest.Wait()
+				select {
+				case err := <-result:
+					t.Fatalf("Exec returned before its output was consumed: %v", err)
+				default:
+				}
+				remaining, err := io.ReadAll(reader)
+				require.NoError(t, err)
+				err = <-result
+				var exitErr ExitCodeError
+				require.ErrorAs(t, err, &exitErr)
+				assert.Equal(t, ExitCodeError(3), exitErr)
+				assert.Equal(t, "Process completed with exit code 3.", err.Error())
+				assert.Equal(t, "failed\n", string(first)+string(remaining))
+			})
 		})
 	}
 }
 
 func TestHostEnvironmentAllocatePTY(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX shell")
 	}
@@ -127,6 +134,7 @@ func TestHostEnvironmentAllocatePTY(t *testing.T) {
 		{name: "on", allocPTY: true, expect: "TTY"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			buf := &bytes.Buffer{}
 			e := &HostEnvironment{
 				Path:        t.TempDir(),
@@ -168,63 +176,67 @@ func TestHostEnvironmentRemoveWorkdir(t *testing.T) {
 }
 
 func TestRemoveAllWithContextDoesNotHangOnStuckDelete(t *testing.T) {
-	release := make(chan struct{})
-	stubDone := make(chan struct{})
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		stubDone := make(chan struct{})
 
-	orig := removeAll
-	removeAll = func(string) error {
-		defer close(stubDone)
-		<-release
-		return nil
-	}
-	t.Cleanup(func() {
-		close(release)
-		<-stubDone
-		removeAll = orig
+		orig := removeAll
+		removeAll = func(string) error {
+			defer close(stubDone)
+			<-release
+			return nil
+		}
+		t.Cleanup(func() {
+			close(release)
+			<-stubDone
+			removeAll = orig
+		})
+
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+
+		err := removeAllWithContext(ctx, t.TempDir())
+		require.ErrorIs(t, err, context.DeadlineExceeded)
 	})
-
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-	defer cancel()
-
-	err := removeAllWithContext(ctx, t.TempDir())
-	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func TestHostEnvironmentRemoveDoesNotHang(t *testing.T) {
 	for _, phase := range []string{"CleanUp callback", "path removal"} {
 		t.Run(phase, func(t *testing.T) {
-			origTimeout := hostCleanupTimeout
-			hostCleanupTimeout = 100 * time.Millisecond
-			t.Cleanup(func() { hostCleanupTimeout = origTimeout })
-			release, stubDone := make(chan struct{}), make(chan struct{})
-			block := func() {
-				defer close(stubDone)
-				<-release
-			}
-			e := &HostEnvironment{Path: filepath.Join(t.TempDir(), "misc", "hostexecutor"), StdOut: os.Stdout}
-			if phase == "CleanUp callback" {
-				e.CleanUp = block
-			} else {
-				origRemoveAll := removeAll
-				removeAll = func(string) error {
-					block()
-					return nil
+			synctest.Test(t, func(t *testing.T) {
+				origTimeout := hostCleanupTimeout
+				hostCleanupTimeout = 100 * time.Millisecond
+				t.Cleanup(func() { hostCleanupTimeout = origTimeout })
+				release, stubDone := make(chan struct{}), make(chan struct{})
+				block := func() {
+					defer close(stubDone)
+					<-release
 				}
-				t.Cleanup(func() { removeAll = origRemoveAll })
-			}
-			t.Cleanup(func() {
-				close(release)
-				<-stubDone
+				e := &HostEnvironment{Path: filepath.Join(t.TempDir(), "misc", "hostexecutor"), StdOut: os.Stdout}
+				if phase == "CleanUp callback" {
+					e.CleanUp = block
+				} else {
+					origRemoveAll := removeAll
+					removeAll = func(string) error {
+						block()
+						return nil
+					}
+					t.Cleanup(func() { removeAll = origRemoveAll })
+				}
+				t.Cleanup(func() {
+					close(release)
+					<-stubDone
+				})
+				require.NoError(t, os.MkdirAll(e.Path, 0o700))
+				done := make(chan error, 1)
+				go func() { done <- e.Remove()(common.WithLogger(t.Context(), logging.Default())) }()
+				select {
+				case err := <-done:
+					require.NoError(t, err)
+				case <-time.After(10 * time.Second):
+					t.Fatalf("Remove() hung on a stuck %s", phase)
+				}
 			})
-			require.NoError(t, os.MkdirAll(e.Path, 0o700))
-			done := make(chan error, 1)
-			go func() { done <- e.Remove()(common.WithLogger(t.Context(), logging.Default())) }()
-			select {
-			case err := <-done:
-				require.NoError(t, err)
-			case <-time.After(10 * time.Second):
-				t.Fatalf("Remove() hung on a stuck %s", phase)
-			}
 		})
 	}
 }

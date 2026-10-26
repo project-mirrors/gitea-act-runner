@@ -33,7 +33,7 @@ host_docker="${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.dock
 test_dir=""
 
 cleanup() {
-  docker -H "$host_docker" rm -fv "$name" "$name-s6" >/dev/null 2>&1 || true
+  docker -H "$host_docker" rm -fv "$name" "$name-s6-failure" "$name-s6-stop" >/dev/null 2>&1 || true
   if [ -n "$test_dir" ]; then
     rm -rf "$test_dir"
   fi
@@ -52,7 +52,7 @@ else
   fi
   # Override the image entrypoint (s6) and run only dockerd, exposed over insecure TCP.
   # We are testing the daemon the image ships, not the runner supervision tree.
-  daemon_args=(-e DOCKER_TLS_CERTDIR= --entrypoint dockerd-entrypoint.sh "$image" --host=tcp://0.0.0.0:2375)
+  daemon_args=(-e DOCKER_TLS_CERTDIR= --entrypoint dockerd-entrypoint.sh "$image" --host=tcp://0.0.0.0:2375 --tls=false)
   if [ $# -eq 0 ]; then
     default_tests=true
     set -- -count=1 -race -run '^TestImageExistsLocally$' ./act/container/
@@ -87,6 +87,11 @@ fi
 # Create the dind container on the host daemon first, then repoint DOCKER_HOST at it: exporting
 # DOCKER_HOST before `docker run` would make this `docker run` target the not-yet-existent dind.
 docker -H "$host_docker" run -d --privileged --name "$name" "${run_args[@]}" "${daemon_args[@]}" >/dev/null
+if [ "$default_tests" = true ]; then
+  echo "==> Starting ${target} supervision checks"
+  docker -H "$host_docker" run -d --privileged --name "$name-s6-failure" -e DOCKER_TLS_CERTDIR= -e RUNNER_STATE_FILE=/etc/hostname "$image" >/dev/null
+  docker -H "$host_docker" run -d --privileged --name "$name-s6-stop" -e DOCKER_TLS_CERTDIR= "$image" >/dev/null
+fi
 export DOCKER_HOST="$daemon_host"
 
 echo "==> Waiting for daemon"
@@ -148,7 +153,6 @@ if [ "$default_tests" = true ]; then
   docker -H "$host_docker" exec -e DOCKER_HOST="$socket" "$name" docker run --rm -v "${socket#unix://}:/var/run/docker.sock" -v /tmp/gitea-runner-proxy-test:/data -w /data \
     -e ACT_TEST_DOCKER_PROXY=proxy -e ACT_TEST_IMAGE="$job_image" "$job_image" ./runner.test -test.v -test.run '^TestDockerProxyMountedJob$' -test.timeout 3m
 
-  supervised="$name-s6"
   supervised_exit_is() {
     if [ "$(docker -H "$host_docker" inspect -f '{{.State.ExitCode}}' "$supervised")" != "$1" ] ||
       ! docker -H "$host_docker" logs "$supervised" 2>&1 | grep -F "$2" >/dev/null; then
@@ -158,15 +162,14 @@ if [ "$default_tests" = true ]; then
     fi
   }
   echo "==> Checking that a runner failure sets the ${target} container exit code"
-  docker -H "$host_docker" run -d --privileged --name "$supervised" -e DOCKER_TLS_CERTDIR= -e RUNNER_STATE_FILE=/etc/hostname "$image" >/dev/null
-  for _ in $(seq 1 120); do
-    [ "$(docker -H "$host_docker" inspect -f '{{.State.Running}}' "$supervised")" = false ] && break
-    sleep 1
-  done
+  supervised="$name-s6-failure"
+  if ! timeout 120 docker -H "$host_docker" wait "$supervised" >/dev/null; then
+    docker -H "$host_docker" logs "$supervised" >&2
+    exit 1
+  fi
   supervised_exit_is 1 'registration file not found'
-  docker -H "$host_docker" rm -fv "$supervised" >/dev/null
   echo "==> Checking that stopping a started ${target} runner exits 0"
-  docker -H "$host_docker" run -d --privileged --name "$supervised" -e DOCKER_TLS_CERTDIR= "$image" >/dev/null
+  supervised="$name-s6-stop"
   for _ in $(seq 1 120); do
     docker -H "$host_docker" logs "$supervised" 2>&1 | grep -F 'is missing or not a regular file' >/dev/null && break
     sleep 1

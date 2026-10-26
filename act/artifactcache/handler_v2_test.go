@@ -78,6 +78,7 @@ func saveV2(t *testing.T, handler *Handler, key, version string, content []byte)
 }
 
 func TestCacheServiceV2RoundTrip(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t, Policy{})
 	content := []byte("the cached archive")
 
@@ -103,6 +104,7 @@ func TestCacheServiceV2RoundTrip(t *testing.T) {
 }
 
 func TestCacheServiceV2BlockUpload(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t, Policy{})
 
 	created := v2Call(t, handler, testClient, "CreateCacheEntry", map[string]any{"key": "blocks", "version": "v1"})
@@ -150,6 +152,7 @@ func TestCacheServiceV2BlockUpload(t *testing.T) {
 }
 
 func TestCacheServiceV2Lookups(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t, Policy{})
 	saved, _ := saveV2(t, handler, "deps-abc", "v1", []byte("x"))
 	require.Equal(t, true, saved["ok"])
@@ -231,6 +234,7 @@ func TestCacheServiceV2Lookups(t *testing.T) {
 }
 
 func TestCacheServiceV2RefusalsAreTwirp(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t, Policy{})
 
 	tests := []struct {
@@ -267,6 +271,7 @@ func TestCacheServiceV2RefusalsAreTwirp(t *testing.T) {
 }
 
 func TestCacheServiceV2ConcurrentSaveAndRetries(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t, Policy{})
 	content := []byte("the cached archive")
 

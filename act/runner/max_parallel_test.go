@@ -47,7 +47,7 @@ jobs:
 		require.NoError(t, err)
 		job := workflow.Jobs["test"]
 		rawStrategy := model.CloneYamlNode(job.RawStrategy)
-		require.NoError(t, (&runnerImpl{config: &Config{}}).NewPlanExecutor(&model.Plan{Stages: []*model.Stage{{Runs: []*model.Run{{Workflow: workflow, JobID: "test"}}}}})(t.Context()))
+		require.NoError(t, (&runnerImpl{config: &Config{Env: testCheckoutEnv()}}).NewPlanExecutor(&model.Plan{Stages: []*model.Stage{{Runs: []*model.Run{{Workflow: workflow, JobID: "test"}}}}})(t.Context()))
 		require.NotNil(t, job.Strategy)
 		assert.False(t, job.Strategy.GetFailFast())
 		assert.Equal(t, 2, maxParallelFor(job.Strategy, 5))
@@ -70,7 +70,7 @@ func TestNewPlanExecutorInvalidMatrix(t *testing.T) {
 		}},
 		JobID: "test",
 	}}}}}
-	runner := &runnerImpl{config: &Config{}}
+	runner := &runnerImpl{config: &Config{Env: testCheckoutEnv()}}
 
 	require.ErrorContains(t, runner.NewPlanExecutor(plan)(t.Context()), "could not get job matrix:")
 

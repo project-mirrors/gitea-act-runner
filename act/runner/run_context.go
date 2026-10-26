@@ -114,6 +114,7 @@ type RunContext struct {
 	stepEnv            map[string]string
 	unsecureCommandErr error // refused ::set-env::/::add-path::, turned into a step failure
 	unsecureCommandMu  sync.Mutex
+	checkoutPins       sync.Map // git lookups of contexts no run has pinned
 }
 
 // serviceContainer pairs a service container with the workflow id that keys job.services.
@@ -1539,6 +1540,7 @@ func (rc *RunContext) getGithubContext(ctx context.Context) *model.GithubContext
 
 	ghc.SetBaseAndHeadRef()
 	repoPath := rc.Config.Workdir
+	ctx = ghcontext.WithPinnedCheckout(ctx, &rc.checkoutPins)
 	ghcontext.SetRepositoryAndOwner(ctx, ghc, repoPath)
 	if ghc.Ref == "" {
 		ghcontext.SetRef(ctx, ghc, repoPath)

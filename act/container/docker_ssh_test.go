@@ -30,6 +30,7 @@ func TestSSHArgs(t *testing.T) {
 }
 
 func TestDialCommandStreamsStdioAndReportsExit(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("needs a POSIX shell")
 	}

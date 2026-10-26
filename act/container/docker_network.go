@@ -85,14 +85,14 @@ networks:
 }
 
 func NewDockerNetworkCreateExecutor(name string, opts NewDockerNetworkCreateExecutorInput) common.Executor {
-	return func(ctx context.Context) error {
+	return common.Executor(func(ctx context.Context) error {
 		cli, err := GetDockerClient(ctx)
 		if err != nil {
 			return err
 		}
 		defer cli.Close()
 		return createDockerNetwork(ctx, cli, name, opts)
-	}
+	}).IfNot(common.Dryrun)
 }
 
 func createDockerNetwork(ctx context.Context, cli client.APIClient, name string, opts NewDockerNetworkCreateExecutorInput) error {
@@ -157,7 +157,7 @@ func isAddressPoolExhausted(err error) bool {
 }
 
 func NewDockerNetworkConnectExecutor(networkName, container string) common.Executor {
-	return func(ctx context.Context) error {
+	return common.Executor(func(ctx context.Context) error {
 		cli, err := GetDockerClient(ctx)
 		if err != nil {
 			return err
@@ -167,7 +167,7 @@ func NewDockerNetworkConnectExecutor(networkName, container string) common.Execu
 			common.Logger(ctx).Warnf("cannot connect %s to network %s, so jobs on it cannot reach the cache: %v", container, networkName, err)
 		}
 		return nil
-	}
+	}).IfNot(common.Dryrun)
 }
 
 func connectNetwork(ctx context.Context, cli client.APIClient, networkName, container string) error {
@@ -182,14 +182,14 @@ func connectNetwork(ctx context.Context, cli client.APIClient, networkName, cont
 }
 
 func NewDockerNetworkDisconnectExecutor(networkName, container string) common.Executor {
-	return func(ctx context.Context) error {
+	return common.Executor(func(ctx context.Context) error {
 		cli, err := GetDockerClient(ctx)
 		if err != nil {
 			return err
 		}
 		defer cli.Close()
 		return disconnectNetwork(ctx, cli, networkName, container)
-	}
+	}).IfNot(common.Dryrun)
 }
 
 func disconnectNetwork(ctx context.Context, cli client.APIClient, networkName, container string) error {
@@ -201,14 +201,14 @@ func disconnectNetwork(ctx context.Context, cli client.APIClient, networkName, c
 }
 
 func NewDockerNetworkRemoveExecutor(name string) common.Executor {
-	return func(ctx context.Context) error {
+	return common.Executor(func(ctx context.Context) error {
 		cli, err := GetDockerClient(ctx)
 		if err != nil {
 			return err
 		}
 		defer cli.Close()
 		return removeNetwork(ctx, cli, name)
-	}
+	}).IfNot(common.Dryrun)
 }
 
 func removeNetwork(ctx context.Context, cli client.APIClient, name string) error {

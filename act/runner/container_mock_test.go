@@ -16,10 +16,18 @@ import (
 
 var noopExecutor = func(context.Context) error { return nil }
 
+type linuxEnvironment struct {
+	container.LinuxContainerEnvironmentExtensions
+}
+
+func (linuxEnvironment) GetRunnerContext(context.Context) map[string]any {
+	return map[string]any{"os": "Linux", "arch": "X64", "temp": "/tmp", "tool_cache": container.DefaultToolCache}
+}
+
 type containerMock struct {
 	mock.Mock
 	container.Container
-	container.LinuxContainerEnvironmentExtensions
+	linuxEnvironment
 }
 
 func (cm *containerMock) Create(capAdd, capDrop []string) common.Executor {

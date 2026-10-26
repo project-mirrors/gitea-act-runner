@@ -48,10 +48,12 @@ func signArtifactURL(h *Handler, id int64) string {
 }
 
 func TestHandler_ExternalURL(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "http://[2001:db8::1]:8080", (&Handler{outboundIP: "2001:db8::1", port: 8080}).ExternalURL())
 }
 
 func TestHandler_Upstream(t *testing.T) {
+	t.Parallel()
 	var upstream *httptest.Server
 	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPut, r.Method)
@@ -101,6 +103,7 @@ func TestHandler_Upstream(t *testing.T) {
 }
 
 func TestHandler(t *testing.T) {
+	t.Parallel()
 	const version = "c19da02a2bd7e77277f1ac29ab45c09b7d46a4ee758284e26bb3045ad11d9d20"
 	dir := filepath.Join(t.TempDir(), "artifactcache")
 	handler, err := StartHandler(Options{Dir: dir})
@@ -470,6 +473,7 @@ func uploadCacheNormally(t *testing.T, base, key, version string, content []byte
 }
 
 func TestHandler_gcCache(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "artifactcache")
 	handler, err := StartHandler(Options{Dir: dir, Policy: Policy{Retention: testRetention}})
 	require.NoError(t, err)
@@ -572,6 +576,7 @@ func TestHandler_gcCache(t *testing.T) {
 }
 
 func TestHandler_evictPolicy(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	stale := func(d time.Duration) int64 { return now.Add(-d).Unix() }
 	mib := func(n int64) int64 { return n * miB }
@@ -669,6 +674,7 @@ func TestHandler_evictPolicy(t *testing.T) {
 }
 
 func TestHandler_evictForFreeSpace(t *testing.T) {
+	t.Parallel()
 	free := func(n int64) func(string) (uint64, error) {
 		return func(string) (uint64, error) { return uint64(n), nil }
 	}
@@ -708,6 +714,7 @@ func TestHandler_evictForFreeSpace(t *testing.T) {
 }
 
 func TestHandler_SweepKeepsEntryWhenBlobSurvives(t *testing.T) {
+	t.Parallel()
 	cache := &Cache{Key: "stuck", Complete: true, UsedAt: time.Now().Add(-(testRetention + time.Hour)).Unix()}
 	handler := newTestHandler(t, Policy{Retention: testRetention}, cache)
 
@@ -722,6 +729,7 @@ func TestHandler_SweepKeepsEntryWhenBlobSurvives(t *testing.T) {
 }
 
 func TestHandler_FindProtectsFromEviction(t *testing.T) {
+	t.Parallel()
 	wanted := &Cache{Repo: testRepo, Key: "wanted", Version: "v", Complete: true, Size: 4 * miB, UsedAt: time.Now().Add(-3 * time.Hour).Unix()}
 	other := &Cache{Repo: testRepo, Key: "other", Version: "v", Complete: true, Size: 4 * miB, UsedAt: time.Now().Add(-2 * time.Hour).Unix()}
 	newest := &Cache{Repo: testRepo, Key: "newest", Version: "v", Complete: true, Size: 4 * miB, UsedAt: time.Now().Add(-time.Hour).Unix()}
@@ -742,6 +750,7 @@ func TestHandler_FindProtectsFromEviction(t *testing.T) {
 }
 
 func TestHandler_PrefixUsesNewestReservationWithinSecond(t *testing.T) {
+	t.Parallel()
 	created := time.Now().Add(-time.Hour).Unix()
 	older := &Cache{Repo: testRepo, Key: "deps-old", Version: "v", Complete: true, CreatedAt: created}
 	newer := &Cache{Repo: testRepo, Key: "deps-new", Version: "v", Complete: true, CreatedAt: created}
@@ -756,6 +765,7 @@ func TestHandler_PrefixUsesNewestReservationWithinSecond(t *testing.T) {
 }
 
 func TestHandler_evictOnCommit(t *testing.T) {
+	t.Parallel()
 	full := &Cache{Repo: testRepo, Key: "full", Version: "v", Complete: true, Size: 4 * miB, UsedAt: time.Now().Add(-time.Hour).Unix()}
 	handler := newTestHandler(t, Policy{RepoSizeLimit: 4 * miB}, full)
 
@@ -765,6 +775,7 @@ func TestHandler_evictOnCommit(t *testing.T) {
 }
 
 func TestHandler_gcCacheInterval(t *testing.T) {
+	t.Parallel()
 	cache := &Cache{Key: "temp", UsedAt: time.Now().Add(-time.Hour).Unix()}
 	handler := newTestHandler(t, Policy{SweepInterval: 30 * time.Minute}, cache)
 
@@ -774,6 +785,7 @@ func TestHandler_gcCacheInterval(t *testing.T) {
 }
 
 func TestHandler_touchCacheSkipsFreshCompletedEntries(t *testing.T) {
+	t.Parallel()
 	fresh := &Cache{Repo: testRepo, Key: "fresh", Version: "v", Complete: true, UsedAt: time.Now().Unix()}
 	pending := &Cache{Repo: testRepo, Key: "pending", Version: "v", UsedAt: time.Now().Add(-time.Second).Unix()}
 	handler := newTestHandler(t, Policy{}, fresh, pending)
@@ -840,6 +852,7 @@ func writeBlob(t *testing.T, handler *Handler, id uint64) {
 }
 
 func TestHandler_RejectsBearer(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "artifactcache")
 	handler, err := StartHandler(Options{Dir: dir})
 	require.NoError(t, err)
@@ -876,6 +889,7 @@ func TestHandler_RejectsBearer(t *testing.T) {
 }
 
 func TestHandler_UnregisterRevokes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		token         string
@@ -917,6 +931,7 @@ func TestHandler_UnregisterRevokes(t *testing.T) {
 }
 
 func TestHandler_CrossRepoIsolation(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "artifactcache")
 	handler, err := StartHandler(Options{Dir: dir})
 	require.NoError(t, err)
@@ -967,6 +982,7 @@ func TestHandler_CrossRepoIsolation(t *testing.T) {
 }
 
 func TestHandler_ArtifactSignature(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "artifactcache")
 	handler, err := StartHandler(Options{Dir: dir})
 	require.NoError(t, err)
@@ -998,6 +1014,7 @@ func TestHandler_ArtifactSignature(t *testing.T) {
 }
 
 func TestHandler_SecretPersistsAcrossRestarts(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "artifactcache")
 
 	first, err := StartHandler(Options{Dir: dir, OutboundIP: "127.0.0.1"})
@@ -1014,6 +1031,7 @@ func TestHandler_SecretPersistsAcrossRestarts(t *testing.T) {
 }
 
 func TestHandler_SeesWritesOfOtherProcesses(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t, Policy{})
 	insert := func(by *Handler, cache *Cache) {
 		db, err := by.openDB()
@@ -1031,6 +1049,7 @@ func TestHandler_SeesWritesOfOtherProcesses(t *testing.T) {
 }
 
 func TestHandler_ArtifactSignatureDownload(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "artifactcache")
 	handler, err := StartHandler(Options{Dir: dir})
 	require.NoError(t, err)
@@ -1065,6 +1084,7 @@ func TestHandler_ArtifactSignatureDownload(t *testing.T) {
 }
 
 func TestHandler_GC_PerRepoDedup(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "artifactcache")
 	handler, err := StartHandler(Options{Dir: dir})
 	require.NoError(t, err)
@@ -1109,6 +1129,7 @@ func TestHandler_GC_PerRepoDedup(t *testing.T) {
 }
 
 func TestHandler_InternalAPI_Disabled(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "artifactcache")
 	handler, err := StartHandler(Options{Dir: dir})
 	require.NoError(t, err)
@@ -1123,6 +1144,7 @@ func TestHandler_InternalAPI_Disabled(t *testing.T) {
 }
 
 func TestHandler_InternalAPI_AuthAndUsage(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "artifactcache")
 	const secret = "internal-secret"
 	handler, err := StartHandler(Options{Dir: dir, InternalSecret: secret})

@@ -285,7 +285,7 @@ func newJobExecutor(info jobInfo, sf stepFactory, rc *RunContext) common.Executo
 		jobError := common.JobError(ctx)
 		var err error
 		// always allow 1 min for stopping and removing the runner, even if we were cancelled
-		ctx, cancel := context.WithTimeout(common.WithLogger(context.Background(), common.Logger(ctx)), jobCleanupTimeout)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobCleanupTimeout)
 		defer cancel()
 
 		logger := common.Logger(ctx)

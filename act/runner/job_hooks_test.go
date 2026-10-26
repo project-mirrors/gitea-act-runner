@@ -78,7 +78,7 @@ func (c *hookContainer) GetContainerArchive(context.Context, string) (io.ReadClo
 // newHookRunContext returns a RunContext and the context to run a hook with, whose logger is
 // silenced so the hook's job-log output does not reach the test output.
 func newHookRunContext(jobContainer *hookContainer, config *Config) (*RunContext, context.Context) {
-	// Env is left nil so that it is built from the config, as it is for a real job.
+	config.PresetGitHubContext = &model.GithubContext{}
 	rc := &RunContext{
 		Config:       config,
 		Run:          &model.Run{JobID: "job", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job": {}}}},

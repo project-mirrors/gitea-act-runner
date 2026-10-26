@@ -13,11 +13,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/ghcontext"
 
 	"gitea.dev/actionslib/pkg/model"
 	"github.com/joho/godotenv"
@@ -26,12 +28,13 @@ import (
 )
 
 var (
-	baseImage = "node:24-bookworm-slim"
-	platforms map[string]string
-	logLevel  = logging.LevelDebug
-	workdir   = "testdata"
-	secrets   map[string]string
-	testRunID = strings.ToLower(rand.Text()[:8]) // keeps docker names apart from concurrent test processes on one daemon
+	baseImage        = "node:24-bookworm-slim"
+	platforms        map[string]string
+	logLevel         = logging.LevelDebug
+	workdir          = "testdata"
+	secrets          map[string]string
+	testRunID        = strings.ToLower(rand.Text()[:8]) // keeps docker names apart from concurrent test processes on one daemon
+	testCheckoutPins sync.Map
 )
 
 func mapPlatformPicker(platforms map[string]string) func([]string) string {
@@ -158,12 +161,12 @@ func TestNewPlanExecutorRequiresRunsOnBeforeRunningAnyJob(t *testing.T) {
 		require.NoError(t, err)
 		plan, err := model.CombineWorkflowPlanner(workflow).PlanJob("test")
 		require.NoError(t, err)
-		require.ErrorContains(t, (&runnerImpl{config: &Config{}}).NewPlanExecutor(plan)(t.Context()), `job "test" requires a non-empty 'runs-on'`, runsOn)
+		require.ErrorContains(t, (&runnerImpl{config: &Config{Env: testCheckoutEnv()}}).NewPlanExecutor(plan)(t.Context()), `job "test" requires a non-empty 'runs-on'`, runsOn)
 		assert.Empty(t, workflow.Jobs["first"].Result, runsOn)
 	}
 
 	workflow := &model.Workflow{Jobs: map[string]*model.Job{"build": {Result: "success"}}}
-	require.NoError(t, (&runnerImpl{config: &Config{}}).NewPlanExecutor(&model.Plan{Stages: []*model.Stage{{Runs: []*model.Run{{Workflow: workflow, JobID: "build"}}}}})(t.Context()))
+	require.NoError(t, (&runnerImpl{config: &Config{Env: testCheckoutEnv()}}).NewPlanExecutor(&model.Plan{Stages: []*model.Stage{{Runs: []*model.Run{{Workflow: workflow, JobID: "build"}}}}})(t.Context()))
 	assert.Equal(t, "success", workflow.Jobs["build"].Result)
 }
 
@@ -219,6 +222,7 @@ type TestJobFileInfo struct {
 }
 
 func (j *TestJobFileInfo) runTest(ctx context.Context, t *testing.T, cfg *Config) {
+	ctx = ghcontext.WithPinnedCheckout(ctx, &testCheckoutPins)
 	fmt.Printf("::group::%s\n", j.workflowPath) //nolint:forbidigo // pre-existing issue from nektos/act
 
 	logging.SetLevel(logLevel)
@@ -481,7 +485,7 @@ func TestRunEventHostEnvironment(t *testing.T) {
 }
 
 func TestDryrunEvent(t *testing.T) {
-	t.Parallel()
+	t.Setenv("DOCKER_HOST", "://")
 	// Dryrun plans without containers or network (shells and local actions only).
 	ctx := common.WithDryrun(t.Context(), true)
 

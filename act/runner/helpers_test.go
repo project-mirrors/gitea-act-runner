@@ -60,3 +60,7 @@ func requireHostTools(t *testing.T, tools ...string) {
 		}
 	}
 }
+
+func testCheckoutEnv() map[string]string {
+	return map[string]string{"GITHUB_REPOSITORY": "owner/repo", "GITHUB_REF": "refs/heads/main", "SHA_REF": "1234567890"}
+}

@@ -43,6 +43,7 @@ func TestRunContext_EvalBool(t *testing.T) {
 	rc := &RunContext{
 		Config: &Config{
 			Workdir: ".",
+			Env:     testCheckoutEnv(),
 		},
 		Env: map[string]string{
 			"SOMETHING_TRUE":  "true",
@@ -200,7 +201,7 @@ func startJobContainerInputs(t *testing.T, workflowYAML string, cfg *Config) []*
 
 	cfg.Workdir = "/tmp"
 	cfg.ContainerNetworkMode = "host"
-	cfg.Env = map[string]string{}
+	cfg.Env = testCheckoutEnv()
 	cfg.Secrets = map[string]string{}
 
 	rc := &RunContext{
@@ -481,6 +482,7 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 			require.NoError(t, err)
 
 			rc := newRunContext(&Config{
+				Env:          testCheckoutEnv(),
 				ValidVolumes: []string{"**"},
 				Secrets: map[string]string{
 					"MAME": "/host/mame/roms",
@@ -777,7 +779,7 @@ func TestInterpolateOutputsIsPerMatrixComboKeepingNeedsOutputs(t *testing.T) {
 	require.NoError(t, job.RawOutputs.Encode(job.Outputs))
 	needed := &model.Job{Outputs: map[string]string{"o": "from-gitea"}}
 	run := &model.Run{JobID: "j", Workflow: &model.Workflow{Name: "w", Jobs: map[string]*model.Job{"j": job, "needed": needed}}}
-	r := &runnerImpl{config: &Config{}}
+	r := &runnerImpl{config: &Config{PresetGitHubContext: &model.GithubContext{}}}
 	ctx := t.Context()
 
 	_, err := r.newRunContext(ctx, &model.Run{JobID: "needed", Workflow: run.Workflow}, nil)
@@ -804,7 +806,7 @@ func TestInterpolateOutputsFromExpression(t *testing.T) {
 
 	job := &model.Job{RawOutputs: rawOutputs}
 	run := &model.Run{JobID: "j", Workflow: &model.Workflow{Name: "w", Jobs: map[string]*model.Job{"j": job}}}
-	rc, err := (&runnerImpl{config: &Config{}}).newRunContext(t.Context(), run, nil)
+	rc, err := (&runnerImpl{config: &Config{PresetGitHubContext: &model.GithubContext{}}}).newRunContext(t.Context(), run, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, rc.interpolateOutputs()(t.Context()))
@@ -956,6 +958,7 @@ func TestGetGithubContextRef(t *testing.T) {
 				Config: &Config{
 					EventName: data.event,
 					Workdir:   "",
+					Env:       map[string]string{"GITHUB_REPOSITORY": "owner/repo", "SHA_REF": "1234567890"},
 				},
 				Run: &model.Run{
 					Workflow: &model.Workflow{
@@ -973,7 +976,7 @@ func TestGetGithubContextRef(t *testing.T) {
 
 func createIfTestRunContext(jobs map[string]*model.Job) *RunContext {
 	rc := &RunContext{
-		Config: &Config{Workdir: ".", PlatformPicker: func([]string) string { return "ubuntu-latest" }},
+		Config: &Config{Workdir: ".", PresetGitHubContext: &model.GithubContext{}, PlatformPicker: func([]string) string { return "ubuntu-latest" }},
 		Run: &model.Run{
 			JobID: "job1",
 			Workflow: &model.Workflow{
@@ -1210,7 +1213,7 @@ func TestRunContext_cleanupFailedStart(t *testing.T) {
 			workflow, err := model.ReadWorkflow(strings.NewReader("jobs: {job: {services: {postgres: {image: postgres:latest}}}}"))
 			require.NoError(t, err)
 			rc := &RunContext{
-				Config:        &Config{ForcePull: true, ContainerNetworkMode: "host", Workdir: "/workspace"},
+				Config:        &Config{ForcePull: true, ContainerNetworkMode: "host", Workdir: "/workspace", Env: testCheckoutEnv()},
 				Run:           &model.Run{JobID: "job", Workflow: workflow},
 				platformImage: "node:20",
 			}
@@ -1562,6 +1565,7 @@ func TestRunContextGetRunnerContext(t *testing.T) {
 }
 
 func TestRunContextUpdateExtraPath(t *testing.T) {
+	t.Parallel()
 	longPath := strings.Repeat("x", 64*1024+1)
 	for _, testcase := range []struct {
 		name    string

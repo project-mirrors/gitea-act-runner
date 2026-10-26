@@ -89,7 +89,7 @@ func execFailure(t *testing.T, code int, status string) http.HandlerFunc {
 	}
 }
 
-func fakeKubernetes(t *testing.T, podStatus string) (string, *fakeCluster) {
+func fakeKubernetes(t *testing.T, podStatus string, env ...string) (string, *fakeCluster) {
 	cluster := &fakeCluster{requests: map[string][]string{}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-token" {
@@ -109,7 +109,7 @@ func fakeKubernetes(t *testing.T, podStatus string) (string, *fakeCluster) {
 			if failure := cluster.nextExecFailure(); failure != nil {
 				failure(w, r)
 			} else {
-				serveLocalExec(t, w, r)
+				serveLocalExec(t, w, r, env)
 			}
 		case strings.HasSuffix(r.URL.Path, "/log"):
 			_, _ = io.WriteString(w, "log of "+r.URL.Query().Get("container"))
@@ -132,7 +132,7 @@ users: [{name: test, user: {tokenFile: token}}]
 	return kubeconfig, cluster
 }
 
-func serveLocalExec(t *testing.T, w http.ResponseWriter, r *http.Request) {
+func serveLocalExec(t *testing.T, w http.ResponseWriter, r *http.Request, env []string) {
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{execProtocol}})
 	if err != nil {
 		t.Error(err)
@@ -154,7 +154,7 @@ func serveLocalExec(t *testing.T, w http.ResponseWriter, r *http.Request) {
 		stdin.Write(frame[1:])
 	}
 	cmd := exec.Command(command[0], command[1:]...)
-	cmd.Env = append(os.Environ(), "COPYFILE_DISABLE=1")
+	cmd.Env = append(append(os.Environ(), "COPYFILE_DISABLE=1"), env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = &stdin, &stdout, &stderr
 	status := `{"status":"Success"}`
@@ -183,15 +183,17 @@ func TestKubernetesServiceHostnames(t *testing.T) {
 }
 
 func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX shell")
 	}
 	ctx := t.Context()
-	kubeconfig, cluster := fakeKubernetes(t, `{"spec":{"containers":[{},{}]},"status":{"phase":"Running","containerStatuses":[
-		{"name":"job","ready":true,"state":{"running":{}}},
-		{"name":"my-db","ready":true,"state":{"running":{}}}]}}`)
 	workdir, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
+	path := workdir + ":" + os.Getenv("PATH")
+	kubeconfig, cluster := fakeKubernetes(t, `{"spec":{"containers":[{},{}]},"status":{"phase":"Running","containerStatuses":[
+		{"name":"job","ready":true,"state":{"running":{}}},
+		{"name":"my-db","ready":true,"state":{"running":{}}}]}}`, "PATH="+path)
 	options := KubernetesOptions{Kubeconfig: kubeconfig, RunnerUUID: "runner-uuid", PodTemplates: []map[string]any{
 		{"spec": map[string]any{
 			"automountServiceAccountToken": true,
@@ -252,7 +254,6 @@ func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
 	assert.Contains(t, cluster.requests["POST /api/v1/namespaces/ci/pods"][0], `"args":["postgres","-D","$$(PGDATA)"]`)
 
 	require.NoError(t, os.WriteFile(filepath.Join(workdir, "env"), []byte("#!/bin/sh\necho \"$@\" > \"$0-args\"\nexec /usr/bin/env \"$@\"\n"), 0o755))
-	t.Setenv("PATH", workdir+":"+os.Getenv("PATH"))
 	cluster.failExec(
 		execFailure(t, http.StatusInternalServerError, `{"message":"error dialing backend: remote error: tls: internal error"}`),
 		execFailure(t, 0, `{"status":"Failure","reason":"InternalError","message":"Internal error occurred: error sending request: remote error: tls: internal error"}`),
@@ -300,7 +301,7 @@ func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
 
 	pathEnv := map[string]string{}
 	require.NoError(t, job.UpdateFromImageEnv(&pathEnv)(ctx))
-	assert.Equal(t, os.Getenv("PATH"), pathEnv["PATH"])
+	assert.Equal(t, path, pathEnv["PATH"])
 
 	info, err := service.Inspect(ctx)
 	require.NoError(t, err)

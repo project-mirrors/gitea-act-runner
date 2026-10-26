@@ -18,6 +18,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/common/logging/logtest"
 	"gitea.com/gitea/runner/act/runner"
@@ -198,34 +199,36 @@ func TestReporter_LogFlush(t *testing.T) {
 		{"batch size", 10 * time.Second, 5, []string{"log line 0", "log line 1", "log line 2", "log line 3", "log line 4"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var updateLogCalls atomic.Int64
-			client := mocks.NewClient(t)
-			client.On("UpdateLog", mock.Anything, mock.Anything).Return(
-				func(_ctx context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
-					updateLogCalls.Add(1)
-					return &runnerv1.UpdateLogResponse{AckIndex: req.Index + int64(len(req.Rows))}, nil
-				},
-			)
-			client.On("UpdateTask", mock.Anything, mock.Anything).Maybe().Return(&runnerv1.UpdateTaskResponse{}, nil)
+			synctest.Test(t, func(t *testing.T) {
+				var updateLogCalls atomic.Int64
+				client := mocks.NewClient(t)
+				client.On("UpdateLog", mock.Anything, mock.Anything).Return(
+					func(_ctx context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+						updateLogCalls.Add(1)
+						return &runnerv1.UpdateLogResponse{AckIndex: req.Index + int64(len(req.Rows))}, nil
+					},
+				)
+				client.On("UpdateTask", mock.Anything, mock.Anything).Maybe().Return(&runnerv1.UpdateTaskResponse{}, nil)
 
-			cfg, _ := config.LoadDefault("")
-			cfg.Runner.LogReportInterval = 10 * time.Second
-			cfg.Runner.LogReportMaxLatency = tc.maxLatency
-			cfg.Runner.LogReportBatchSize = tc.batchSize
-			reporter := newTestReporter(t, client, cfg)
-			reporter.ResetSteps(newTestSteps(1))
-			reporter.RunDaemon()
-			defer func() { require.NoError(t, reporter.Close("")) }()
+				cfg, _ := config.LoadDefault("")
+				cfg.Runner.LogReportInterval = 10 * time.Second
+				cfg.Runner.LogReportMaxLatency = tc.maxLatency
+				cfg.Runner.LogReportBatchSize = tc.batchSize
+				reporter := newTestReporter(t, client, cfg)
+				reporter.ResetSteps(newTestSteps(1))
+				reporter.RunDaemon()
+				defer func() { require.NoError(t, reporter.Close("")) }()
 
-			for _, message := range tc.messages {
-				require.NoError(t, fire(reporter, logEntry{
-					Message: message,
-					Data:    map[string]any{"stage": "Main", "stepNumber": 0, "raw_output": true},
-				}))
-			}
-			assert.Eventually(t, func() bool {
-				return updateLogCalls.Load() > 0
-			}, 500*time.Millisecond, 10*time.Millisecond, "logs must flush before the periodic timers")
+				for _, message := range tc.messages {
+					require.NoError(t, fire(reporter, logEntry{
+						Message: message,
+						Data:    map[string]any{"stage": "Main", "stepNumber": 0, "raw_output": true},
+					}))
+				}
+				assert.Eventually(t, func() bool {
+					return updateLogCalls.Load() > 0
+				}, 500*time.Millisecond, 10*time.Millisecond, "logs must flush before the periodic timers")
+			})
 		})
 	}
 }
@@ -313,43 +316,45 @@ func TestReporter_StateChangedRestoredOnError(t *testing.T) {
 }
 
 func TestReporter_StateNotifyFlush(t *testing.T) {
-	var updateTaskCalls atomic.Int64
+	synctest.Test(t, func(t *testing.T) {
+		var updateTaskCalls atomic.Int64
 
-	client := mocks.NewClient(t)
-	client.On("UpdateLog", mock.Anything, mock.Anything).Maybe().Return(
-		func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
-			return &runnerv1.UpdateLogResponse{
-				AckIndex: req.Index + int64(len(req.Rows)),
-			}, nil
-		},
-	)
-	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
-			updateTaskCalls.Add(1)
-			return &runnerv1.UpdateTaskResponse{}, nil
-		},
-	)
+		client := mocks.NewClient(t)
+		client.On("UpdateLog", mock.Anything, mock.Anything).Maybe().Return(
+			func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+				return &runnerv1.UpdateLogResponse{
+					AckIndex: req.Index + int64(len(req.Rows)),
+				}, nil
+			},
+		)
+		client.On("UpdateTask", mock.Anything, mock.Anything).Return(
+			func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+				updateTaskCalls.Add(1)
+				return &runnerv1.UpdateTaskResponse{}, nil
+			},
+		)
 
-	cfg, _ := config.LoadDefault("")
-	cfg.Runner.StateReportInterval = 10 * time.Second
-	cfg.Runner.LogReportInterval = 10 * time.Second
+		cfg, _ := config.LoadDefault("")
+		cfg.Runner.StateReportInterval = 10 * time.Second
+		cfg.Runner.LogReportInterval = 10 * time.Second
 
-	reporter := newTestReporter(t, client, cfg)
-	reporter.ResetSteps(newTestSteps(1))
-	reporter.RunDaemon()
-	defer func() {
-		_ = reporter.Close("")
-	}()
+		reporter := newTestReporter(t, client, cfg)
+		reporter.ResetSteps(newTestSteps(1))
+		reporter.RunDaemon()
+		defer func() {
+			_ = reporter.Close("")
+		}()
 
-	require.NoError(t, fire(reporter, logEntry{
-		Message: "step starting",
-		Data:    map[string]any{"stage": "Main", "stepNumber": 0, "raw_output": true},
-	}))
+		require.NoError(t, fire(reporter, logEntry{
+			Message: "step starting",
+			Data:    map[string]any{"stage": "Main", "stepNumber": 0, "raw_output": true},
+		}))
 
-	assert.Eventually(t, func() bool {
-		return updateTaskCalls.Load() > 0
-	}, 500*time.Millisecond, 10*time.Millisecond,
-		"step transition should have triggered immediate state flush via stateNotify")
+		assert.Eventually(t, func() bool {
+			return updateTaskCalls.Load() > 0
+		}, 500*time.Millisecond, 10*time.Millisecond,
+			"step transition should have triggered immediate state flush via stateNotify")
+	})
 }
 
 func TestReporter_CloseAlwaysSendsRowsWithNoMore(t *testing.T) {
@@ -401,33 +406,35 @@ func TestReporter_CloseAlwaysSendsRowsWithNoMore(t *testing.T) {
 }
 
 func TestReporter_StateHeartbeat(t *testing.T) {
-	var updateTaskCalls atomic.Int64
+	synctest.Test(t, func(t *testing.T) {
+		var updateTaskCalls atomic.Int64
 
-	client := mocks.NewClient(t)
-	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
-			updateTaskCalls.Add(1)
-			return &runnerv1.UpdateTaskResponse{}, nil
-		},
-	)
+		client := mocks.NewClient(t)
+		client.On("UpdateTask", mock.Anything, mock.Anything).Return(
+			func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+				updateTaskCalls.Add(1)
+				return &runnerv1.UpdateTaskResponse{}, nil
+			},
+		)
 
-	cfg, _ := config.LoadDefault("")
-	cfg.Runner.StateReportInterval = 50 * time.Millisecond
-	reporter := newTestReporter(t, client, cfg)
-	reporter.ResetSteps(newTestSteps(1))
+		cfg, _ := config.LoadDefault("")
+		cfg.Runner.StateReportInterval = 50 * time.Millisecond
+		reporter := newTestReporter(t, client, cfg)
+		reporter.ResetSteps(newTestSteps(1))
 
-	reporter.stateMu.Lock()
-	reporter.stateChanged = true
-	reporter.stateMu.Unlock()
-	require.NoError(t, reporter.ReportState(false))
-	require.Equal(t, int64(1), updateTaskCalls.Load())
+		reporter.stateMu.Lock()
+		reporter.stateChanged = true
+		reporter.stateMu.Unlock()
+		require.NoError(t, reporter.ReportState(false))
+		require.Equal(t, int64(1), updateTaskCalls.Load())
 
-	require.NoError(t, reporter.ReportState(false))
-	assert.Equal(t, int64(1), updateTaskCalls.Load(), "no-op ReportState within stateReportInterval must skip")
+		require.NoError(t, reporter.ReportState(false))
+		assert.Equal(t, int64(1), updateTaskCalls.Load(), "no-op ReportState within stateReportInterval must skip")
 
-	time.Sleep(2 * cfg.Runner.StateReportInterval)
-	require.NoError(t, reporter.ReportState(false))
-	assert.Equal(t, int64(2), updateTaskCalls.Load(), "ReportState must heartbeat after stateReportInterval even with no state change")
+		<-time.After(2 * cfg.Runner.StateReportInterval)
+		require.NoError(t, reporter.ReportState(false))
+		assert.Equal(t, int64(2), updateTaskCalls.Load(), "ReportState must heartbeat after stateReportInterval even with no state change")
+	})
 }
 
 func TestReporter_ServerCancelStillFlushesFinal(t *testing.T) {
@@ -556,58 +563,60 @@ func TestReporter_CloseReportsCancelledOnCanceledCtx(t *testing.T) {
 }
 
 func TestReporter_StopHeartbeats(t *testing.T) {
-	var updateTaskCalls atomic.Int64
+	synctest.Test(t, func(t *testing.T) {
+		var updateTaskCalls atomic.Int64
 
-	client := mocks.NewClient(t)
-	client.On("UpdateLog", mock.Anything, mock.Anything).Maybe().Return(
-		func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
-			return &runnerv1.UpdateLogResponse{
-				AckIndex: req.Index + int64(len(req.Rows)),
-			}, nil
-		},
-	)
-	client.On("UpdateTask", mock.Anything, mock.Anything).Return(
-		func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
-			updateTaskCalls.Add(1)
-			return &runnerv1.UpdateTaskResponse{}, nil
-		},
-	)
+		client := mocks.NewClient(t)
+		client.On("UpdateLog", mock.Anything, mock.Anything).Maybe().Return(
+			func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+				return &runnerv1.UpdateLogResponse{
+					AckIndex: req.Index + int64(len(req.Rows)),
+				}, nil
+			},
+		)
+		client.On("UpdateTask", mock.Anything, mock.Anything).Return(
+			func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+				updateTaskCalls.Add(1)
+				return &runnerv1.UpdateTaskResponse{}, nil
+			},
+		)
 
-	cfg, err := config.LoadDefault("")
-	require.NoError(t, err)
-	cfg.Runner.StateReportInterval = 20 * time.Millisecond
-	cfg.Runner.LogReportInterval = time.Hour
+		cfg, err := config.LoadDefault("")
+		require.NoError(t, err)
+		cfg.Runner.StateReportInterval = 20 * time.Millisecond
+		cfg.Runner.LogReportInterval = time.Hour
 
-	reporter := newTestReporter(t, client, cfg)
-	reporter.ResetSteps(newTestSteps(1))
-	reporter.RunDaemon()
+		reporter := newTestReporter(t, client, cfg)
+		reporter.ResetSteps(newTestSteps(1))
+		reporter.RunDaemon()
 
-	reporter.stateMu.Lock()
-	reporter.stateChanged = true
-	reporter.state.Result = runnerv1.Result_RESULT_SUCCESS
-	reporter.state.StoppedAt = timestamppb.Now()
-	reporter.stateMu.Unlock()
+		reporter.stateMu.Lock()
+		reporter.stateChanged = true
+		reporter.state.Result = runnerv1.Result_RESULT_SUCCESS
+		reporter.state.StoppedAt = timestamppb.Now()
+		reporter.stateMu.Unlock()
 
-	require.Eventually(t, func() bool {
-		return updateTaskCalls.Load() >= 1
-	}, time.Second, 5*time.Millisecond, "daemon must send at least one UpdateTask before StopHeartbeats")
+		require.Eventually(t, func() bool {
+			return updateTaskCalls.Load() >= 1
+		}, time.Second, 5*time.Millisecond, "daemon must send at least one UpdateTask before StopHeartbeats")
 
-	beforeStop := updateTaskCalls.Load()
-	reporter.StopHeartbeats()
+		beforeStop := updateTaskCalls.Load()
+		reporter.StopHeartbeats()
 
-	select {
-	case <-reporter.daemon:
-	case <-time.After(time.Second):
-		t.Fatal("StopHeartbeats must stop the daemon loop")
-	}
+		select {
+		case <-reporter.daemon:
+		case <-time.After(time.Second):
+			t.Fatal("StopHeartbeats must stop the daemon loop")
+		}
 
-	time.Sleep(3 * cfg.Runner.StateReportInterval)
-	assert.Equal(t, beforeStop, updateTaskCalls.Load(),
-		"UpdateTask must not be called after StopHeartbeats")
+		<-time.After(3 * cfg.Runner.StateReportInterval)
+		assert.Equal(t, beforeStop, updateTaskCalls.Load(),
+			"UpdateTask must not be called after StopHeartbeats")
 
-	require.NoError(t, reporter.Close(""))
-	assert.Greater(t, updateTaskCalls.Load(), beforeStop,
-		"Close() must still send a final UpdateTask after StopHeartbeats")
+		require.NoError(t, reporter.Close(""))
+		assert.Greater(t, updateTaskCalls.Load(), beforeStop,
+			"Close() must still send a final UpdateTask after StopHeartbeats")
+	})
 }
 
 func TestAppendLogRow(t *testing.T) {
@@ -786,48 +795,53 @@ func TestReporter_AckIndexBeyondBuffer(t *testing.T) {
 }
 
 func TestReporter_CloseWithStuckDaemon(t *testing.T) {
-	release := make(chan struct{})
-	entered := make(chan struct{})
-	var once sync.Once
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		entered := make(chan struct{})
+		var once sync.Once
+		output := logging.Output()
+		logging.SetOutput(common.NewLineWriter(func(line string) bool {
+			if strings.Contains(line, "No Response from RunDaemon") {
+				close(release)
+			}
+			return true
+		}))
+		t.Cleanup(func() { logging.SetOutput(output) })
 
-	client := mocks.NewClient(t)
-	client.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
-		once.Do(func() {
-			close(entered)
-			<-release
+		client := mocks.NewClient(t)
+		client.On("UpdateLog", mock.Anything, mock.Anything).Return(func(_ context.Context, req *runnerv1.UpdateLogRequest) (*runnerv1.UpdateLogResponse, error) {
+			once.Do(func() {
+				close(entered)
+				<-release
+			})
+			return &runnerv1.UpdateLogResponse{
+				AckIndex: req.Index + int64(len(req.Rows)),
+			}, nil
 		})
-		return &runnerv1.UpdateLogResponse{
-			AckIndex: req.Index + int64(len(req.Rows)),
-		}, nil
+		client.On("UpdateTask", mock.Anything, mock.Anything).Return(func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
+			return &runnerv1.UpdateTaskResponse{}, nil
+		}).Maybe()
+
+		cfg, _ := config.LoadDefault("")
+		cfg.Runner.LogReportInterval = 10 * time.Millisecond
+		reporter := newTestReporter(t, client, cfg)
+		reporter.daemonWait = time.Millisecond
+		reporter.RunDaemon()
+		reporter.ResetSteps(newTestSteps(1))
+
+		require.NoError(t, fire(reporter, logEntry{
+			Message: "hello",
+			Data:    map[string]any{"stage": "Main", "stepNumber": 0, "raw_output": true},
+			Level:   logging.LevelInfo,
+		}))
+
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("daemon never reached UpdateLog")
+		}
+		require.NoError(t, reporter.Close(""))
 	})
-	client.On("UpdateTask", mock.Anything, mock.Anything).Return(func(_ context.Context, _ *runnerv1.UpdateTaskRequest) (*runnerv1.UpdateTaskResponse, error) {
-		return &runnerv1.UpdateTaskResponse{}, nil
-	}).Maybe()
-
-	cfg, _ := config.LoadDefault("")
-	cfg.Runner.LogReportInterval = 10 * time.Millisecond
-	reporter := newTestReporter(t, client, cfg)
-	reporter.daemonWait = time.Millisecond
-	reporter.RunDaemon()
-	reporter.ResetSteps(newTestSteps(1))
-
-	require.NoError(t, fire(reporter, logEntry{
-		Message: "hello",
-		Data:    map[string]any{"stage": "Main", "stepNumber": 0, "raw_output": true},
-		Level:   logging.LevelInfo,
-	}))
-
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("daemon never reached UpdateLog")
-	}
-	go func() {
-		time.Sleep(10 * reporter.daemonWait)
-		close(release)
-	}()
-
-	require.NoError(t, reporter.Close(""))
 }
 
 func TestReporter_ServerFailureResultIsReportedAsFailure(t *testing.T) {

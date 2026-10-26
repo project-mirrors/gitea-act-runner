@@ -57,6 +57,7 @@ func TestStepActionLocalTest(t *testing.T) {
 			ExprEval:    &expressionEvaluator{},
 			Config: &Config{
 				Workdir: "/tmp",
+				Env:     testCheckoutEnv(),
 			},
 			Run: &model.Run{
 				JobID: "1",
@@ -109,7 +110,7 @@ func TestStepActionPost(t *testing.T) {
 					ctx := t.Context()
 					cm := &containerMock{}
 					rc := &RunContext{
-						Config:       &Config{GitHubInstance: "https://github.com", ActionCacheDir: t.TempDir()},
+						Config:       &Config{GitHubInstance: "https://github.com", ActionCacheDir: t.TempDir(), PresetGitHubContext: &model.GithubContext{}},
 						JobContainer: cm,
 						Run:          &model.Run{JobID: "1", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"1": {}}}},
 						StepResults:  map[string]*model.StepResult{"step": {Conclusion: test.status}},

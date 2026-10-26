@@ -37,7 +37,7 @@ func TestStepRun(t *testing.T) {
 		RunContext: &RunContext{
 			StepResults: map[string]*model.StepResult{},
 			ExprEval:    &expressionEvaluator{},
-			Config:      &Config{},
+			Config:      &Config{Env: testCheckoutEnv()},
 			Run: &model.Run{
 				JobID: "1",
 				Workflow: &model.Workflow{
@@ -167,7 +167,7 @@ func TestStepRunShellParity(t *testing.T) {
 
 			sr := &stepRun{
 				RunContext: &RunContext{
-					Config:       &Config{},
+					Config:       &Config{PresetGitHubContext: &model.GithubContext{}},
 					Run:          &model.Run{JobID: "1", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"1": {}}}},
 					JobContainer: jobContainer,
 				},

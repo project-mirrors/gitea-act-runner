@@ -33,10 +33,11 @@ func createRunContext(t *testing.T) *RunContext {
 		"os":  {"Linux", "Windows"},
 		"foo": {"bar", "baz"},
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	return &RunContext{
 		Config: &Config{
+			Env:     testCheckoutEnv(),
 			Workdir: ".",
 			Secrets: map[string]string{
 				"CASE_INSENSITIVE_SECRET": "value",
@@ -279,6 +280,7 @@ func TestEvaluateStep(t *testing.T) {
 func TestInterpolate(t *testing.T) {
 	rc := &RunContext{
 		Config: &Config{
+			Env:     testCheckoutEnv(),
 			Workdir: ".",
 			Secrets: map[string]string{
 				"CASE_INSENSITIVE_SECRET": "value",
@@ -444,9 +446,9 @@ jobs:
 		for _, value := range []string{"true", "false"} {
 			t.Run(value, func(t *testing.T) {
 				t.Parallel()
-				parent, err := (&runnerImpl{config: &Config{}}).newRunContext(t.Context(), &model.Run{Workflow: workflow, JobID: "call"}, map[string]any{"args": `{"flag":` + value + `,"name":"${{ 'runner' }}"}`})
+				parent, err := (&runnerImpl{config: &Config{PresetGitHubContext: &model.GithubContext{}}}).newRunContext(t.Context(), &model.Run{Workflow: workflow, JobID: "call"}, map[string]any{"args": `{"flag":` + value + `,"name":"${{ 'runner' }}"}`})
 				require.NoError(t, err)
-				child, err := (&runnerImpl{config: &Config{}, caller: &caller{runContext: parent}}).newRunContext(t.Context(), &model.Run{Workflow: workflow, JobID: "test"}, nil)
+				child, err := (&runnerImpl{config: &Config{PresetGitHubContext: &model.GithubContext{}}, caller: &caller{runContext: parent}}).newRunContext(t.Context(), &model.Run{Workflow: workflow, JobID: "test"}, nil)
 				require.NoError(t, err)
 				assert.Equal(t, map[string]any{"flag": value == "true", "name": "${{ 'runner' }}", "unset": false}, child.workflowCallInputs)
 				assert.Equal(t, rawWith, job.RawWith)
@@ -525,7 +527,7 @@ jobs:
 	require.NoError(t, err)
 	notCallable, err := model.ReadWorkflow(strings.NewReader("on: push\njobs:\n  test: {}\n"))
 	require.NoError(t, err)
-	config := &Config{Secrets: map[string]string{"token": "${{ github.token }}"}}
+	config := &Config{Secrets: map[string]string{"token": "${{ github.token }}"}, PresetGitHubContext: &model.GithubContext{}}
 	resolve := func(callerJobID string, workflow *model.Workflow) *RunContext {
 		parent, err := (&runnerImpl{config: config}).newRunContext(t.Context(), &model.Run{Workflow: callerWorkflow, JobID: callerJobID}, nil)
 		require.NoError(t, err)
@@ -552,7 +554,7 @@ jobs:
 `))
 	require.NoError(t, err)
 
-	runner := &runnerImpl{config: &Config{Secrets: map[string]string{"A": "s3cr3t-a", "B": "s3cr3t-b"}}}
+	runner := &runnerImpl{config: &Config{Secrets: map[string]string{"A": "s3cr3t-a", "B": "s3cr3t-b"}, PresetGitHubContext: &model.GithubContext{}}}
 	containerName := func(jobID string) string {
 		rc, err := runner.newRunContext(t.Context(), &model.Run{JobID: jobID, Workflow: workflow}, nil)
 		require.NoError(t, err)

@@ -315,9 +315,12 @@ func execAsDocker(ctx context.Context, step actionStep, actionName, actionDir, b
 			return err
 		}
 
-		correctArchExists, err := ContainerImageExistsLocally(ctx, image, rc.Config.ContainerArchitecture)
-		if err != nil {
-			return err
+		correctArchExists := anyArchExists
+		if anyArchExists && rc.Config.ContainerArchitecture != "" && rc.Config.ContainerArchitecture != "any" {
+			correctArchExists, err = ContainerImageExistsLocally(ctx, image, rc.Config.ContainerArchitecture)
+			if err != nil {
+				return err
+			}
 		}
 
 		if anyArchExists && !correctArchExists {

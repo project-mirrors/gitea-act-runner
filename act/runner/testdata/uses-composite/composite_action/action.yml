@@ -53,33 +53,18 @@ runs:
         if [ "${{ inputs.test_input_required }}" != "test_input_required_value" ]; then
           exit 1
         fi
-      shell: bash
-
-    - run: |
         if [ "${{ inputs.test_input_optional }}" != "test_input_optional_value" ]; then
           exit 1
         fi
-      shell: bash
-
-    - run: |
         if [ "${{ inputs.test_input_optional_with_default_overriden }}" != "test_input_optional_with_default_overriden" ]; then
           exit 1
         fi
-      shell: bash
-
-    - run: |
         if [ "${{ inputs.test_input_required_with_default }}" != "test_input_optional_value" ]; then
           exit 1
         fi
-      shell: bash
-
-    - run: |
         if [ "${{ inputs.test_input_required_with_default_overriden }}" != "test_input_required_with_default_overriden" ]; then
           exit 1
         fi
-      shell: bash
-
-    - run: |
         if [ -z "$GITHUB_ACTION_PATH" ]; then
           exit 1
         fi

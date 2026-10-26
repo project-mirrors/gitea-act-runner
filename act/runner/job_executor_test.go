@@ -102,7 +102,7 @@ func (jim *jobInfoMock) result(result string) {
 
 type jobContainerMock struct {
 	container.Container
-	container.LinuxContainerEnvironmentExtensions
+	linuxEnvironment
 }
 
 func (jcm *jobContainerMock) ReplaceLogWriter(_, _ io.Writer) (io.Writer, io.Writer) {
@@ -290,7 +290,7 @@ func TestNewJobExecutorDownloadsAllActionsBeforeTheFirstStep(t *testing.T) {
 				Jobs: map[string]*model.Job{"test": {}},
 			},
 		},
-		Config: &Config{},
+		Config: &Config{PresetGitHubContext: &model.GithubContext{}},
 	}
 	rc.ExprEval = rc.NewExpressionEvaluator(ctx)
 
@@ -550,7 +550,7 @@ func TestNewJobExecutor(t *testing.T) {
 						},
 					},
 				},
-				Config: &Config{},
+				Config: &Config{PresetGitHubContext: &model.GithubContext{}},
 			}
 			if tt.output != "" {
 				require.NoError(t, rc.Run.Job().RawOutputs.Encode(map[string]string{"bad": tt.output}))
@@ -695,6 +695,7 @@ func TestSetJobResultMatrixContinueOnError(t *testing.T) {
 			workflow := &model.Workflow{Name: "workflow1", Jobs: map[string]*model.Job{"job1": job}}
 			for _, experimental := range []bool{true, tolerated} {
 				rc := newTestRC(workflow, map[string]any{"experimental": experimental})
+				rc.Config.PresetGitHubContext = &model.GithubContext{}
 				setJobResult(ctx, rc, rc, false)
 			}
 
@@ -1023,7 +1024,7 @@ func tarArchive(t *testing.T, entries ...tarEntry) []byte {
 
 func newTestRC(wf *model.Workflow, matrix map[string]any) *RunContext {
 	return &RunContext{
-		Config:      &Config{Workdir: ".", PlatformPicker: func([]string) string { return "ubuntu-latest" }},
+		Config:      &Config{Workdir: ".", Env: testCheckoutEnv(), PlatformPicker: func([]string) string { return "ubuntu-latest" }},
 		StepResults: map[string]*model.StepResult{},
 		Env:         map[string]string{},
 		Matrix:      matrix,
@@ -1039,6 +1040,7 @@ func makeTestRC(t *testing.T, jobYAML string) *RunContext {
 		Name: "workflow1",
 		Jobs: map[string]*model.Job{"job1": job},
 	}, nil)
+	rc.Config.PresetGitHubContext = &model.GithubContext{}
 	rc.ExprEval = rc.NewExpressionEvaluator(t.Context())
 	return rc
 }

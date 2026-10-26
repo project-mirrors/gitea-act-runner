@@ -6,9 +6,11 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"net/url"
@@ -30,9 +32,7 @@ import (
 func testKubernetes(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	k3sID, kubernetes := startK3s(t)
-
-	images := preloadImages(t, k3sID, os.Getenv("E2E_JOB_IMAGE"), os.Getenv("SERVICE_IMAGE"))
+	k3sID, kubernetes, images := startK3s(t)
 
 	api, repo := newScenario(t)
 	if err := api.CreateVariable(ctx, repo, "E2E_SERVICE_IMAGE", images[1]); err != nil {
@@ -51,7 +51,7 @@ func testKubernetes(t *testing.T) {
 	}
 }
 
-func startK3s(t *testing.T) (string, *config.Kubernetes) {
+func startK3s(t *testing.T) (string, *config.Kubernetes, []string) {
 	t.Helper()
 	ctx := t.Context()
 	cli := fixture.cli
@@ -92,6 +92,13 @@ func startK3s(t *testing.T) (string, *config.Kubernetes) {
 	if _, err := cli.ContainerStart(ctx, created.ID, mobyclient.ContainerStartOptions{}); err != nil {
 		t.Fatalf("start k3s container: %v", err)
 	}
+
+	containerdCtx, stopWaiting := context.WithTimeout(ctx, 2*time.Minute)
+	defer stopWaiting()
+	if err := waitForContainerLog(containerdCtx, created.ID, "containerd is now running"); err != nil {
+		t.Fatalf("wait for k3s containerd: %v", err)
+	}
+	images := preloadImages(t, created.ID, os.Getenv("E2E_JOB_IMAGE"), os.Getenv("SERVICE_IMAGE"))
 
 	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -139,7 +146,33 @@ func startK3s(t *testing.T) (string, *config.Kubernetes) {
 			"hostnames": []any{giteaURL.Hostname()},
 		}}}}
 	}
-	return created.ID, kubernetes
+	return created.ID, kubernetes, images
+}
+
+func waitForContainerLog(ctx context.Context, id, message string) error {
+	logs, err := fixture.cli.ContainerLogs(ctx, id, mobyclient.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Follow: true})
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	go func() {
+		_, err := stdcopy.StdCopy(writer, writer, logs)
+		_ = writer.CloseWithError(err)
+	}()
+
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		if strings.Contains(scanner.Text(), message) {
+			return nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return fmt.Errorf("container exited before logging %q", message)
 }
 
 func preloadImages(t *testing.T, k3sID string, images ...string) []string {

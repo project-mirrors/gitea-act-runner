@@ -22,6 +22,7 @@ func newTestHostEnv(t *testing.T) (*HostEnvironment, string) {
 }
 
 func TestParseEnvFile(t *testing.T) {
+	t.Parallel()
 	largeValue := strings.Repeat("x", 2*1024*1024)
 	encodeUTF16 := func(endianness unicode.Endianness) string {
 		content, err := unicode.UTF16(endianness, unicode.UseBOM).NewEncoder().Bytes([]byte("FOO=bar\r\nMULTI<<EOF\r\nline1\r\nEOF\r\n"))
@@ -66,6 +67,7 @@ func TestParseEnvFile(t *testing.T) {
 }
 
 func TestParseEnvFileLineExceedsBufferReportsScannerError(t *testing.T) {
+	t.Parallel()
 	e, envPath := newTestHostEnv(t)
 	require.NoError(t, os.WriteFile(envPath, []byte("FOO<<EOF\n"+strings.Repeat("x", 17*1024*1024)+"\nEOF\n"), 0o600))
 

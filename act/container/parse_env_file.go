@@ -7,6 +7,7 @@ package container
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -39,12 +40,19 @@ func parseEnvFile(e Container, srcPath string, env *map[string]string, windows b
 		s := bufio.NewScanner(decoded)
 		// Default 64 KiB max token size is too small for realistic env-file lines; allow up to 16 MiB.
 		s.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+		scanned := 0
 		s.Split(func(data []byte, atEOF bool) (int, []byte, error) {
-			advance, token, err := bufio.ScanLines(data, atEOF)
-			if token != nil {
-				return advance, data[:advance], err
+			if index := bytes.IndexByte(data[scanned:], '\n'); index >= 0 {
+				advance := scanned + index + 1
+				scanned = 0
+				return advance, data[:advance], nil
 			}
-			return advance, token, err
+			scanned = len(data)
+			if atEOF && len(data) > 0 {
+				scanned = 0
+				return len(data), data, nil
+			}
+			return 0, nil, nil
 		})
 		for s.Scan() {
 			line := trimEnvLineEnding(s.Text(), windows)

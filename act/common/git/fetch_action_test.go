@@ -42,6 +42,7 @@ func TestFetchAction(t *testing.T) {
 	require.NoError(t, gitCmd("-C", remote, "add", "."))
 	require.NoError(t, gitCmd("-C", remote, "commit", "-m", "initial"))
 	require.NoError(t, gitCmd("-C", remote, "tag", "v1"))
+	expectedSha := gitRevParse(t, remote, "main")
 
 	gitPath, err := exec.LookPath("git")
 	require.NoError(t, err)
@@ -49,6 +50,7 @@ func TestFetchAction(t *testing.T) {
 	var mu sync.Mutex
 	var archiveRequests []http.Header
 	var mirror *httptest.Server
+	archiveCache := map[string][]byte{}
 	requests, archives, failures := 0, "", 0
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		mu.Lock()
@@ -85,7 +87,12 @@ func TestFetchAction(t *testing.T) {
 		if archives != "unprefixed" {
 			args = append(args, "--prefix=action/")
 		}
-		archive, _ := runGit(request.Context(), remote, nil, args...)
+		archiveKey := strings.Join(args, "\x00")
+		archive, ok := archiveCache[archiveKey]
+		if !ok {
+			archive, _ = runGit(request.Context(), remote, nil, args...)
+			archiveCache[archiveKey] = archive
+		}
 		writer.Header().Set("ETag", etag)
 		_, _ = writer.Write(archive)
 	})
@@ -108,7 +115,6 @@ func TestFetchAction(t *testing.T) {
 	}
 
 	t.Run("shares identical fetches and isolates cancellation, panics and differing inputs", func(t *testing.T) {
-		expectedSha := gitRevParse(t, remote, "main")
 		for _, scenario := range []string{"shared", "leader cancelled", "leader panics", "different token"} {
 			t.Run(scenario, func(t *testing.T) {
 				serve("prefixed", 0)
@@ -181,7 +187,7 @@ func TestFetchAction(t *testing.T) {
 		input := newInput("v1")
 		tree, sha, err := FetchAction(t.Context(), input)
 		require.NoError(t, err)
-		assert.Equal(t, gitRevParse(t, remote, "v1"), sha)
+		assert.Equal(t, expectedSha, sha)
 		assert.Equal(t, filepath.Join(input.Dir, sha), tree)
 		assert.NoDirExists(t, filepath.Join(tree, ".git"))
 		info, err := os.Stat(filepath.Join(tree, "run.sh"))
@@ -197,9 +203,10 @@ func TestFetchAction(t *testing.T) {
 
 		require.NoError(t, gitCmd("-C", remote, "commit", "--allow-empty", "-m", "moved"))
 		require.NoError(t, gitCmd("-C", remote, "tag", "--force", "v1"))
+		expectedSha = gitRevParse(t, remote, "v1")
 		moved, movedSha, err := FetchAction(t.Context(), input)
 		require.NoError(t, err)
-		assert.Equal(t, gitRevParse(t, remote, "v1"), movedSha)
+		assert.Equal(t, expectedSha, movedSha)
 		assert.NotEqual(t, tree, moved)
 		assert.FileExists(t, filepath.Join(tree, "action.yml"))
 
@@ -226,7 +233,7 @@ func TestFetchAction(t *testing.T) {
 
 	t.Run("downloads a pinned commit once and rejects a short one", func(t *testing.T) {
 		serve("prefixed", 0)
-		sha := gitRevParse(t, remote, "main")
+		sha := expectedSha
 		input := newInput(sha)
 		for range 2 {
 			tree, got, err := FetchAction(t.Context(), input)
@@ -308,7 +315,7 @@ func TestFetchAction(t *testing.T) {
 		input := newInput("main")
 		_, sha, err := FetchAction(t.Context(), input)
 		require.NoError(t, err)
-		assert.Equal(t, gitRevParse(t, remote, "main"), sha)
+		assert.Equal(t, expectedSha, sha)
 		assert.NoDirExists(t, filepath.Join(input.Dir, "git"))
 		_, headers := served()
 		require.Len(t, headers, 4)
@@ -321,7 +328,7 @@ func TestFetchAction(t *testing.T) {
 			serve(mode, 0)
 			tree, sha, err := FetchAction(t.Context(), newInput("main"))
 			require.NoError(t, err, mode)
-			assert.Equal(t, gitRevParse(t, remote, "main"), sha, mode)
+			assert.Equal(t, expectedSha, sha, mode)
 			assert.FileExists(t, filepath.Join(tree, "action.yml"), mode)
 			assert.NoDirExists(t, filepath.Join(tree, ".git"), mode)
 			_, headers := served()
@@ -336,7 +343,7 @@ func TestFetchAction(t *testing.T) {
 		input.URL = "https://example.invalid/org/action"
 		_, sha, err := FetchAction(t.Context(), input)
 		require.NoError(t, err)
-		assert.Equal(t, gitRevParse(t, remote, "main"), sha)
+		assert.Equal(t, expectedSha, sha)
 		_, headers := served()
 		assert.Len(t, headers, 1)
 		assert.NoDirExists(t, filepath.Join(input.Dir, "git"))

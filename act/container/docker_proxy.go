@@ -48,11 +48,18 @@ var (
 	rawStreamPath = regexp.MustCompile(`^(/v[0-9.]+)?/(containers/[^/]+/attach|exec/[^/]+/start)$`)
 )
 
-var dockerProxyDirectories sync.Map
+var dockerProxyDirectories, dockerProxyProbes sync.Map
 
 type dockerProxyDirectory struct {
 	dir, daemonDir string
 	socket         os.FileInfo
+}
+
+type dockerProxyProbe struct {
+	directory dockerProxyDirectory
+	done      chan struct{}
+	seen      bool
+	err       error
 }
 
 func NewDockerProxy(ctx context.Context, job string) *DockerProxy {
@@ -79,16 +86,8 @@ func NewDockerProxy(ctx context.Context, job string) *DockerProxy {
 	cached, _ := dockerProxyDirectories.Load(key)
 	directory, seen := cached.(dockerProxyDirectory)
 	seen = seen && os.SameFile(directory.socket, socket) // daemon replacement invalidates cached paths
-	dir, daemonDir := directory.dir, directory.daemonDir
 	if !seen {
-		dir, daemonDir = runnerContainerWorkdir(probeCtx, cli)
-		seen = daemonDir != ""
-		if !seen {
-			if dir, err = filepath.Abs(os.TempDir()); err == nil {
-				daemonDir = dir
-				seen, err = daemonSeesDir(probeCtx, cli, dir, daemonDir)
-			}
-		}
+		directory, seen, err = probeDockerProxyDirectory(probeCtx, cli, key, socket)
 	}
 	if err != nil {
 		common.Logger(ctx).Infof("docker proxy probe failed, jobs get the daemon socket directly: %v", err)
@@ -101,15 +100,49 @@ func NewDockerProxy(ctx context.Context, job string) *DockerProxy {
 	if ctx.Err() != nil {
 		return nil
 	}
-	proxy, err := StartDockerProxy(daemonSocket, dir, job)
+	proxy, err := StartDockerProxy(daemonSocket, directory.dir, job)
 	if err != nil {
 		dockerProxyDirectories.Delete(key)
 		common.Logger(ctx).Warnf("docker proxy not started, the job gets the daemon socket directly: %v", err)
 		return nil
 	}
-	dockerProxyDirectories.Store(key, dockerProxyDirectory{dir, daemonDir, socket})
-	proxy.Socket = daemonDir + strings.TrimPrefix(proxy.Socket, dir)
+	dockerProxyDirectories.Store(key, directory)
+	proxy.Socket = directory.daemonDir + strings.TrimPrefix(proxy.Socket, directory.dir)
 	return proxy
+}
+
+func probeDockerProxyDirectory(ctx context.Context, cli client.APIClient, key [3]string, socket os.FileInfo) (dockerProxyDirectory, bool, error) {
+	for {
+		probe := &dockerProxyProbe{directory: dockerProxyDirectory{socket: socket}, done: make(chan struct{})}
+		actual, loaded := dockerProxyProbes.LoadOrStore(key, probe)
+		if loaded {
+			probe, _ = actual.(*dockerProxyProbe)
+			if !os.SameFile(probe.directory.socket, socket) {
+				dockerProxyProbes.CompareAndDelete(key, probe)
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				return dockerProxyDirectory{}, false, ctx.Err()
+			case <-probe.done:
+			}
+			if ctx.Err() == nil && (errors.Is(probe.err, context.Canceled) || errors.Is(probe.err, context.DeadlineExceeded)) {
+				continue
+			}
+		} else {
+			probe.directory.dir, probe.directory.daemonDir = runnerContainerWorkdir(ctx, cli)
+			probe.seen = probe.directory.daemonDir != ""
+			if !probe.seen {
+				if probe.directory.dir, probe.err = filepath.Abs(key[2]); probe.err == nil {
+					probe.directory.daemonDir = probe.directory.dir
+					probe.seen, probe.err = daemonSeesDir(ctx, cli, probe.directory.dir, probe.directory.daemonDir)
+				}
+			}
+			dockerProxyProbes.CompareAndDelete(key, probe)
+			close(probe.done)
+		}
+		return probe.directory, probe.seen, probe.err
+	}
 }
 
 // runnerContainerWorkdir looks the runner's container up by hostname to find the daemon's path to its working directory.
@@ -162,12 +195,18 @@ func daemonSeesDir(ctx context.Context, cli client.APIClient, dir, daemonDir str
 	if len(images.Items) == 0 {
 		return false, errors.New("no image available for the docker proxy probe")
 	}
-	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
-		Config: &container.Config{Image: images.Items[0].ID, Cmd: []string{"true"}},
-		HostConfig: &container.HostConfig{Mounts: []mount.Mount{
-			{Type: mount.TypeBind, Source: daemonDir, Target: "/gitea-runner-probe", ReadOnly: true}, // not the marker itself, podman creates a missing bind source where docker rejects it
-		}},
-	})
+	var created client.ContainerCreateResult
+	for _, image := range images.Items {
+		created, err = cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+			Config: &container.Config{Image: image.ID, Cmd: []string{"true"}},
+			HostConfig: &container.HostConfig{Mounts: []mount.Mount{
+				{Type: mount.TypeBind, Source: daemonDir, Target: "/gitea-runner-probe", ReadOnly: true}, // not the marker itself, podman creates a missing bind source where docker rejects it
+			}},
+		})
+		if !cerrdefs.IsNotFound(err) {
+			break
+		}
+	}
 	if cerrdefs.IsInvalidArgument(err) {
 		return false, nil
 	}

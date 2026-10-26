@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -320,9 +321,18 @@ func cachedRef(ref string) string {
 
 func resolveRef(ctx context.Context, dir, ref string) (string, error) {
 	if !isFullObjectID(ref) {
-		for _, name := range []string{cachedRef(ref), "refs/tags/" + ref, "refs/remotes/origin/" + ref} {
-			if sha, err := gitOutput(ctx, dir, "rev-parse", "--verify", name+"^{commit}"); err == nil {
-				return sha, nil
+		revisions := []string{cachedRef(ref) + "^{commit}", "refs/tags/" + ref + "^{commit}", "refs/remotes/origin/" + ref + "^{commit}"}
+		if strings.ContainsAny(ref, "\x00\n") {
+			for _, revision := range revisions {
+				if sha, err := gitOutput(ctx, dir, "rev-parse", "--verify", revision); err == nil {
+					return sha, nil
+				}
+			}
+		} else if output, err := runGitWithStdin(ctx, dir, nil, strings.NewReader(strings.Join(revisions, "\n")+"\n"), "cat-file", "--batch-check=%(objectname)"); err == nil {
+			for sha := range strings.SplitSeq(string(output), "\n") {
+				if isFullObjectID(sha) {
+					return sha, nil
+				}
 			}
 		}
 	}
@@ -427,6 +437,10 @@ func ListFiles(ctx context.Context, dir string) ([]string, error) {
 }
 
 func runGit(ctx context.Context, dir string, input *NewGitCloneExecutorInput, args ...string) ([]byte, error) {
+	return runGitWithStdin(ctx, dir, input, nil, args...)
+}
+
+func runGitWithStdin(ctx context.Context, dir string, input *NewGitCloneExecutorInput, stdin io.Reader, args ...string) ([]byte, error) {
 	config := []string{"core.autocrlf=false", "core.eol=lf"} // keep action files LF
 	if input != nil {
 		config = append(config, RemoteConfig(input.Token, input.InsecureSkipTLS)...)
@@ -438,6 +452,7 @@ func runGit(ctx context.Context, dir string, input *NewGitCloneExecutorInput, ar
 		args = append([]string{"-C", dir}, args...)
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Stdin = stdin
 	cmd.Env = slices.DeleteFunc(os.Environ(), func(entry string) bool {
 		name, _, _ := strings.Cut(entry, "=")
 		return slices.Contains(LocalEnvVars, name)

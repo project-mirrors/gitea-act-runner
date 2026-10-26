@@ -135,23 +135,8 @@ func gateOpened(body string) bool {
 // an ordinary Gitea host, the cache server for the service URL, and the results URL when there is
 // no cache server. Unpatched, the same bundle must still choose v1, or the patch proves nothing.
 func TestPatchedBundleBehavesInNode(t *testing.T) {
+	t.Parallel()
 	requireHostTools(t, "node")
-
-	eval := func(t *testing.T, bundle, prelude, cacheURL string) string {
-		t.Helper()
-
-		script := prelude + bundle + "\nprocess.stdout.write(getCacheServiceVersion()+' '+getCacheServiceURL())"
-		cmd := exec.CommandContext(t.Context(), "node", "-e", script)
-		cmd.Env = append(os.Environ(),
-			"ACTIONS_CACHE_SERVICE_V2=true",
-			"ACTIONS_CACHE_URL="+cacheURL,
-			"ACTIONS_RESULTS_URL=https://gitea.example",
-			"GITHUB_SERVER_URL=https://gitea.example",
-		)
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "%s", out)
-		return string(out)
-	}
 
 	for _, tc := range []struct{ name, bundle, prelude string }{
 		{"tsc", gateTSC, ""},
@@ -159,15 +144,27 @@ func TestPatchedBundleBehavesInNode(t *testing.T) {
 		{"esbuild", gateEsbuild, "var vu={};const getCacheServiceVersion=()=>XK(),getCacheServiceURL=()=>YK();"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// Unpatched, a Gitea host is taken for GHES: v1, whose branch already reads the
-			// cache URL. The patch has to move the version without moving that.
-			assert.Equal(t, "v1 http://cache:8088/", eval(t, tc.bundle, tc.prelude, "http://cache:8088/"))
-
 			patched, ok := patchedBundle([]byte(tc.bundle))
 			require.True(t, ok)
 
-			assert.Equal(t, "v2 http://cache:8088/", eval(t, string(patched), tc.prelude, "http://cache:8088/"))
-			assert.Equal(t, "v2 https://gitea.example", eval(t, string(patched), tc.prelude, ""),
+			evaluate := func(bundle string) string {
+				return "(() => {" + tc.prelude + bundle + "\nconsole.log(getCacheServiceVersion()+' '+getCacheServiceURL());})();\n"
+			}
+			cmd := exec.CommandContext(t.Context(), "node", "-e", evaluate(tc.bundle)+evaluate(string(patched))+
+				"process.env.ACTIONS_CACHE_URL='';\n"+evaluate(string(patched)))
+			cmd.Env = append(os.Environ(),
+				"ACTIONS_CACHE_SERVICE_V2=true",
+				"ACTIONS_CACHE_URL=http://cache:8088/",
+				"ACTIONS_RESULTS_URL=https://gitea.example",
+				"GITHUB_SERVER_URL=https://gitea.example",
+			)
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, "%s", out)
+			results := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+			require.Len(t, results, 3)
+			assert.Equal(t, "v1 http://cache:8088/", results[0])
+			assert.Equal(t, "v2 http://cache:8088/", results[1])
+			assert.Equal(t, "v2 https://gitea.example", results[2],
 				"with no cache server the results URL is still the fallback")
 		})
 	}
@@ -177,6 +174,7 @@ func TestPatchedBundleBehavesInNode(t *testing.T) {
 // the gate inside a double-quoted literal. Rewriting the call rather than emptying its argument
 // would end that string early and leave the bundle unparseable.
 func TestPatchedBundleSurvivesInsideAStringLiteral(t *testing.T) {
+	t.Parallel()
 	requireHostTools(t, "node")
 
 	escaped := strings.ReplaceAll(gateTSC, `"`, `\"`)

@@ -8,6 +8,7 @@ import (
 	"context"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -427,7 +428,7 @@ func TestExecAsDockerHoldsCloneLockForRemoteUncached(t *testing.T) {
 	step := &stepActionRemote{
 		Step: &model.Step{ID: "1", Uses: "remote/action@v1", With: map[string]string{}},
 		RunContext: &RunContext{
-			Config: &Config{},
+			Config: &Config{Env: testCheckoutEnv()},
 			Run: &model.Run{
 				JobID: "1",
 				Workflow: &model.Workflow{
@@ -466,6 +467,67 @@ func TestExecAsDockerHoldsCloneLockForRemoteUncached(t *testing.T) {
 	cancel()
 	releaseOnce()
 	assert.ErrorIs(t, <-done, context.Canceled)
+}
+
+func TestExecAsDockerImageChecks(t *testing.T) {
+	originalExists, originalBuild, originalContainer := ContainerImageExistsLocally, ContainerNewDockerBuildExecutor, ContainerNewContainer
+	t.Cleanup(func() {
+		ContainerImageExistsLocally, ContainerNewDockerBuildExecutor, ContainerNewContainer = originalExists, originalBuild, originalContainer
+	})
+	ContainerNewContainer = func(*container.NewContainerInput) container.ExecutionsEnvironment { return fakeContainer{} }
+
+	for _, testcase := range []struct {
+		name, platform           string
+		exists, matches, rebuild bool
+		wantBuild, wantRemove    bool
+		wantChecks               []string
+	}{
+		{name: "missing image", platform: "linux/arm64", wantBuild: true, wantChecks: []string{"any"}},
+		{name: "unspecified platform", exists: true, matches: true, wantChecks: []string{"any"}},
+		{name: "any platform", platform: "any", exists: true, matches: true, wantChecks: []string{"any"}},
+		{name: "matching platform", platform: "linux/arm64", exists: true, matches: true, wantChecks: []string{"any", "linux/arm64"}},
+		{name: "different platform", platform: "linux/arm64", exists: true, wantBuild: true, wantRemove: true, wantChecks: []string{"any", "linux/arm64"}},
+		{name: "forced rebuild", exists: true, matches: true, rebuild: true, wantBuild: true, wantChecks: []string{"any"}},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			var checks []string
+			ContainerImageExistsLocally = func(_ctx context.Context, _image, platform string) (bool, error) {
+				checks = append(checks, platform)
+				return testcase.exists && (platform == "any" || testcase.matches), nil
+			}
+			var built, removed bool
+			ContainerNewDockerBuildExecutor = func(container.NewDockerBuildExecutorInput) common.Executor {
+				return func(context.Context) error { built = true; return nil }
+			}
+			fakeDockerDaemon(t, func(writer http.ResponseWriter, request *http.Request) {
+				if request.Method == http.MethodDelete {
+					removed = true
+					_, _ = io.WriteString(writer, `[]`)
+				} else {
+					_, _ = io.WriteString(writer, `{"Architecture":"aarch64"}`)
+				}
+			})
+			step := &stepActionRemote{
+				Step: &model.Step{ID: "action"},
+				RunContext: &RunContext{
+					Config: &Config{
+						PresetGitHubContext:   &model.GithubContext{},
+						ContainerArchitecture: testcase.platform,
+						ForceRebuild:          testcase.rebuild,
+					},
+					Run:          &model.Run{JobID: "job", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job": {}}}},
+					JobContainer: &jobContainerMock{},
+				},
+				action: &model.Action{Runs: model.ActionRuns{Using: "docker", Image: "Dockerfile"}},
+				env:    map[string]string{},
+			}
+			dir := t.TempDir()
+			require.NoError(t, execAsDocker(t.Context(), step, "action", dir, dir, false, stepStageMain))
+			assert.Equal(t, testcase.wantChecks, checks)
+			assert.Equal(t, testcase.wantBuild, built)
+			assert.Equal(t, testcase.wantRemove, removed)
+		})
+	}
 }
 
 func TestDockerActionImageTag(t *testing.T) {
@@ -519,6 +581,9 @@ func TestDockerActionImageTag(t *testing.T) {
 func TestExecAsDockerStageEntrypoint(t *testing.T) {
 	orig := ContainerNewContainer
 	defer func() { ContainerNewContainer = orig }()
+	fakeDockerDaemon(t, func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, `{"Architecture":"x86_64"}`)
+	})
 
 	for _, tc := range []struct {
 		name           string

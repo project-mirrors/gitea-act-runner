@@ -36,6 +36,7 @@ func TestStepDockerMain(t *testing.T) {
 		RunContext: &RunContext{
 			StepResults: map[string]*model.StepResult{},
 			Config: &Config{
+				PresetGitHubContext: &model.GithubContext{},
 				Secrets: map[string]string{
 					"DOCKER_USERNAME": "docker-user",
 					"DOCKER_PASSWORD": "docker-password",
@@ -116,7 +117,8 @@ func TestStepDockerNewStepContainer(t *testing.T) {
 				RunContext: &RunContext{
 					StepResults: map[string]*model.StepResult{},
 					Config: &Config{
-						AllocatePTY: test.allocPTY,
+						PresetGitHubContext: &model.GithubContext{},
+						AllocatePTY:         test.allocPTY,
 						PlatformPicker: func(_platforms []string) string {
 							return test.platform
 						},

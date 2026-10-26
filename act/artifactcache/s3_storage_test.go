@@ -20,6 +20,7 @@ import (
 )
 
 func TestHandler_S3SharesEntriesAndDropsExpiredOnes(t *testing.T) {
+	t.Parallel()
 	var objects sync.Map
 	var uploads atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -91,6 +92,7 @@ func (transport s3TestTransport) RoundTrip(req *http.Request) (*http.Response, e
 }
 
 func TestS3StorageUploadsLargeObjectsInPartsAndAbortsOnFailure(t *testing.T) {
+	t.Parallel()
 	for _, failingPart := range []string{"", "2"} {
 		var parts, aborts atomic.Int32
 		var completion struct {
@@ -130,6 +132,7 @@ func TestS3StorageUploadsLargeObjectsInPartsAndAbortsOnFailure(t *testing.T) {
 }
 
 func TestS3StorageSignsLikeAWS(t *testing.T) {
+	t.Parallel()
 	storage := &s3Storage{opts: S3Options{Region: "us-east-1", AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}}
 	req := httptest.NewRequest(http.MethodGet, "https://examplebucket.s3.amazonaws.com/?max-keys=2&prefix=J", nil)
 	req.Header.Set("X-Amz-Content-Sha256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")

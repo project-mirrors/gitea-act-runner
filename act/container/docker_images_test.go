@@ -5,14 +5,17 @@
 package container
 
 import (
+	"bytes"
+	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
+	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/logging"
 
+	mobyclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,48 +24,47 @@ func init() {
 	logging.SetLevel(logging.LevelDebug)
 }
 
-// buildScratchImage builds a tiny empty image for the given platform locally (FROM scratch, no
-// network or emulation since there is nothing to run) and returns its tag, removing it after
-// the test.
-func buildScratchImage(t *testing.T, platform string) string {
+func loadScratchImage(t *testing.T, platform string) string {
 	t.Helper()
-	tag := fmt.Sprintf("act-test-exists-%s:latest", strings.TrimPrefix(platform, "linux/"))
-	cmd := exec.Command("docker", "build", "--platform", platform, "-t", tag, "-")
-	cmd.Stdin = strings.NewReader("FROM scratch\nLABEL act-test=1\n")
-	// Force BuildKit: it records the requested architecture in the image config for a
-	// FROM-scratch build, whereas the classic builder ignores --platform and tags it with the
-	// host arch, which would break the per-platform existence assertions below.
-	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
-	t.Cleanup(func() { _ = exec.Command("docker", "rmi", "-f", tag).Run() })
+	tag := fmt.Sprintf("act-test-exists-%s-%d:latest", strings.TrimPrefix(platform, "linux/"), time.Now().UnixNano())
+	var archive bytes.Buffer
+	require.NoError(t, writeFilesTar(t.Context(), &archive, 0, 0,
+		&FileEntry{Name: "config.json", Mode: 0o600, Body: fmt.Sprintf(`{"architecture":%q,"os":"linux","rootfs":{"type":"layers","diff_ids":[]}}`, strings.TrimPrefix(platform, "linux/"))},
+		&FileEntry{Name: "manifest.json", Mode: 0o600, Body: fmt.Sprintf(`[{"Config":"config.json","RepoTags":[%q],"Layers":[]}]`, tag)},
+	))
+	cli, err := GetDockerClient(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cli.Close() })
+	response, err := cli.ImageLoad(t.Context(), &archive)
+	require.NoError(t, err)
+	defer response.Close()
+	require.NoError(t, logDockerResponse(common.Logger(t.Context()), response, false))
+	t.Cleanup(func() {
+		_, _ = cli.ImageRemove(context.WithoutCancel(t.Context()), tag, mobyclient.ImageRemoveOptions{Force: true})
+	})
 	return tag
 }
 
 func TestImageExistsLocally(t *testing.T) {
+	t.Parallel()
 	requireDocker(t)
 	ctx := t.Context()
 
-	// a non-existent image is reported absent
 	missing, err := ImageExistsLocally(ctx, "library/alpine:this-random-tag-will-never-exist", "linux/amd64")
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 	assert.False(t, missing)
 
-	// Build tiny images for two architectures locally so per-platform existence can be checked
-	// offline (formerly pulled node:24-bookworm-slim for amd64 and arm64 over the network).
-	amd64Ref := buildScratchImage(t, "linux/amd64")
-	arm64Ref := buildScratchImage(t, "linux/arm64")
+	amd64Ref := loadScratchImage(t, "linux/amd64")
+	arm64Ref := loadScratchImage(t, "linux/arm64")
 
 	amd64Exists, err := ImageExistsLocally(ctx, amd64Ref, "linux/amd64")
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 	assert.True(t, amd64Exists)
 
-	// a non-host architecture image is detected for its own architecture
 	arm64Exists, err := ImageExistsLocally(ctx, arm64Ref, "linux/arm64")
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 	assert.True(t, arm64Exists)
 
-	// a present image is reported absent for a different platform
 	wrongPlatform, err := ImageExistsLocally(ctx, amd64Ref, "linux/arm64")
 	assert.NoError(t, err) //nolint:testifylint // pre-existing issue from nektos/act
 	assert.False(t, wrongPlatform)

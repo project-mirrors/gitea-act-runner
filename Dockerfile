@@ -12,7 +12,9 @@ ENV GOPROXY=${GOPROXY:-}
 COPY . /opt/src/runner
 WORKDIR /opt/src/runner
 
-RUN make clean && make build
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    make clean && make build
 
 ### DIND VARIANT
 #

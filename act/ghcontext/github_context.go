@@ -28,12 +28,12 @@ var (
 
 type pinnedKey struct{}
 
-// WithPinnedCheckout keeps a run's sha and ref fixed when HEAD moves.
-func WithPinnedCheckout(ctx context.Context) context.Context {
+// WithPinnedCheckout keeps a run's sha, ref and repository fixed when HEAD moves, in pins unless ctx has some.
+func WithPinnedCheckout(ctx context.Context, pins *sync.Map) context.Context {
 	if ctx.Value(pinnedKey{}) != nil {
 		return ctx
 	}
-	return context.WithValue(ctx, pinnedKey{}, &sync.Map{})
+	return context.WithValue(ctx, pinnedKey{}, pins)
 }
 
 func pinned(ctx context.Context, key string, lookup func() (string, error)) (string, error) {
@@ -148,7 +148,7 @@ func SetSha(ctx context.Context, ghc *model.GithubContext, repoPath string) {
 // remote in repoPath when it is not set yet, and derives its owner.
 func SetRepositoryAndOwner(ctx context.Context, ghc *model.GithubContext, repoPath string) {
 	if ghc.Repository == "" {
-		repo, err := findGithubRepo(ctx, repoPath)
+		repo, err := pinned(ctx, "repo:"+repoPath, func() (string, error) { return findGithubRepo(ctx, repoPath) })
 		if err != nil {
 			common.Logger(ctx).Warnf("unable to get git repo (repoPath: %v): %v", repoPath, err)
 			return

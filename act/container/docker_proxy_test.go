@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -486,7 +487,7 @@ func (c *probeClient) ContainerInspect(context.Context, string, mobyclient.Conta
 }
 
 func (c *probeClient) ImageList(context.Context, mobyclient.ImageListOptions) (mobyclient.ImageListResult, error) {
-	return mobyclient.ImageListResult{Items: []image.Summary{{ID: "probe-image"}}}, nil
+	return mobyclient.ImageListResult{Items: []image.Summary{{ID: "removed-image"}, {ID: "probe-image"}}}, nil
 }
 
 func (c *probeClient) ContainerCreate(_ context.Context, opts mobyclient.ContainerCreateOptions) (mobyclient.ContainerCreateResult, error) {
@@ -499,6 +500,139 @@ func (c *probeClient) ContainerRemove(ctx context.Context, id string, opts mobyc
 
 func (c *probeClient) ContainerStatPath(_ context.Context, _ string, opts mobyclient.ContainerStatPathOptions) (mobyclient.ContainerStatPathResult, error) {
 	return mobyclient.ContainerStatPathResult{}, c.stat(opts.Path)
+}
+
+func TestDockerProxyDirectoryProbes(t *testing.T) {
+	type result struct {
+		seen bool
+		err  error
+	}
+	for name, createErr := range map[string]error{"unavailable directory": nil, "daemon error": errors.New("probe failed")} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				dir := t.TempDir()
+				socket, err := os.Stat(t.TempDir())
+				require.NoError(t, err)
+				key := [3]string{"daemon", dir, dir}
+				release := make(chan struct{})
+				var calls, removals atomic.Int32
+				visible := false
+				cli := &probeClient{
+					create: func(_opts mobyclient.ContainerCreateOptions) (mobyclient.ContainerCreateResult, error) {
+						calls.Add(1)
+						<-release
+						return mobyclient.ContainerCreateResult{ID: "probe"}, createErr
+					},
+					stat: func(_path string) error {
+						if visible {
+							return nil
+						} else {
+							return cerrdefs.ErrNotFound
+						}
+					},
+					remove: func(_ctx context.Context, _id string, _opts mobyclient.ContainerRemoveOptions) (mobyclient.ContainerRemoveResult, error) {
+						removals.Add(1)
+						return mobyclient.ContainerRemoveResult{}, nil
+					},
+				}
+				results := make(chan result, 8)
+				for range cap(results) {
+					go func() {
+						_, seen, err := probeDockerProxyDirectory(t.Context(), cli, key, socket)
+						results <- result{seen, err}
+					}()
+				}
+				synctest.Wait()
+				assert.EqualValues(t, 1, calls.Load())
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				_, seen, err := probeDockerProxyDirectory(ctx, cli, key, socket)
+				require.ErrorIs(t, err, context.Canceled)
+				assert.False(t, seen)
+				replacement, err := os.Stat(t.TempDir())
+				require.NoError(t, err)
+				replaced := make(chan result, 1)
+				go func() {
+					_, seen, err := probeDockerProxyDirectory(t.Context(), cli, key, replacement)
+					replaced <- result{seen, err}
+				}()
+				synctest.Wait()
+				assert.EqualValues(t, 2, calls.Load())
+				close(release)
+				for range cap(results) {
+					result := <-results
+					require.ErrorIs(t, result.err, createErr)
+					assert.False(t, result.seen)
+				}
+				replacementResult := <-replaced
+				require.ErrorIs(t, replacementResult.err, createErr)
+				assert.False(t, replacementResult.seen)
+				assert.EqualValues(t, 2, calls.Load())
+				if createErr == nil {
+					assert.EqualValues(t, 2, removals.Load())
+				} else {
+					assert.Zero(t, removals.Load())
+				}
+				createErr, visible = nil, true
+				directory, seen, err := probeDockerProxyDirectory(t.Context(), cli, key, socket)
+				require.NoError(t, err)
+				assert.True(t, seen)
+				assert.Equal(t, dir, directory.dir)
+				assert.Equal(t, dir, directory.daemonDir)
+				assert.EqualValues(t, 3, calls.Load())
+				entries, err := os.ReadDir(dir)
+				require.NoError(t, err)
+				assert.Empty(t, entries)
+			})
+		})
+	}
+	t.Run("cancelled probe does not cancel another caller", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			dir := t.TempDir()
+			socket, err := os.Stat(t.TempDir())
+			require.NoError(t, err)
+			key := [3]string{"daemon", dir, dir}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			release := make(chan struct{})
+			calls := 0
+			cli := &probeClient{
+				create: func(_opts mobyclient.ContainerCreateOptions) (mobyclient.ContainerCreateResult, error) {
+					calls++
+					if calls == 1 {
+						<-release
+						return mobyclient.ContainerCreateResult{}, ctx.Err()
+					} else {
+						return mobyclient.ContainerCreateResult{ID: "probe"}, nil
+					}
+				},
+				stat: func(_path string) error { return nil },
+				remove: func(_ctx context.Context, _id string, _opts mobyclient.ContainerRemoveOptions) (mobyclient.ContainerRemoveResult, error) {
+					return mobyclient.ContainerRemoveResult{}, nil
+				},
+			}
+			leader, follower := make(chan result, 1), make(chan result, 1)
+			go func() {
+				_, seen, err := probeDockerProxyDirectory(ctx, cli, key, socket)
+				leader <- result{seen, err}
+			}()
+			synctest.Wait()
+			go func() {
+				_, seen, err := probeDockerProxyDirectory(t.Context(), cli, key, socket)
+				follower <- result{seen, err}
+			}()
+			synctest.Wait()
+			assert.Equal(t, 1, calls)
+			cancel()
+			close(release)
+			leaderResult, followerResult := <-leader, <-follower
+			require.ErrorIs(t, leaderResult.err, context.Canceled)
+			assert.False(t, leaderResult.seen)
+			require.NoError(t, followerResult.err)
+			assert.True(t, followerResult.seen)
+			assert.Equal(t, 2, calls)
+		})
+	})
 }
 
 func TestDaemonSeesDir(t *testing.T) {
@@ -520,9 +654,14 @@ func TestDaemonSeesDir(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			removed := false
+			var attemptedImages []string
 			cli := &probeClient{
 				create: func(opts mobyclient.ContainerCreateOptions) (mobyclient.ContainerCreateResult, error) {
 					assert.Equal(t, []mount.Mount{{Type: mount.TypeBind, Source: testCase.daemonDir, Target: "/gitea-runner-probe", ReadOnly: true}}, opts.HostConfig.Mounts)
+					attemptedImages = append(attemptedImages, opts.Config.Image)
+					if opts.Config.Image == "removed-image" {
+						return mobyclient.ContainerCreateResult{}, cerrdefs.ErrNotFound
+					}
 					cancel()
 					if _, err := os.Stat(testCase.daemonDir); err != nil {
 						return mobyclient.ContainerCreateResult{}, cerrdefs.ErrInvalidArgument
@@ -550,6 +689,7 @@ func TestDaemonSeesDir(t *testing.T) {
 			}
 			seen, err := daemonSeesDir(ctx, cli, dir, testCase.daemonDir)
 			require.ErrorIs(t, err, testCase.removeErr)
+			assert.Equal(t, []string{"removed-image", "probe-image"}, attemptedImages)
 			assert.Equal(t, testCase.seen, seen)
 			assert.Equal(t, testCase.removed, removed)
 			entries, err := os.ReadDir(dir)

@@ -17,6 +17,7 @@ import (
 )
 
 func TestFrontResultsService(t *testing.T) {
+	t.Parallel()
 	var gotHost, gotPath, gotProto string
 	gitea := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHost, gotPath, gotProto = r.Host, r.URL.Path, r.Header.Get("X-Forwarded-Proto")

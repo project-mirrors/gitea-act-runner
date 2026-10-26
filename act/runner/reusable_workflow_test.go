@@ -27,6 +27,7 @@ import (
 // ref (branch/tag) must reflect the new tip on every invocation, not stay pinned
 // to the cache populated on the first run.
 func TestReusableWorkflowCachedBranchRefRefreshes(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available in PATH")
 	}
@@ -52,7 +53,7 @@ func TestReusableWorkflowCachedBranchRefRefreshes(t *testing.T) {
 	gitMust(t, workDir, "push", "-u", "origin", "master")
 
 	rc := &RunContext{
-		Config: &Config{},
+		Config: &Config{Env: testCheckoutEnv()},
 		Run: &model.Run{
 			JobID: "j1",
 			Workflow: &model.Workflow{
@@ -149,6 +150,7 @@ func TestCloneRemoteReusableWorkflowSendsInstanceTokenAndClientCert(t *testing.T
 	require.NoError(t, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600))
 	rc := &RunContext{
 		Config: &Config{
+			Env:             testCheckoutEnv(),
 			GitHubInstance:  server.URL,
 			Secrets:         map[string]string{"GITEA_TOKEN": "token"},
 			InsecureSkipTLS: true,
