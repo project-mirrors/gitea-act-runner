@@ -1,0 +1,30 @@
+name: failure
+on: push
+jobs:
+  fail:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo e2e-before-fail
+      - run: exit 3
+      - if: success()
+        run: echo e2e-skipped-step
+      - if: failure()
+        run: echo e2e-failure-cleanup
+  tolerated:
+    runs-on: ubuntu-latest
+    steps:
+      - continue-on-error: true
+        run: exit 1
+      - run: echo e2e-tolerated-next
+  dependent:
+    needs: fail
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo dependent
+  timeout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: |
+          echo e2e-timeout-started
+          sleep 300

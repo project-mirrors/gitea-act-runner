@@ -1,0 +1,7 @@
+name: cli
+on: push
+jobs:
+  hello:
+    runs-on: e2e-cli
+    steps:
+      - run: echo e2e-cli-job-ran

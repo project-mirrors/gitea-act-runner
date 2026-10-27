@@ -32,6 +32,8 @@ func TestCompatibility(t *testing.T) {
 	t.Run("builtin_checkout", testBuiltinCheckout)
 	t.Run("moving_action_ref", testMovingActionRef)
 	t.Run("ephemeral", testEphemeralRunner)
+	t.Run("failure_paths", testFailurePaths)
+	t.Run("cli_register_daemon", testCLIRegisterDaemon)
 	t.Run("kubernetes", testKubernetes)
 }
 

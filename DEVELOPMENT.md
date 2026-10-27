@@ -59,5 +59,8 @@ Each lives in `internal/pkg/action/<name>` and is registered in `builtinActions`
 It requires Docker and is excluded from `make test`. CI runs stable and nightly variants in
 parallel.
 
+The `cli_register_daemon` scenario builds the binary and drives `register` and `daemon` as a user would. The
+`failure_paths` scenario covers failed, skipped, tolerated and timed-out jobs.
+
 The suite shares one Gitea and regular runner. Cache and ephemeral scenarios use isolated
 repository runners. A run path is `<workflow>@<ref>` and a log row is `<timestamp>Z <payload>`.
