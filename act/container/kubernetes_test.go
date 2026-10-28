@@ -260,6 +260,7 @@ func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
 	)
 	require.NoError(t, job.Start(false)(ctx))
 	assert.Len(t, cluster.requests["exec"], 3)
+	assert.True(t, pod.job.gzip)
 
 	stepEnv := map[string]string{"INPUT_WHO-TO-GREET": "it's\nme", "SECRET": "hunter2", "UID": "5"}
 	require.NoError(t, job.Exec([]string{"printenv", "SECRET"}, stepEnv, "", "")(ctx))
@@ -276,7 +277,9 @@ func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
 		assert.NotContains(t, query, "hunter2")
 	}
 
+	lastExec := func() string { return cluster.requests["exec"][len(cluster.requests["exec"])-1] }
 	require.NoError(t, job.Copy(workdir+"/act/", &FileEntry{Name: "workflow/event.json", Mode: 0o644, Body: `{"ref":"main"}`})(ctx))
+	assert.NotContains(t, lastExec(), "gzip")
 	archive, err := job.GetContainerArchive(ctx, workdir+"/act/workflow/event.json")
 	require.NoError(t, err)
 	reader := tar.NewReader(archive)
@@ -289,6 +292,12 @@ func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
 	require.NoError(t, archive.Close())
 	_, err = job.GetContainerArchive(ctx, workdir+"/missing")
 	require.Error(t, err)
+	large := strings.Repeat("a", compressCopyMin)
+	require.NoError(t, job.Copy(workdir+"/act/", &FileEntry{Name: "workflow/large", Mode: 0o644, Body: large})(ctx))
+	assert.Contains(t, lastExec(), url.QueryEscape("gzip -dc |"))
+	content, err = os.ReadFile(workdir + "/act/workflow/large")
+	require.NoError(t, err)
+	assert.Equal(t, large, string(content))
 
 	actionDir := filepath.Join(t.TempDir(), "action")
 	require.NoError(t, os.MkdirAll(actionDir, 0o755))
@@ -297,7 +306,8 @@ func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
 	script, err := os.ReadFile(workdir + "/act/actions/sha/index.js")
 	require.NoError(t, err)
 	assert.Equal(t, "main()", string(script))
-	assert.Contains(t, cluster.requests["exec"][len(cluster.requests["exec"])-1], "command="+url.QueryEscape(workdir+"/act/actions/sha/"))
+	assert.Contains(t, lastExec(), "command="+url.QueryEscape(workdir+"/act/actions/sha/"))
+	assert.Contains(t, lastExec(), url.QueryEscape("gzip -dc |"))
 
 	pathEnv := map[string]string{}
 	require.NoError(t, job.UpdateFromImageEnv(&pathEnv)(ctx))
@@ -319,6 +329,38 @@ func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
 	assert.Len(t, cluster.requests["DELETE /api/v1/namespaces/ci/secrets/old"], 1)
 	assert.Empty(t, cluster.requests["DELETE /api/v1/namespaces/ci/pods/new"])
 	assert.Empty(t, cluster.requests["DELETE /api/v1/namespaces/ci/secrets/new"])
+}
+
+func TestKubernetesCopiesUncompressedWithoutGzip(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell")
+	}
+	ctx := t.Context()
+	workdir, bin := t.TempDir(), t.TempDir()
+	for _, tool := range []string{"uname", "tar", "mkdir"} { // all the job container needs but gzip, as on a minimal image
+		found, err := exec.LookPath(tool)
+		require.NoError(t, err)
+		require.NoError(t, os.Symlink(found, filepath.Join(bin, tool)))
+	}
+	kubeconfig, cluster := fakeKubernetes(t, `{"spec":{"containers":[{}]},"status":{"phase":"Running","containerStatuses":[
+		{"name":"job","ready":true,"state":{"running":{}}}]}}`, "PATH="+bin)
+	pod, err := NewKubernetesPod(KubernetesOptions{Kubeconfig: kubeconfig})
+	require.NoError(t, err)
+	job := pod.JobContainer(&NewContainerInput{Image: "node", WorkingDir: workdir})
+	require.NoError(t, job.Create(nil, nil)(ctx))
+	require.NoError(t, job.Start(false)(ctx))
+	assert.False(t, pod.job.gzip)
+	assert.Equal(t, bin, pod.path)
+
+	actionDir := filepath.Join(t.TempDir(), "action")
+	require.NoError(t, os.MkdirAll(actionDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(actionDir, "index.js"), []byte("main()"), 0o644))
+	require.NoError(t, job.CopyDir(workdir+"/act/actions/sha/", actionDir+"/", false, false)(ctx))
+	script, err := os.ReadFile(workdir + "/act/actions/sha/index.js")
+	require.NoError(t, err)
+	assert.Equal(t, "main()", string(script))
+	assert.NotContains(t, cluster.requests["exec"][len(cluster.requests["exec"])-1], "gzip")
 }
 
 func TestKubernetesPodFailsBeforeSteps(t *testing.T) {

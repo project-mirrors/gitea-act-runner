@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"cmp"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -55,6 +56,7 @@ type kubernetesContainer struct {
 	name  string
 	input *NewContainerInput
 	probe map[string]any
+	gzip  bool // the container can gunzip, so copies into it go compressed
 }
 
 type containerStatus struct {
@@ -391,8 +393,11 @@ func (c *kubernetesContainer) Start(_ bool) common.Executor {
 		if err != nil {
 			return err
 		}
-		machine, path, _ := strings.Cut(output, "\n")
-		c.pod.arch, c.pod.path = goArchToActionArch(machine), path
+		probed := strings.SplitN(output, "\n", 3)
+		for len(probed) < 3 {
+			probed = append(probed, "")
+		}
+		c.pod.arch, c.gzip, c.pod.path = goArchToActionArch(probed[0]), probed[1] == "gzip", probed[2]
 		return nil
 	}
 }
@@ -403,7 +408,7 @@ func (p *KubernetesPod) probe(ctx context.Context, container string) (string, er
 	deadline := time.Now().Add(time.Minute)
 	for delay := 100 * time.Millisecond; ; delay = min(2*delay, 2*time.Second) {
 		var stdout bytes.Buffer
-		err := p.client.exec(ctx, p.name, container, []string{"sh", "-c", `printf '%s\n%s' "$(uname -m)" "$PATH"`}, nil, &stdout, io.Discard)
+		err := p.client.exec(ctx, p.name, container, []string{"sh", "-c", `printf '%s\n%s\n%s' "$(uname -m)" "$(command -v gzip >/dev/null && echo gzip)" "$PATH"`}, nil, &stdout, io.Discard)
 		var exitErr ExitCodeError
 		var apiErr *apiError
 		if err == nil || ctx.Err() != nil || errors.As(err, &exitErr) || time.Now().After(deadline) ||
@@ -452,12 +457,29 @@ func (c *kubernetesContainer) Exec(command []string, env map[string]string, _, w
 	}
 }
 
-func (c *kubernetesContainer) extract(ctx context.Context, destPath string, write func(io.Writer) error) error {
+// compressCopyMin is the size from which Copy compresses: below it gzip saves next to nothing on the wire and costs a process in the pod.
+const compressCopyMin = 64 << 10
+
+// extract streams the tar write produces into destPath over exec, which goes through the API server.
+// With compress it is gzipped on the way, as copied actions shrink about fivefold and API server traffic often crosses zones.
+func (c *kubernetesContainer) extract(ctx context.Context, destPath string, compress bool, write func(io.Writer) error) error {
+	compress = compress && c.gzip
 	reader, writer := io.Pipe()
 	defer reader.Close()
-	go func() { writer.CloseWithError(write(writer)) }()
+	go func() {
+		if !compress {
+			writer.CloseWithError(write(writer))
+			return
+		}
+		compressed, _ := gzip.NewWriterLevel(writer, gzip.BestSpeed) // fast enough to not slow copies down, nearly as small as the default level
+		writer.CloseWithError(errors.Join(write(compressed), compressed.Close()))
+	}()
+	script := `mkdir -p "$1" && tar -xf - -C "$1"`
+	if compress {
+		script = `mkdir -p "$1" && gzip -dc | tar -xf - -C "$1"` // gzip -dc rather than tar -z, which GNU tar runs gzip for anyway
+	}
 	var stderr bytes.Buffer
-	if err := c.pod.client.exec(ctx, c.pod.name, c.name, []string{"sh", "-c", `mkdir -p "$1" && tar -xf - -C "$1"`, "sh", destPath}, reader, io.Discard, &stderr); err != nil {
+	if err := c.pod.client.exec(ctx, c.pod.name, c.name, []string{"sh", "-c", script, "sh", destPath}, reader, io.Discard, &stderr); err != nil {
 		return fmt.Errorf("extract to %s: %w: %s", destPath, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
@@ -465,13 +487,17 @@ func (c *kubernetesContainer) extract(ctx context.Context, destPath string, writ
 
 func (c *kubernetesContainer) Copy(destPath string, files ...*FileEntry) common.Executor {
 	return func(ctx context.Context) error {
-		return c.extract(ctx, destPath, func(writer io.Writer) error { return writeFilesTar(ctx, writer, 0, 0, files...) })
+		size := 0
+		for _, file := range files {
+			size += len(file.Body)
+		}
+		return c.extract(ctx, destPath, size >= compressCopyMin, func(writer io.Writer) error { return writeFilesTar(ctx, writer, 0, 0, files...) })
 	}
 }
 
 func (c *kubernetesContainer) CopyDir(destPath, srcPath string, useGitIgnore, skipGitDir bool) common.Executor {
 	return func(ctx context.Context) error {
-		return c.extract(ctx, destPath, func(writer io.Writer) error {
+		return c.extract(ctx, destPath, true, func(writer io.Writer) error { // directories are actions and workspaces, megabytes of compressible sources
 			return writeDirTar(ctx, writer, "/", srcPath, useGitIgnore, skipGitDir, 0, 0)
 		})
 	}
