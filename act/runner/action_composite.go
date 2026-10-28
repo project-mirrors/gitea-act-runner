@@ -110,6 +110,7 @@ func newCompositeRunContext(ctx context.Context, parent *RunContext, step action
 		kubernetes:    parent.kubernetes,
 		jobIndex:      parent.jobIndex,
 		jobTotal:      parent.jobTotal,
+		runtimeToken:  parent.runtimeToken,
 	}
 	compositerc.setCompositeActionEnv(env)
 	compositerc.ExprEval = compositerc.NewExpressionEvaluator(ctx)

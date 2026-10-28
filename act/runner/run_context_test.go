@@ -1631,4 +1631,8 @@ func TestRunContextWithGithubEnvRunnerValues(t *testing.T) {
 		rc.withGithubEnv(ctx, &model.GithubContext{}, env)
 		assert.Equal(t, ci, env["CI"])
 	}
+
+	rc.runtimeToken = "run-token"
+	newTestCompositeRunContext(t, rc).withGithubEnv(ctx, &model.GithubContext{}, env)
+	assert.Equal(t, "run-token", env["ACTIONS_RUNTIME_TOKEN"])
 }

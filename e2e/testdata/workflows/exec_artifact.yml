@@ -1,0 +1,15 @@
+on: push
+jobs:
+  roundtrip:
+    runs-on: ubuntu-latest
+    steps:
+      - run: mkdir -p out && echo exec-payload > out/data.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: exec-artifact
+          path: out/data.txt
+      - uses: actions/download-artifact@v8
+        with:
+          name: exec-artifact
+          path: got
+      - run: grep -q exec-payload got/data.txt

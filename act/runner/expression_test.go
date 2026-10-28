@@ -504,7 +504,7 @@ jobs:
 	assert.Equal(t, "workflow", env["INPUT_FALLBACK"])
 }
 
-func TestResolveWorkflowCallToleratesMismatchesAndPassesInheritedSecretsVerbatim(t *testing.T) {
+func TestResolveWorkflowCallToleratesMismatchesAndPassesInheritedSecretsAndRuntimeToken(t *testing.T) {
 	callerWorkflow, err := model.ReadWorkflow(strings.NewReader(`
 jobs:
   call:
@@ -527,7 +527,11 @@ jobs:
 	require.NoError(t, err)
 	notCallable, err := model.ReadWorkflow(strings.NewReader("on: push\njobs:\n  test: {}\n"))
 	require.NoError(t, err)
-	config := &Config{Secrets: map[string]string{"token": "${{ github.token }}"}, PresetGitHubContext: &model.GithubContext{}}
+	config := &Config{
+		Secrets:             map[string]string{"token": "${{ github.token }}"},
+		PresetGitHubContext: &model.GithubContext{},
+		RuntimeTokens:       map[*model.Workflow]string{callerWorkflow: "caller-run"},
+	}
 	resolve := func(callerJobID string, workflow *model.Workflow) *RunContext {
 		parent, err := (&runnerImpl{config: config}).newRunContext(t.Context(), &model.Run{Workflow: callerWorkflow, JobID: callerJobID}, nil)
 		require.NoError(t, err)
@@ -539,9 +543,10 @@ jobs:
 	called := resolve("call", callee)
 	assert.Equal(t, map[string]any{"flag": true}, called.workflowCallInputs)
 	assert.Equal(t, map[string]string{"undeclared": "${{ github.token }}"}, called.workflowCallSecrets)
+	assert.Equal(t, "caller-run", called.GetEnv()["ACTIONS_RUNTIME_TOKEN"])
 	inherited := resolve("inherit", notCallable)
 	assert.Empty(t, inherited.workflowCallInputs)
-	assert.Equal(t, config.Secrets, inherited.workflowCallSecrets)
+	assert.Equal(t, map[string]string{"token": "${{ github.token }}", "ACTIONS_RUNTIME_TOKEN": "caller-run"}, inherited.workflowCallSecrets)
 }
 
 func TestJobNameMasksSecrets(t *testing.T) {

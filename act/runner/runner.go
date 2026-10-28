@@ -41,6 +41,7 @@ type Config struct {
 	Env                           map[string]string                             // env for containers
 	Secrets                       map[string]string                             // list of secrets
 	ExtraMasks                    []string                                      // values to hide that are not in Secrets, such as the proxy password
+	RuntimeTokens                 map[*model.Workflow]string                    // ACTIONS_RUNTIME_TOKEN per workflow run, as each is its own artifact run
 	Vars                          map[string]string                             // list of vars
 	Token                         string                                        // GitHub token
 	InsecureSecrets               bool                                          // switch hiding output when printing to terminal
@@ -355,6 +356,11 @@ func (runner *runnerImpl) newCombinationRunContext(ctx context.Context, run *mod
 		caller:      runner.caller,
 		jobIndex:    index,
 		jobTotal:    total,
+
+		runtimeToken: runner.config.RuntimeTokens[run.Workflow],
+	}
+	if runner.caller != nil {
+		rc.runtimeToken = runner.caller.runContext.runtimeToken
 	}
 	if err := rc.resolveWorkflowCall(ctx); err != nil {
 		return nil, err

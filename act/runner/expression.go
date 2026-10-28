@@ -332,5 +332,10 @@ func getWorkflowSecrets(rc *RunContext) map[string]string {
 	if rc.caller != nil {
 		return rc.workflowCallSecrets
 	}
-	return rc.Config.Secrets
+	if rc.runtimeToken == "" {
+		return rc.Config.Secrets
+	}
+	secrets := map[string]string{"ACTIONS_RUNTIME_TOKEN": rc.runtimeToken} // as the daemon exposes its token
+	maps.Copy(secrets, rc.Config.Secrets)
+	return secrets
 }
