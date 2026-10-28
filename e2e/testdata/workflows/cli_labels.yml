@@ -1,0 +1,7 @@
+name: cli-labels
+on: push
+jobs:
+  hello:
+    runs-on: e2e-override
+    steps:
+      - run: echo e2e-override-ran

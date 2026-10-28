@@ -7,7 +7,6 @@ package e2e
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,13 +36,19 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// testCLIRegisterDaemon drives the built binary the way a user does: register, then daemon.
-func testCLIRegisterDaemon(t *testing.T) {
-	t.Parallel()
-	ctx := t.Context()
+type cliRunner struct {
+	api     *GiteaAPI
+	repo    string
+	bin     string
+	cfgFile string
+	dir     string
+}
 
+// newCLIRunner registers the built binary against a fresh repo with a single docker label.
+func newCLIRunner(t *testing.T, label, extraRunnerConfig string) *cliRunner {
+	t.Helper()
 	api, repo := newScenario(t)
-	token, err := fixture.RegistrationToken(ctx, repo)
+	token, err := fixture.RegistrationToken(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("get registration token: %v", err)
 	}
@@ -54,71 +59,210 @@ func testCLIRegisterDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfgFile := filepath.Join(dir, "config.yaml")
 	cfg := fmt.Sprintf(`runner:
   file: %s
   fetch_interval: 250ms
   fetch_interval_max: 250ms
   state_report_interval: 500ms
   log_report_interval: 500ms
-cache:
+%scache:
   dir: %s
-`, filepath.Join(dir, ".runner"), filepath.Join(dir, "cache"))
+`, filepath.Join(dir, ".runner"), extraRunnerConfig, filepath.Join(dir, "cache"))
 	if fixture.network != "" {
 		cfg += "container:\n  network: " + fixture.network + "\n"
 	}
-	if err := os.WriteFile(cfgFile, []byte(cfg), 0o600); err != nil {
+	c := &cliRunner{api: api, repo: repo, bin: bin, cfgFile: filepath.Join(dir, "config.yaml"), dir: dir}
+	if err := os.WriteFile(c.cfgFile, []byte(cfg), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	label := "e2e-cli:docker://" + os.Getenv("E2E_JOB_IMAGE")
-	out, err := exec.CommandContext(ctx, bin, "register", "--no-interactive", "-c", cfgFile,
-		"--instance", fixture.baseURL, "--token", token, "--name", repo, "--labels", label).CombinedOutput()
+	out, err := exec.CommandContext(t.Context(), c.bin, "register", "--no-interactive", "-c", c.cfgFile,
+		"--instance", fixture.baseURL, "--token", token, "--name", repo,
+		"--labels", label+":docker://"+os.Getenv("E2E_JOB_IMAGE")).CombinedOutput()
 	if err != nil {
 		t.Fatalf("register: %v\n%s", err, out)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".runner")); err != nil {
 		t.Fatalf("register did not write the runner file: %v\n%s", err, out)
 	}
+	return c
+}
 
-	daemonLog := &syncBuffer{}
-	daemon := exec.Command(bin, "daemon", "-c", cfgFile)
-	daemon.Stdout, daemon.Stderr = daemonLog, daemonLog
-	if err := daemon.Start(); err != nil {
+type cliDaemon struct {
+	cmd    *exec.Cmd
+	log    *syncBuffer
+	exited chan error
+}
+
+func (c *cliRunner) startDaemon(t *testing.T, args ...string) *cliDaemon {
+	t.Helper()
+	d := &cliDaemon{log: &syncBuffer{}, exited: make(chan error, 1)}
+	d.cmd = exec.Command(c.bin, append([]string{"daemon", "-c", c.cfgFile}, args...)...)
+	d.cmd.Stdout, d.cmd.Stderr = d.log, d.log
+	if err := d.cmd.Start(); err != nil {
 		t.Fatalf("start daemon: %v", err)
 	}
-	exited := make(chan error, 1)
-	go func() { exited <- daemon.Wait() }()
+	go func() { d.exited <- d.cmd.Wait() }()
 	t.Cleanup(func() {
-		_ = daemon.Process.Kill() // no-op once the daemon has exited
+		_ = d.cmd.Process.Kill() // no-op once the daemon has exited
 	})
+	return d
+}
 
-	pushWorkflow(t, api, repo, "cli.yml")
-	wfRun := waitForRun(t, api, repo)
-	requireSuccessOrDumpDaemon(t, api, repo, wfRun.ID, daemonLog)
-	if logs := runLogs(t, api, repo, wfRun.ID); commandRow(logs, "e2e-cli-job-ran") == "" {
-		t.Errorf("job logs are missing the marker:\n%s", logs)
-	}
-
-	if err := daemon.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatalf("signal daemon: %v", err)
-	}
+// wait returns the daemon's exit error, failing the test when it is still running after timeout.
+func (d *cliDaemon) wait(t *testing.T, timeout time.Duration) error {
+	t.Helper()
 	select {
-	case err := <-exited:
-		if err != nil {
-			t.Errorf("daemon did not exit cleanly on SIGTERM: %v\n%s", err, daemonLog)
-		}
-	case <-time.After(30 * time.Second):
-		t.Errorf("daemon did not exit within 30s of SIGTERM\n%s", daemonLog)
+	case err := <-d.exited:
+		return err
+	case <-time.After(timeout):
+		t.Fatalf("daemon still running after %s\n%s", timeout, d.log)
+		return nil
 	}
 }
 
-func requireSuccessOrDumpDaemon(t *testing.T, api *GiteaAPI, repo string, runID int64, daemonLog *syncBuffer) {
+func (d *cliDaemon) terminate(t *testing.T) {
 	t.Helper()
-	completed, err := api.WaitForRunConclusion(context.WithoutCancel(t.Context()), repo, runID, runTimeout)
+	if err := d.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal daemon: %v", err)
+	}
+}
+
+// requireSuccess waits for the run and dumps the daemon output next to the job logs on failure.
+func (d *cliDaemon) requireSuccess(t *testing.T, c *cliRunner, runID int64) {
+	t.Helper()
+	completed, err := c.api.WaitForRunConclusion(t.Context(), c.repo, runID, runTimeout)
 	if err != nil || completed.Conclusion != "success" {
-		t.Logf("daemon output:\n%s", daemonLog)
-		requireSuccess(t, api, repo, runID)
+		t.Logf("daemon output:\n%s", d.log)
+		requireSuccess(t, c.api, c.repo, runID)
+	}
+}
+
+// testCLIRegisterDaemon drives the built binary the way a user does: register, then daemon.
+func testCLIRegisterDaemon(t *testing.T) {
+	t.Parallel()
+	c := newCLIRunner(t, "e2e-cli", "")
+	d := c.startDaemon(t)
+
+	pushWorkflow(t, c.api, c.repo, "cli.yml")
+	wfRun := waitForRun(t, c.api, c.repo)
+	d.requireSuccess(t, c, wfRun.ID)
+	if logs := runLogs(t, c.api, c.repo, wfRun.ID); commandRow(logs, "e2e-cli-job-ran") == "" {
+		t.Errorf("job logs are missing the marker:\n%s", logs)
+	}
+
+	d.terminate(t)
+	if err := d.wait(t, 30*time.Second); err != nil {
+		t.Errorf("daemon did not exit cleanly on SIGTERM: %v\n%s", err, d.log)
+	}
+}
+
+// testCLIOnce checks that --once takes a single job and then exits on its own.
+func testCLIOnce(t *testing.T) {
+	t.Parallel()
+	c := newCLIRunner(t, "e2e-once", "")
+	d := c.startDaemon(t, "--once")
+
+	pushWorkflow(t, c.api, c.repo, "cli_once.yml")
+	wfRun := waitForRun(t, c.api, c.repo)
+	if err := d.wait(t, runTimeout); err != nil {
+		t.Errorf("daemon --once exited with %v\n%s", err, d.log)
+	}
+
+	jobs, err := c.api.Jobs(t.Context(), c.repo, wfRun.ID)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	var succeeded, pending int
+	for _, job := range jobs {
+		switch {
+		case job.Conclusion == "success":
+			succeeded++
+		case job.Status != "in_progress" && job.Status != "completed":
+			pending++
+		}
+	}
+	if succeeded != 1 || pending != 1 {
+		t.Errorf("got %d succeeded and %d waiting jobs, want 1 and 1: %+v\n%s", succeeded, pending, jobs, d.log)
+	}
+}
+
+// testCLILabelsOverride checks that daemon --labels replaces the labels given at registration.
+func testCLILabelsOverride(t *testing.T) {
+	t.Parallel()
+	c := newCLIRunner(t, "e2e-registered", "")
+	d := c.startDaemon(t, "--labels", "e2e-override:docker://"+os.Getenv("E2E_JOB_IMAGE"))
+
+	pushWorkflow(t, c.api, c.repo, "cli_labels.yml")
+	wfRun := waitForRun(t, c.api, c.repo)
+	d.requireSuccess(t, c, wfRun.ID)
+
+	runners, err := c.api.Runners(t.Context(), c.repo)
+	if err != nil {
+		t.Fatalf("list runners: %v", err)
+	}
+	for _, runner := range runners {
+		if runner.Name != c.repo {
+			continue
+		}
+		var labels []string
+		for _, label := range runner.Labels {
+			labels = append(labels, label.Name)
+		}
+		if !slices.Equal(labels, []string{"e2e-override"}) {
+			t.Errorf("runner has labels %v on the server, want only the --labels override", labels)
+		}
+		return
+	}
+	t.Errorf("runner %q not found among %+v", c.repo, runners)
+}
+
+// testCLIShutdownDrains checks that SIGTERM lets a running job finish within shutdown_timeout.
+func testCLIShutdownDrains(t *testing.T) {
+	t.Parallel()
+	c := newCLIRunner(t, "e2e-shutdown", "  shutdown_timeout: 1m\n")
+	d := c.startDaemon(t)
+
+	pushWorkflow(t, c.api, c.repo, "cli_shutdown.yml")
+	wfRun := waitForRun(t, c.api, c.repo)
+	waitForRunningJobLog(t, c.api, c.repo, wfRun.ID, "e2e-shutdown-started")
+
+	d.terminate(t)
+	if err := d.wait(t, runTimeout); err != nil {
+		t.Errorf("daemon did not exit cleanly: %v\n%s", err, d.log)
+	}
+	if strings.Contains(d.log.String(), "cancelled in progress jobs") {
+		t.Errorf("the running job was cancelled instead of drained\n%s", d.log)
+	}
+	d.requireSuccess(t, c, wfRun.ID)
+	if logs := runLogs(t, c.api, c.repo, wfRun.ID); commandRow(logs, "e2e-shutdown-finished") == "" {
+		t.Errorf("job did not run to the end:\n%s", logs)
+	}
+}
+
+// testCLIShutdownCancels checks that a job still running at shutdown_timeout is cancelled.
+func testCLIShutdownCancels(t *testing.T) {
+	t.Parallel()
+	c := newCLIRunner(t, "e2e-shutdown", "  shutdown_timeout: 1s\n")
+	d := c.startDaemon(t)
+
+	pushWorkflow(t, c.api, c.repo, "cli_shutdown.yml")
+	wfRun := waitForRun(t, c.api, c.repo)
+	waitForRunningJobLog(t, c.api, c.repo, wfRun.ID, "e2e-shutdown-started")
+
+	d.terminate(t)
+	if err := d.wait(t, runTimeout); err != nil {
+		t.Errorf("daemon did not exit cleanly after cancelling the job: %v\n%s", err, d.log)
+	}
+	if !strings.Contains(d.log.String(), "cancelled in progress jobs") {
+		t.Errorf("daemon did not report cancelling the running job\n%s", d.log)
+	}
+	completed, err := c.api.WaitForRunConclusion(t.Context(), c.repo, wfRun.ID, time.Minute)
+	if err != nil {
+		t.Fatalf("cancelled run was never finalized: %v", err)
+	}
+	if completed.Conclusion == "success" {
+		t.Errorf("run concluded success although the job was cancelled")
 	}
 }
 

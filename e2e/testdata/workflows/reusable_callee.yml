@@ -1,0 +1,20 @@
+name: reusable-callee
+on:
+  workflow_call:
+    inputs:
+      who:
+        type: string
+        required: true
+    outputs:
+      greeting:
+        value: ${{ jobs.say.outputs.greeting }}
+jobs:
+  say:
+    runs-on: ubuntu-latest
+    outputs:
+      greeting: ${{ steps.greet.outputs.greeting }}
+    steps:
+      - id: greet
+        run: |
+          echo "greeting=hello-${{ inputs.who }}" >> "$GITHUB_OUTPUT"
+          echo e2e-reusable-ran

@@ -1,0 +1,15 @@
+name: route
+on: push
+jobs:
+  a:
+    runs-on: e2e-route-a
+    steps:
+      - run: echo route-a
+  b:
+    runs-on: e2e-route-b
+    steps:
+      - run: echo route-b
+  unmatched:
+    runs-on: e2e-route-none
+    steps:
+      - run: echo route-none

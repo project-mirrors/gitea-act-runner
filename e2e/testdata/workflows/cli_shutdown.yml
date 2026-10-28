@@ -1,0 +1,10 @@
+name: cli-shutdown
+on: push
+jobs:
+  slow:
+    runs-on: e2e-shutdown
+    steps:
+      - run: |
+          echo e2e-shutdown-started
+          sleep 8
+          echo e2e-shutdown-finished

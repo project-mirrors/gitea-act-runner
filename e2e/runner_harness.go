@@ -30,11 +30,15 @@ type runnerOptions struct {
 	cacheHost  string
 	image      string
 	kubernetes *config.Kubernetes
+	host       bool   // register a host-mode label instead of a docker one
+	name       string // suffix that keeps runner names unique when a test starts several
+	address    string // Gitea address the runner talks to, default the fixture
 }
 
 func startRunner(t *testing.T, repo, labelName string, options runnerOptions) *poll.Poller {
 	t.Helper()
 	ctx := t.Context()
+	address := cmp.Or(options.address, fixture.baseURL)
 	token, err := fixture.RegistrationToken(ctx, repo)
 	if err != nil {
 		t.Fatalf("get registration token: %v", err)
@@ -65,19 +69,23 @@ func startRunner(t *testing.T, repo, labelName string, options runnerOptions) *p
 		scheme, cfg.Kubernetes = labels.SchemeKubernetes, *options.kubernetes
 	}
 	rawLabel := labelName + ":" + scheme + "://" + cmp.Or(options.image, os.Getenv("E2E_JOB_IMAGE"))
+	if options.host {
+		rawLabel = labelName + ":" + labels.SchemeHost
+		cfg.Host.WorkdirParent = t.TempDir()
+	}
 	label, err := labels.Parse(rawLabel)
 	if err != nil {
 		t.Fatalf("parse label %q: %v", rawLabel, err)
 	}
 	labelNames := []string{label.Name}
 
-	pingCli := client.New(fixture.baseURL, cfg.Runner.TLSConfig(), "", "", config.RequestTimeout, cfg.Runner.ExtraHeaders)
-	if _, err := pingCli.Ping(ctx, &pingv1.PingRequest{Data: t.Name()}); err != nil {
-		t.Fatalf("ping %s: %v", fixture.baseURL, err)
+	pingCli := client.New(address, cfg.Runner.TLSConfig(), "", "", config.RequestTimeout, cfg.Runner.ExtraHeaders)
+	if _, err := pingCli.Ping(ctx, &pingv1.PingRequest{Data: t.Name() + options.name}); err != nil {
+		t.Fatalf("ping %s: %v", address, err)
 	}
 
 	regResp, err := pingCli.Register(ctx, &runnerv1.RegisterRequest{
-		Name:         t.Name(),
+		Name:         t.Name() + options.name,
 		Token:        token,
 		Version:      "e2e",
 		Labels:       labelNames,
@@ -96,12 +104,12 @@ func startRunner(t *testing.T, repo, labelName string, options runnerOptions) *p
 		UUID:      regResp.Runner.Uuid,
 		Name:      regResp.Runner.Name,
 		Token:     regResp.Runner.Token,
-		Address:   fixture.baseURL,
+		Address:   address,
 		Labels:    []string{rawLabel},
 		Ephemeral: regResp.Runner.Ephemeral,
 	}
 
-	cli := client.New(fixture.baseURL, cfg.Runner.TLSConfig(), reg.UUID, reg.Token, config.RequestTimeout, cfg.Runner.ExtraHeaders)
+	cli := client.New(address, cfg.Runner.TLSConfig(), reg.UUID, reg.Token, config.RequestTimeout, cfg.Runner.ExtraHeaders)
 
 	runner := run.NewRunner(cfg, reg, cli)
 	if _, err := runner.Declare(ctx, labelNames); err != nil {

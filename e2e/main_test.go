@@ -8,7 +8,9 @@ package e2e
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,6 +131,10 @@ func runLogs(t *testing.T, api *GiteaAPI, repo string, runID int64) string {
 	var all strings.Builder
 	for _, job := range jobs {
 		logs, err := api.JobLogs(ctx, repo, job.ID)
+		var response statusError
+		if errors.As(err, &response) && response.code == http.StatusNotFound {
+			continue // skipped jobs and reusable workflow callers never ran a task, so have no log
+		}
 		if err != nil {
 			t.Fatalf("job logs for %s: %v", job.Name, err)
 		}

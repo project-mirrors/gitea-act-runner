@@ -5,10 +5,7 @@
 
 package e2e
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
 func testFailurePaths(t *testing.T) {
 	t.Parallel()
@@ -47,18 +44,7 @@ func testFailurePaths(t *testing.T) {
 		t.Errorf("job %q not found", name)
 	}
 
-	var all strings.Builder
-	for _, job := range jobs {
-		if job.Conclusion == "skipped" { // a skipped job never started, so it has no log
-			continue
-		}
-		jobLogs, err := api.JobLogs(ctx, repo, job.ID)
-		if err != nil {
-			t.Fatalf("job logs for %s: %v", job.Name, err)
-		}
-		all.WriteString(jobLogs)
-	}
-	logs := all.String()
+	logs := runLogs(t, api, repo, wfRun.ID)
 	for _, marker := range []string{"e2e-before-fail", "e2e-failure-cleanup", "e2e-tolerated-next", "e2e-timeout-started"} {
 		if commandRow(logs, marker) != marker {
 			t.Errorf("logs are missing %q", marker)

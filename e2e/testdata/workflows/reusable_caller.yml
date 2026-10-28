@@ -1,0 +1,12 @@
+name: reusable-caller
+on: push
+jobs:
+  call:
+    uses: ./.gitea/workflows/reusable_callee.yml
+    with:
+      who: e2e
+  verify:
+    needs: call
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.call.outputs.greeting }}" = "hello-e2e"

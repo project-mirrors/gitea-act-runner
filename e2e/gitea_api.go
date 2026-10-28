@@ -37,6 +37,14 @@ type ActionJob struct {
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
+	RunnerName string `json:"runner_name"`
+}
+
+type ActionRunner struct {
+	Name   string `json:"name"`
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
 }
 
 func (a *GiteaAPI) CreateRepo(ctx context.Context, name string) error {
@@ -146,6 +154,17 @@ func (a *GiteaAPI) Jobs(ctx context.Context, repo string, runID int64) ([]Action
 	return resp.Jobs, nil
 }
 
+func (a *GiteaAPI) Runners(ctx context.Context, repo string) ([]ActionRunner, error) {
+	var resp struct {
+		Runners []ActionRunner `json:"runners"`
+	}
+	url := fmt.Sprintf("/api/v1/repos/%s/%s/actions/runners", giteaAdminUser, repo)
+	if err := a.doJSON(ctx, http.MethodGet, url, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Runners, nil
+}
+
 func (a *GiteaAPI) JobLogs(ctx context.Context, repo string, jobID int64) (string, error) {
 	url := fmt.Sprintf("/api/v1/repos/%s/%s/actions/jobs/%d/logs", giteaAdminUser, repo, jobID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.baseURL+url, nil)
@@ -165,7 +184,7 @@ func (a *GiteaAPI) JobLogs(ctx context.Context, repo string, jobID int64) (strin
 		return "", err
 	}
 	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("GET %s: %d: %s", url, resp.StatusCode, body)
+		return "", statusError{method: http.MethodGet, path: url, code: resp.StatusCode, body: string(body)}
 	}
 	return string(body), nil
 }

@@ -35,6 +35,15 @@ func TestCompatibility(t *testing.T) {
 	t.Run("ephemeral", testEphemeralRunner)
 	t.Run("failure_paths", testFailurePaths)
 	t.Run("cli_register_daemon", testCLIRegisterDaemon)
+	t.Run("cli_once", testCLIOnce)
+	t.Run("cli_labels_override", testCLILabelsOverride)
+	t.Run("cli_shutdown_drains", testCLIShutdownDrains)
+	t.Run("cli_shutdown_cancels", testCLIShutdownCancels)
+	t.Run("host_mode", testHostMode)
+	t.Run("reusable_workflow", testReusableWorkflow)
+	t.Run("label_routing", testLabelRouting)
+	t.Run("capacity", testCapacity)
+	t.Run("reconnect", testReconnect)
 	t.Run("kubernetes", testKubernetes)
 }
 

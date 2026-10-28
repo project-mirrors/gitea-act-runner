@@ -1,0 +1,10 @@
+name: host
+on: push
+jobs:
+  host:
+    runs-on: e2e-host
+    steps:
+      - run: |
+          test "$(hostname)" = "${{ vars.E2E_HOSTNAME }}"
+          test -n "$GITHUB_WORKSPACE"
+          echo e2e-host-job-ran

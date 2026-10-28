@@ -1,0 +1,17 @@
+name: capacity
+on: push
+jobs:
+  one:
+    runs-on: e2e-capacity
+    steps:
+      - run: |
+          echo "span-start=$(date +%s%N)"
+          sleep 8
+          echo "span-end=$(date +%s%N)"
+  two:
+    runs-on: e2e-capacity
+    steps:
+      - run: |
+          echo "span-start=$(date +%s%N)"
+          sleep 8
+          echo "span-end=$(date +%s%N)"

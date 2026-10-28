@@ -1,0 +1,11 @@
+name: cli-once
+on: push
+jobs:
+  first:
+    runs-on: e2e-once
+    steps:
+      - run: echo e2e-once-first
+  second:
+    runs-on: e2e-once
+    steps:
+      - run: echo e2e-once-second

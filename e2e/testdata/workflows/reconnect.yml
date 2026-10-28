@@ -1,0 +1,15 @@
+name: reconnect
+on:
+  push:
+    paths:
+      - .gitea/workflows/reconnect.yml
+jobs:
+  slow:
+    runs-on: e2e-reconnect
+    steps:
+      - run: |
+          echo e2e-before-outage
+          for i in $(seq -w 1 15); do
+            echo "tick-$i"
+            sleep 1
+          done

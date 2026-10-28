@@ -1,0 +1,10 @@
+name: reconnect-idle
+on:
+  push:
+    paths:
+      - .gitea/workflows/reconnect_idle.yml
+jobs:
+  hello:
+    runs-on: e2e-reconnect
+    steps:
+      - run: echo e2e-idle-recovered
