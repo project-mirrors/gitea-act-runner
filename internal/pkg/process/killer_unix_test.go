@@ -104,7 +104,7 @@ func TestTreeKillCancelBeforeCaptureKillsTree(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = stdin.Close() })
 	t.Cleanup(func() { _ = input.Close() })
-	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", "cat <&0 & echo $!; read value")
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", "exec 3<&0; cat <&3 & echo $!; read value")
 	cmd.Stdin = stdin
 	cmd.SysProcAttr = SysProcAttr("", false)
 	output, err := cmd.StdoutPipe()
