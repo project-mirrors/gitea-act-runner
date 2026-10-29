@@ -980,7 +980,7 @@ func TestDockerCreateKeepsInputEntrypoint(t *testing.T) {
 					RunnerOptions:   "--entrypoint=runner-entrypoint",
 					WorkflowOptions: "--entrypoint=" + optionEntrypoint + " --init",
 				},
-				cli: &probeClient{create: func(opts mobyclient.ContainerCreateOptions) (mobyclient.ContainerCreateResult, error) {
+				cli: &probeClient{create: func(_ctx context.Context, opts mobyclient.ContainerCreateOptions) (mobyclient.ContainerCreateResult, error) {
 					if len(entrypoint) > 0 {
 						assert.Equal(t, entrypoint, opts.Config.Entrypoint)
 					} else {
