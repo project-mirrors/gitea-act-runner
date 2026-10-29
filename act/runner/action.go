@@ -180,9 +180,9 @@ func runActionImpl(step actionStep, actionDir string, remoteAction *remoteAction
 
 		action := step.getActionModel()
 
-		rc.withGithubEnv(ctx, step.getGithubContext(ctx), *step.getEnv())
+		rc.withGithubEnv(ctx, getStepGithubContext(ctx, step), *step.getEnv())
 		populateEnvsFromSavedState(step.getEnv(), step, rc)
-		if err := populateEnvsFromInput(ctx, step.getEnv(), action, rc); err != nil {
+		if err := populateEnvsFromInput(ctx, step, action); err != nil {
 			return err
 		}
 		warnUnexpectedInputs(ctx, action, stepModel.With)
@@ -283,7 +283,7 @@ func (rc *RunContext) dockerActionImage(ctx context.Context, step actionStep, ac
 	}
 	image, ok := job.dockerActionImages[step.getStepModel()]
 	if !ok {
-		image = dockerActionImageTag(step.getGithubContext(ctx).Repository, actionName, localAction) + "-" + strings.ToLower(rand.Text())
+		image = dockerActionImageTag(getStepGithubContext(ctx, step).Repository, actionName, localAction) + "-" + strings.ToLower(rand.Text())
 		if !common.Dryrun(ctx) { // a dry run builds nothing to remove
 			job.dockerActionImages[step.getStepModel()] = image
 		}
@@ -437,7 +437,7 @@ func evalDockerEnv(ctx context.Context, step step, action *model.Action) (*expre
 	for key := range step.getStepModel().With {
 		providedInputs[strings.ToLower(key)] = true
 	}
-	eval := rc.NewExpressionEvaluator(ctx)
+	eval := rc.NewStepExpressionEvaluator(ctx, step)
 	for k, input := range action.Inputs {
 		if providedInputs[strings.ToLower(k)] {
 			continue
@@ -509,8 +509,9 @@ func inputEnvKey(inputID string) string {
 	return "INPUT_" + inputEnvPattern.ReplaceAllString(strings.ToUpper(inputID), "_")
 }
 
-func populateEnvsFromInput(ctx context.Context, env *map[string]string, action *model.Action, rc *RunContext) error {
-	eval := rc.NewExpressionEvaluator(ctx)
+func populateEnvsFromInput(ctx context.Context, step step, action *model.Action) error {
+	env := step.getEnv()
+	eval := step.getRunContext().NewStepExpressionEvaluator(ctx, step)
 	for inputID, input := range action.Inputs {
 		envKey := inputEnvKey(inputID)
 		if _, ok := (*env)[envKey]; !ok {
@@ -652,7 +653,7 @@ func runPreStep(step actionStep) common.Executor {
 		x := action.Runs.Using
 		if !x.IsComposite() {
 			// defaults in pre steps were missing, however provided inputs are available
-			if err := populateEnvsFromInput(ctx, step.getEnv(), action, rc); err != nil {
+			if err := populateEnvsFromInput(ctx, step, action); err != nil {
 				return err
 			}
 		}

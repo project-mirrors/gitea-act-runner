@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v4"
 )
 
 type shellContainerMock struct{ *containerMock }
@@ -36,7 +37,6 @@ func TestStepRun(t *testing.T) {
 	sr := &stepRun{
 		RunContext: &RunContext{
 			StepResults: map[string]*model.StepResult{},
-			ExprEval:    &expressionEvaluator{},
 			Config:      &Config{Env: testCheckoutEnv()},
 			Run: &model.Run{
 				JobID: "1",
@@ -48,19 +48,27 @@ func TestStepRun(t *testing.T) {
 			},
 			JobContainer:   cm,
 			jobRunDefaults: model.RunDefaults{Shell: "bash"},
+			Env:            map[string]string{"GITHUB_ACTION_REPOSITORY": "other/composite", "GITHUB_ACTION_REF": "v1"},
 		},
 		Step: &model.Step{
 			ID:               "1",
-			Run:              "cmd",
+			Run:              "cmd${{ github.action_repository }}${{ github.action_ref }}",
 			WorkingDirectory: "workdir",
+			If:               yaml.Node{Value: "github.action_repository == 'other/composite' && github.action_ref == 'v1'"},
 		},
 	}
+	sr.RunContext.ExprEval = sr.RunContext.NewExpressionEvaluator(t.Context())
+	require.NoError(t, sr.Step.Env.Encode(map[string]string{"GITHUB_ACTION_REPOSITORY": "forged/repo", "GITHUB_ACTION_REF": "forged-ref"}))
 
 	cm.On("Copy", "/var/run/act", []*container.FileEntry{fileEntry}).Return(noopExecutor)
 	cm.On("Exec", []string{"bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "/var/run/act/workflow/1.sh"}, mock.AnythingOfType("map[string]string"), "", "workdir").Return(noopExecutor)
 
 	expectStepFileCommands(t, cm)
 	require.NoError(t, sr.main()(t.Context()))
+	assert.Empty(t, sr.env["GITHUB_ACTION_REPOSITORY"])
+	assert.Empty(t, sr.env["GITHUB_ACTION_REF"])
+	assert.Equal(t, "other/composite", sr.RunContext.Env["GITHUB_ACTION_REPOSITORY"])
+	assert.Equal(t, "v1", sr.RunContext.Env["GITHUB_ACTION_REF"])
 
 	cm.AssertExpectations(t)
 }

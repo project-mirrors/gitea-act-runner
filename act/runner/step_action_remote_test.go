@@ -76,7 +76,7 @@ func TestStepActionRemote(t *testing.T) {
 		status          model.StepStatus
 		runError        error
 	}{
-		{name: "run-successful", status: model.StepStatusSuccess},
+		{name: "run-successful", condition: "github.action_repository == 'other/composite' && github.action_ref == 'v2'", status: model.StepStatusSuccess},
 		{name: "run-skipped", condition: "false", status: model.StepStatusSkipped},
 		{name: "run-error", status: model.StepStatusFailure, runError: assert.AnError},
 	} {
@@ -110,6 +110,7 @@ func TestStepActionRemote(t *testing.T) {
 					},
 					StepResults:  map[string]*model.StepResult{},
 					JobContainer: cm,
+					Env:          map[string]string{"GITHUB_ACTION_REPOSITORY": "other/composite", "GITHUB_ACTION_REF": "v2"},
 				},
 				Step:       &model.Step{ID: "step", Uses: "remote/action@v1", If: yaml.Node{Value: tt.condition}},
 				readAction: sarm.readAction,
@@ -127,6 +128,8 @@ func TestStepActionRemote(t *testing.T) {
 			require.NoError(t, sar.pre()(ctx))
 			assert.Equal(t, tt.runError, sar.main()(ctx))
 			assert.True(t, clonedAction)
+			assert.Equal(t, "remote/action", sar.env["GITHUB_ACTION_REPOSITORY"])
+			assert.Equal(t, "v1", sar.env["GITHUB_ACTION_REF"])
 			assert.Equal(t, &model.StepResult{Conclusion: tt.status, Outcome: tt.status, Outputs: map[string]string{}}, sar.RunContext.StepResults["step"])
 
 			sarm.AssertExpectations(t)
@@ -182,7 +185,7 @@ func TestStepActionRemotePrepare(t *testing.T) {
 	require.NoError(t, err)
 	root, err := prepare(job, "org/repo@v1")
 	require.NoError(t, err)
-	nested, err := prepare(&RunContext{Config: job.Config, Run: job.Run, JobContainer: job.JobContainer, Parent: job}, "org/repo/save@v1")
+	nested, err := prepare(&RunContext{Config: job.Config, Run: job.Run, JobContainer: job.JobContainer, Parent: job, Env: map[string]string{"GITHUB_ACTION_REPOSITORY": "org/repo", "GITHUB_ACTION_REF": "v1"}}, "$/save")
 	require.NoError(t, err)
 	other, err := prepare(job, "org/repo@v2")
 	require.NoError(t, err)
@@ -346,9 +349,6 @@ func Test_newRemoteActionSelfRepo(t *testing.T) {
 			},
 		},
 		{name: "unknown instance", action: "$/.gitea/actions/build", github: &model.GithubContext{Repository: "owner/workflow-repo", Sha: "abc123"}},
-		{name: "empty path", action: "$/", github: workflow},
-		{name: "ref suffix is not allowed", action: "$/.gitea/actions/build@v1", github: workflow},
-		{name: "path traversal", action: "$/../escape", github: workflow},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

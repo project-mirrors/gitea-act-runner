@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v4"
 )
 
 type stepActionMocks struct {
@@ -53,7 +54,7 @@ func TestStepActionLocalTest(t *testing.T) {
 		readAction: salm.readAction,
 		runAction:  salm.runAction,
 		RunContext: &RunContext{
-			StepResults: map[string]*model.StepResult{},
+			StepResults: map[string]*model.StepResult{"previous": {Outputs: map[string]string{"value": "previous"}}},
 			ExprEval:    &expressionEvaluator{},
 			Config: &Config{
 				Workdir: "/tmp",
@@ -68,25 +69,42 @@ func TestStepActionLocalTest(t *testing.T) {
 				},
 			},
 			JobContainer: cm,
+			Env:          map[string]string{"GITHUB_ACTION_REPOSITORY": "other/action", "GITHUB_ACTION_REF": "v1"},
+			Matrix:       map[string]any{"value": "matrix"},
+			actionInputs: map[string]any{"shared": "input"},
 		},
 		Step: &model.Step{
 			ID:   "1",
 			Uses: "./path/to/action",
+			If: yaml.Node{Value: "github.action_repository == 'other/action' && github.action_ref == 'v1' && " +
+				"env.STEP_VALUE == 'step' && env.GITHUB_ACTION_REPOSITORY == 'forged/repo' && env.GITHUB_ACTION_REF == 'forged-ref' && " +
+				"steps.previous.outputs.value == 'previous' && inputs.shared == 'input' && matrix.value == 'matrix'"},
 		},
 	}
+	require.NoError(t, sal.Step.Env.Encode(map[string]string{"STEP_VALUE": "step", "GITHUB_ACTION_REPOSITORY": "forged/repo", "GITHUB_ACTION_REF": "forged-ref"}))
+	require.NoError(t, sal.Step.RawWith.Encode(map[string]string{"identity": "${{ github.action_repository }}|${{ github.action_ref }}"}))
 
 	salm.On("readAction", sal.Step, filepath.Clean("/tmp/path/to/action"), "", mock.Anything, mock.Anything).
 		Return(&model.Action{}, nil)
 
 	expectStepFileCommands(t, cm)
 
-	salm.On("runAction", sal, filepath.Clean("/tmp/path/to/action"), (*remoteAction)(nil)).Return(noopExecutor)
+	salm.On("runAction", sal, filepath.Clean("/tmp/path/to/action"), (*remoteAction)(nil)).Return(func(ctx context.Context) error {
+		sal.RunContext.setOutput(ctx, map[string]string{"name": "value"}, "ran")
+		return nil
+	})
 
 	err := sal.pre()(ctx)
 	require.NoError(t, err)
 
 	err = sal.main()(ctx)
 	require.NoError(t, err)
+	assert.Empty(t, sal.env["GITHUB_ACTION_REPOSITORY"])
+	assert.Empty(t, sal.env["GITHUB_ACTION_REF"])
+	assert.Equal(t, "|", sal.Step.With["identity"])
+	assert.Equal(t, "ran", sal.RunContext.StepResults["1"].Outputs["value"])
+	assert.Equal(t, "other/action", sal.RunContext.Env["GITHUB_ACTION_REPOSITORY"])
+	assert.Equal(t, "v1", sal.RunContext.Env["GITHUB_ACTION_REF"])
 
 	cm.AssertExpectations(t)
 	salm.AssertExpectations(t)

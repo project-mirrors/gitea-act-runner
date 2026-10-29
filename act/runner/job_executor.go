@@ -111,7 +111,7 @@ func printPrepareActions(rc *RunContext, preparers []actionPreparer) common.Exec
 			if !ok || strings.Contains(action.Step.Uses, "${{") || action.action != nil {
 				continue
 			}
-			github := action.getGithubContext(common.WithLogger(ctx, logging.New(logging.DiscardHandler)))
+			github := action.RunContext.getGithubContext(common.WithLogger(ctx, logging.New(logging.DiscardHandler)))
 			remote, err := newRemoteAction(action.Step.Uses, github, action.RunContext.Config.GitHubInstance)
 			if err != nil || action.skipsLocalCheckout(remote, github) {
 				continue

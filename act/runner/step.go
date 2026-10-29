@@ -27,10 +27,22 @@ type step interface {
 	post() common.Executor
 
 	getRunContext() *RunContext
-	getGithubContext(ctx context.Context) *model.GithubContext
 	getStepModel() *model.Step
 	getEnv() *map[string]string
 	getIfExpression(context context.Context, stage stepStage) string
+}
+
+func stepActionIdentity(step step) (repository, ref string) {
+	if action, ok := step.(interface{ actionIdentity() (string, string) }); ok {
+		return action.actionIdentity()
+	}
+	return "", ""
+}
+
+func getStepGithubContext(ctx context.Context, step step) *model.GithubContext {
+	github := step.getRunContext().getGithubContext(ctx)
+	github.ActionRepository, github.ActionRef = stepActionIdentity(step)
+	return github
 }
 
 type stepStage int
@@ -92,6 +104,8 @@ func runStepExecutor(step step, stage stepStage, executor common.Executor) commo
 			runStep, err = isStepEnabled(ctx, ifExpression, step, stage)
 		}
 		if err == nil && runStep {
+			env := *step.getEnv()
+			env["GITHUB_ACTION_REPOSITORY"], env["GITHUB_ACTION_REF"] = stepActionIdentity(step)
 			err = setupInputs(ctx, step)
 		}
 		if err != nil {
@@ -253,7 +267,7 @@ func setupEnv(ctx context.Context, step step) error {
 	env := step.getEnv()
 	// container env is the image's baseline, which job env and $GITHUB_ENV override
 	mergeIntoMap(step, env, rc.containerSpec.Env, rc.GetEnv())
-	rc.withGithubEnv(ctx, step.getGithubContext(ctx), *env)
+	rc.withGithubEnv(ctx, getStepGithubContext(ctx, step), *env)
 
 	var err error
 	exprEval := rc.NewExpressionEvaluator(ctx)
@@ -302,7 +316,7 @@ func isStepEnabled(ctx context.Context, expr string, step step, stage stepStage)
 	if rc.Parent != nil && stage == stepStageMain && jobContext.Status != "cancelled" {
 		jobContext.Status = rc.ownStatus()
 	}
-	runStep, err := EvalBool(ctx, rc.newStepExpressionEvaluator(ctx, step, rc.actionInputs, jobContext), expr, defaultStatusCheck)
+	runStep, err := EvalBool(ctx, rc.newStepExpressionEvaluator(ctx, step, rc.actionInputs, jobContext, rc.getGithubContext(ctx)), expr, defaultStatusCheck)
 	if err != nil {
 		return false, fmt.Errorf("if-expression %q evaluation failed: %s", expr, err)
 	}

@@ -75,7 +75,7 @@ func (sar *stepActionRemote) prepareActionExecutor() common.Executor {
 		}
 		sar.Step.Uses = uses
 
-		github := sar.getGithubContext(ctx) // read before remoteAction is set, so `$/` resolves against the enclosing action
+		github := sar.RunContext.getGithubContext(ctx)
 		if sar.remoteAction, err = newRemoteAction(sar.Step.Uses, github, sar.RunContext.Config.GitHubInstance); err != nil {
 			return err
 		}
@@ -153,7 +153,7 @@ func (sar *stepActionRemote) main() common.Executor {
 	return common.NewPipelineExecutor(
 		sar.prepareActionExecutor(),
 		runStepExecutor(sar, stepStageMain, func(ctx context.Context) error {
-			github := sar.getGithubContext(ctx)
+			github := getStepGithubContext(ctx, sar)
 			if sar.skipsLocalCheckout(sar.remoteAction, github) {
 				printRunActionHeader(ctx, sar.Step, nil, sar.env, sar.RunContext)
 				if sar.RunContext.Config.BindWorkdir {
@@ -181,17 +181,11 @@ func (sar *stepActionRemote) getRunContext() *RunContext {
 	return sar.RunContext
 }
 
-func (sar *stepActionRemote) getGithubContext(ctx context.Context) *model.GithubContext {
-	ghc := sar.getRunContext().getGithubContext(ctx)
-
-	// extend github context if we already have an initialized remoteAction
-	remoteAction := sar.remoteAction
-	if remoteAction != nil {
-		ghc.ActionRepository = fmt.Sprintf("%s/%s", remoteAction.Org, remoteAction.Repo)
-		ghc.ActionRef = remoteAction.Ref
+func (sar *stepActionRemote) actionIdentity() (string, string) {
+	if sar.remoteAction == nil {
+		return "", ""
 	}
-
-	return ghc
+	return sar.remoteAction.Org + "/" + sar.remoteAction.Repo, sar.remoteAction.Ref
 }
 
 func (sar *stepActionRemote) getStepModel() *model.Step {
@@ -205,7 +199,7 @@ func (sar *stepActionRemote) getEnv() *map[string]string {
 func (sar *stepActionRemote) getIfExpression(ctx context.Context, stage stepStage) string {
 	switch stage {
 	case stepStagePre:
-		github := sar.getGithubContext(ctx)
+		github := getStepGithubContext(ctx, sar)
 		if sar.skipsLocalCheckout(sar.remoteAction, github) {
 			// skip local checkout pre step
 			return "false"
