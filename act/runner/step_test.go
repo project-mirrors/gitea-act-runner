@@ -155,18 +155,14 @@ func TestSetupEnv(t *testing.T) {
 	require.NoError(t, setupEnv(t.Context(), testStep))
 	require.NoError(t, setupInputs(t.Context(), testStep))
 
-	delete(env, "GITHUB_REF")
-	delete(env, "GITHUB_REF_NAME")
-	delete(env, "GITHUB_REF_TYPE")
-	delete(env, "GITHUB_SHA")
-	delete(env, "GITHUB_WORKSPACE")
-	delete(env, "GITHUB_REPOSITORY")
-	delete(env, "GITHUB_REPOSITORY_OWNER")
-	delete(env, "GITHUB_ACTOR")
+	for _, suffix := range []string{"REF", "REF_NAME", "REF_TYPE", "SHA", "WORKSPACE", "REPOSITORY", "REPOSITORY_OWNER", "ACTOR"} {
+		delete(env, "GITHUB_"+suffix)
+		delete(env, "GITEA_"+suffix)
+	}
 	delete(env, "RUNNER_NAME")
 	delete(env, "RUNNER_WORKSPACE")
 
-	assert.Equal(t, map[string]string{
+	expected := map[string]string{
 		"ACT":                      "true",
 		"ACT_SKIP_CHECKOUT":        "true",
 		"CI":                       "true",
@@ -193,7 +189,13 @@ func TestSetupEnv(t *testing.T) {
 		"RUNNER_ENVIRONMENT":       "self-hosted",
 		"RUNNER_PERFLOG":           "/dev/null",
 		"RUNNER_TRACKING_ID":       "",
-	}, env)
+	}
+	for name, value := range expected {
+		if suffix, ok := strings.CutPrefix(name, "GITHUB_"); ok {
+			expected["GITEA_"+suffix] = value
+		}
+	}
+	assert.Equal(t, expected, env)
 
 	for _, expression := range []string{"inputs.args", "env.ARGS"} {
 		t.Run("deferred inputs from "+expression, func(t *testing.T) {

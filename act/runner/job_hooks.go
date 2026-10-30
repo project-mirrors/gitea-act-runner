@@ -84,8 +84,7 @@ func (rc *RunContext) setupHookFileCommands(ctx context.Context, env map[string]
 	actPath := rc.JobContainer.GetActPath()
 	env["GITHUB_ENV"] = path.Join(actPath, hookEnvFileCommand)
 	env["GITHUB_PATH"] = path.Join(actPath, hookPathFileCommand)
-	env["GITEA_ENV"] = env["GITHUB_ENV"]
-	env["GITEA_PATH"] = env["GITHUB_PATH"]
+	aliasGiteaEnv(env)
 
 	return rc.JobContainer.Copy(actPath,
 		&container.FileEntry{Name: hookEnvFileCommand, Mode: 0o666},

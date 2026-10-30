@@ -45,7 +45,7 @@ A hook path that does not exist inside the job environment fails the job with `N
 
 ## Environment
 
-A hook sees the job's environment: the workflow, job and `container:` `env:`, the runner's `envs`, and the `GITHUB_*` context variables, with the same masking applied to its output as to a step's. The step-specific ones (`GITHUB_ACTION`, `GITHUB_OUTPUT`, `GITHUB_STATE`) are not set — a hook is not a step, so `::save-state::` and `::set-output::` have nowhere to go.
+A hook sees the job's environment: the workflow, job and `container:` `env:`, the runner's `envs`, and the `GITHUB_*`/`GITEA_*` context variables, with the same masking applied to its output as to a step's. The step-specific ones (`GITHUB_ACTION`, `GITHUB_OUTPUT`, `GITHUB_STATE`) are not set — a hook is not a step, so `::save-state::` and `::set-output::` have nowhere to go.
 
 Its stdout is part of the job log, after a collapsible group naming the hook and its shell, and is scanned for workflow commands. `::add-mask::` registers a value to be masked for the rest of the job. `::set-env::` and `::add-path::` apply to the steps that follow, but as in a step they need `ACTIONS_ALLOW_UNSECURE_COMMANDS: true`, and a refused one fails the hook.
 

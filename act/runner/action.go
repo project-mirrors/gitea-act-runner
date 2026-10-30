@@ -456,6 +456,7 @@ func evalDockerEnv(ctx context.Context, step step, action *model.Action) (*expre
 		}
 	}
 	mergeIntoMap(step, step.getEnv(), runsEnv, maps.Clone(*step.getEnv()))
+	aliasGiteaEnv(*step.getEnv())
 	return ee, nil
 }
 

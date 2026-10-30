@@ -19,7 +19,7 @@ import (
 )
 
 func TestCompositeActionParity(t *testing.T) {
-	t.Run("input defaults use the step identity", func(t *testing.T) {
+	t.Run("input defaults use the step identity and docker env keeps the GITEA aliases", func(t *testing.T) {
 		for _, uses := range []string{"./action", "own/action@v2"} {
 			t.Run(uses, func(t *testing.T) {
 				rc := &RunContext{
@@ -33,13 +33,17 @@ func TestCompositeActionParity(t *testing.T) {
 					currentStep = &stepActionRemote{RunContext: rc, Step: &model.Step{Uses: uses}, env: map[string]string{}, remoteAction: mustNewRemoteAction(t, uses)}
 					want = "own/action|v2"
 				}
-				action := &model.Action{Inputs: map[string]model.Input{"identity": {Default: "${{ github.action_repository }}|${{ github.action_ref }}"}}}
+				action := &model.Action{
+					Inputs: map[string]model.Input{"identity": {Default: "${{ github.action_repository }}|${{ github.action_ref }}"}},
+					Runs:   model.ActionRuns{Env: map[string]string{"GITHUB_WORKFLOW_SHA": "runs-sha"}},
+				}
 				require.NoError(t, setupEnv(t.Context(), currentStep))
 				require.NoError(t, populateEnvsFromInput(t.Context(), currentStep, action))
 				assert.Equal(t, want, (*currentStep.getEnv())["INPUT_IDENTITY"])
 				_, err := evalDockerEnv(t.Context(), currentStep, action)
 				require.NoError(t, err)
 				assert.Equal(t, want, (*currentStep.getEnv())["identity"])
+				assert.Equal(t, "runs-sha", (*currentStep.getEnv())["GITEA_WORKFLOW_SHA"])
 			})
 		}
 	})

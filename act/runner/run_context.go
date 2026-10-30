@@ -1602,6 +1602,23 @@ func isLocalCheckout(ghc *model.GithubContext, step *model.Step) bool {
 	return true
 }
 
+// aliasGiteaEnv mirrors the runner's GITHUB_* variables as GITEA_*, call it after the last write to them.
+func aliasGiteaEnv(env map[string]string) {
+	for _, suffix := range []string{
+		"ACTION", "ACTION_PATH", "ACTION_REF", "ACTION_REPOSITORY", "ACTIONS", "ACTOR", "ACTOR_ID", "API_URL", "BASE_REF",
+		"ENV", "EVENT_NAME", "EVENT_PATH", "GRAPHQL_URL", "HEAD_REF", "JOB", "OUTPUT", "PATH", "REF", "REF_NAME",
+		"REF_PROTECTED", "REF_TYPE", "REPOSITORY", "REPOSITORY_ID", "REPOSITORY_OWNER", "REPOSITORY_OWNER_ID",
+		"RETENTION_DAYS", "RUN_ATTEMPT", "RUN_ID", "RUN_NUMBER", "SERVER_URL", "SHA", "STATE", "STEP_SUMMARY",
+		"TRIGGERING_ACTOR", "WORKFLOW", "WORKFLOW_REF", "WORKFLOW_SHA", "WORKSPACE",
+	} {
+		if value, ok := env["GITHUB_"+suffix]; ok {
+			env["GITEA_"+suffix] = value
+		} else {
+			delete(env, "GITEA_"+suffix)
+		}
+	}
+}
+
 func (rc *RunContext) withGithubEnv(ctx context.Context, github *model.GithubContext, env map[string]string) {
 	if _, ok := env["CI"]; !ok {
 		env["CI"] = "true"
@@ -1654,6 +1671,7 @@ func (rc *RunContext) withGithubEnv(ctx context.Context, github *model.GithubCon
 
 	env["GITHUB_GRAPHQL_URL"] = ""
 	env["GITHUB_RUN_ATTEMPT"] = github.RunAttempt
+	aliasGiteaEnv(env)
 
 	env["RUNNER_NAME"] = rc.Config.RunnerName
 	env["RUNNER_ENVIRONMENT"] = "self-hosted"

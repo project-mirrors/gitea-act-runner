@@ -157,15 +157,7 @@ func runStepExecutor(step step, stage stepStage, executor common.Executor) commo
 		stepSummaryIndex := topRC.CurrentStepIndex
 		summaryFileCommand := path.Join("workflow", "step-summary-"+strconv.Itoa(stepSummaryIndex)+".md")
 		(*step.getEnv())["GITHUB_STEP_SUMMARY"] = path.Join(actPath, summaryFileCommand)
-
-		{
-			// For Gitea
-			(*step.getEnv())["GITEA_OUTPUT"] = (*step.getEnv())["GITHUB_OUTPUT"]
-			(*step.getEnv())["GITEA_STATE"] = (*step.getEnv())["GITHUB_STATE"]
-			(*step.getEnv())["GITEA_PATH"] = (*step.getEnv())["GITHUB_PATH"]
-			(*step.getEnv())["GITEA_ENV"] = (*step.getEnv())["GITHUB_ENV"]
-			(*step.getEnv())["GITEA_STEP_SUMMARY"] = (*step.getEnv())["GITHUB_STEP_SUMMARY"]
-		}
+		aliasGiteaEnv(*step.getEnv())
 
 		// Reset the per-phase file-command files. GITHUB_STEP_SUMMARY is intentionally
 		// excluded here and initialized below at most once per step so writes from later

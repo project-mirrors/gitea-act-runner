@@ -121,6 +121,7 @@ func TestRunJobHook(t *testing.T) {
 		assert.Equal(t, "job", jobContainer.env["GITHUB_JOB"])
 		assert.Equal(t, "/var/run/act/workflow/hook-envs.txt", jobContainer.env["GITHUB_ENV"])
 		assert.Equal(t, "/var/run/act/workflow/hook-path.txt", jobContainer.env["GITHUB_PATH"])
+		assert.Equal(t, jobContainer.env["GITHUB_PATH"], jobContainer.env["GITEA_PATH"])
 	})
 
 	t.Run("each hook has its own command state", func(t *testing.T) {

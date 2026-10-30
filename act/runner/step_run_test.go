@@ -58,7 +58,10 @@ func TestStepRun(t *testing.T) {
 		},
 	}
 	sr.RunContext.ExprEval = sr.RunContext.NewExpressionEvaluator(t.Context())
-	require.NoError(t, sr.Step.Env.Encode(map[string]string{"GITHUB_ACTION_REPOSITORY": "forged/repo", "GITHUB_ACTION_REF": "forged-ref"}))
+	require.NoError(t, sr.Step.Env.Encode(map[string]string{
+		"GITHUB_ACTION_REPOSITORY": "forged/repo", "GITHUB_ACTION_REF": "forged-ref",
+		"GITEA_ACTION_REPOSITORY": "forged/repo", "GITEA_ACTION_REF": "forged-ref",
+	}))
 
 	cm.On("Copy", "/var/run/act", []*container.FileEntry{fileEntry}).Return(noopExecutor)
 	cm.On("Exec", []string{"bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "/var/run/act/workflow/1.sh"}, mock.AnythingOfType("map[string]string"), "", "workdir").Return(noopExecutor)
@@ -67,6 +70,9 @@ func TestStepRun(t *testing.T) {
 	require.NoError(t, sr.main()(t.Context()))
 	assert.Empty(t, sr.env["GITHUB_ACTION_REPOSITORY"])
 	assert.Empty(t, sr.env["GITHUB_ACTION_REF"])
+	assert.Empty(t, sr.env["GITEA_ACTION_REPOSITORY"])
+	assert.Empty(t, sr.env["GITEA_ACTION_REF"])
+	assert.Equal(t, sr.env["GITHUB_STEP_SUMMARY"], sr.env["GITEA_STEP_SUMMARY"])
 	assert.Equal(t, "other/composite", sr.RunContext.Env["GITHUB_ACTION_REPOSITORY"])
 	assert.Equal(t, "v1", sr.RunContext.Env["GITHUB_ACTION_REF"])
 
