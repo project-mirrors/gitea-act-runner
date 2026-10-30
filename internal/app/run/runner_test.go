@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"gitea.com/gitea/runner/act/artifactcache"
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/runner"
@@ -325,7 +326,7 @@ func TestNewRunnerCacheServiceV2(t *testing.T) {
 
 	// The registration is what makes it true: the cache server takes the results service over,
 	// having been told which instance to forward the artifact half to.
-	revoke, resultsURL := r.registerCacheForTask(token, "owner/repo", r.cacheHandler.ExternalURL(), nil)
+	revoke, resultsURL := r.registerCacheForTask(token, artifactcache.JobCredential{Repo: "owner/repo", PublicURL: r.cacheHandler.ExternalURL()}, nil)
 	defer revoke()
 	require.Equal(t, r.cacheHandler.ExternalURL(), resultsURL)
 

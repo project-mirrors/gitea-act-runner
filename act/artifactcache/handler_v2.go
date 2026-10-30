@@ -73,7 +73,7 @@ func (h *Handler) v2CreateCacheEntry(w http.ResponseWriter, r *http.Request) {
 	// An exact (key, version) match means the entry is already cached; the client then skips
 	// the upload. A prefix match must not count here, or a shorter key would be reported as
 	// existing and silently never saved.
-	if existing, err := findExactCache(db, cred.Repo, req.Key, req.Version, true); err != nil {
+	if existing, err := findExactCache(db, cred, req.Key, req.Version, true); err != nil {
 		h.twirpError(w, r, twirpInternal, err)
 		return
 	} else if existing != nil {
@@ -84,7 +84,7 @@ func (h *Handler) v2CreateCacheEntry(w http.ResponseWriter, r *http.Request) {
 
 	// A second live reservation is finalized by whichever job calls last, against the other's upload.
 	owner := hashedToken(bearerToken(r))
-	if pending, err := findExactCache(db, cred.Repo, req.Key, req.Version, false); err != nil {
+	if pending, err := findExactCache(db, cred, req.Key, req.Version, false); err != nil {
 		h.twirpError(w, r, twirpInternal, err)
 		return
 	} else if pending != nil && pending.UsedAt > time.Now().Add(-uploadStallTimeout).Unix() {
@@ -103,6 +103,7 @@ func (h *Handler) v2CreateCacheEntry(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	cache := &Cache{
 		Repo:           cred.Repo,
+		Ref:            cred.Ref,
 		Key:            req.Key,
 		Version:        req.Version,
 		Owner:          owner,
@@ -137,13 +138,13 @@ func (h *Handler) v2FinalizeCacheEntryUpload(w http.ResponseWriter, r *http.Requ
 	}
 	defer db.Close()
 
-	cache, err := findExactCache(db, cred.Repo, req.Key, req.Version, false)
+	cache, err := findExactCache(db, cred, req.Key, req.Version, false)
 	if err == nil && cache != nil && cache.Owner != hashedToken(bearerToken(r)) {
 		cache = nil // not the reservation this job made, so not this job's to commit
 	}
 	if err == nil && cache == nil {
 		// A retry whose first response was lost finds the entry already committed.
-		cache, err = findExactCache(db, cred.Repo, req.Key, req.Version, true)
+		cache, err = findExactCache(db, cred, req.Key, req.Version, true)
 	}
 	if err != nil {
 		h.twirpError(w, r, twirpInternal, err)
@@ -186,7 +187,7 @@ func (h *Handler) v2GetCacheEntryDownloadURL(w http.ResponseWriter, r *http.Requ
 	}
 	defer db.Close()
 
-	cache, err := h.lookupCache(db, cred.Repo, req.keys(), req.Version)
+	cache, err := h.lookupCache(db, cred, req.keys(), req.Version)
 	if err != nil {
 		h.twirpError(w, r, twirpInternal, err)
 		return

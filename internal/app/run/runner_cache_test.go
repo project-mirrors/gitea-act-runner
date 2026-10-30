@@ -17,6 +17,7 @@ import (
 	clientmocks "gitea.com/gitea/runner/internal/pkg/client/mocks"
 	"gitea.com/gitea/runner/internal/pkg/config"
 
+	"gitea.dev/actionslib/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +25,7 @@ import (
 func TestRunner_registerCacheForTask_NoOps(t *testing.T) {
 	for token, handler := range map[string]*artifactcache.Handler{"tok": nil, "": {}} {
 		r := &Runner{cacheHandler: handler}
-		unregister, _ := r.registerCacheForTask(token, "owner/repo", "", nil)
+		unregister, _ := r.registerCacheForTask(token, artifactcache.JobCredential{Repo: "owner/repo"}, nil)
 		require.NotNil(t, unregister, token)
 		unregister()
 	}
@@ -39,7 +40,7 @@ func TestRunner_CacheFullFlow_MatchesToolkit(t *testing.T) {
 	r := &Runner{cfg: &config.Config{}, cacheHandler: handler, envs: map[string]string{"ACTIONS_RESULTS_URL": "https://gitea.example"}}
 	const publicURL = "http://a1b2c3d4e5f6:8088"
 	token := "full-flow-token"
-	unregister, resultsURL := r.registerCacheForTask(token, "owner/repo", publicURL, nil)
+	unregister, resultsURL := r.registerCacheForTask(token, artifactcache.JobCredential{Repo: "owner/repo", PublicURL: publicURL}, nil)
 	assert.Equal(t, publicURL, resultsURL)
 
 	base := handler.ExternalURL() + "/_apis/artifactcache"
@@ -112,6 +113,24 @@ func decodeJSON(resp *http.Response, v any) error {
 	return json.UnmarshalRead(resp.Body, v)
 }
 
+func TestCacheCredential(t *testing.T) {
+	repository := map[string]any{"default_branch": "main"}
+	review := &model.GithubContext{
+		Repository: "owner/repo", EventName: "pull_request_review", Ref: "refs/heads/main", BaseRef: "release",
+		Event: map[string]any{"repository": repository, "number": float64(3)},
+	}
+	assert.Equal(t, artifactcache.JobCredential{
+		Repo: "owner/repo", Ref: "refs/pull/3/head", BaseRef: "refs/heads/release", DefaultRef: "refs/heads/main", PublicURL: "http://cache",
+	}, cacheCredential(review, "http://cache"))
+
+	review.EventName, review.Ref = "pull_request_target", "refs/heads/release"
+	assert.Equal(t, "refs/heads/release", cacheCredential(review, "").Ref)
+
+	assert.Equal(t, artifactcache.JobCredential{
+		Repo: "owner/repo", Ref: "refs/heads/feature", DefaultRef: "refs/heads/main",
+	}, cacheCredential(&model.GithubContext{Repository: "owner/repo", Ref: "refs/heads/feature", Event: map[string]any{"repository": repository}}, ""))
+}
+
 func TestRunner_ExternalCacheServer_RegisterRevoke(t *testing.T) {
 	const secret = "shared-secret-for-tests"
 	remote, err := artifactcache.StartHandler(artifactcache.Options{Dir: t.TempDir(), OutboundIP: "127.0.0.1", InternalSecret: secret})
@@ -151,7 +170,7 @@ func TestRunner_ExternalCacheServer_RegisterRevoke(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, probe(),
 		"token must be unknown to the remote server before registration")
 
-	unregister, resultsURL := r.registerCacheForTask(token, repo, publicURL, nil)
+	unregister, resultsURL := r.registerCacheForTask(token, artifactcache.JobCredential{Repo: repo, Ref: "refs/heads/main", PublicURL: publicURL}, nil)
 	require.NotEqual(t, http.StatusUnauthorized, probe(),
 		"token must be accepted after registerCacheForTask")
 
@@ -193,6 +212,12 @@ func TestRunner_ExternalCacheServer_RegisterRevoke(t *testing.T) {
 	}
 	require.NoError(t, decodeJSON(resp, &hit))
 	require.True(t, strings.HasPrefix(hit.ArchiveLocation, publicURL+"/"), hit.ArchiveLocation)
+
+	unregisterOther, _ := r.registerCacheForTask("external-other-token", artifactcache.JobCredential{Repo: repo, Ref: "refs/heads/other"}, nil)
+	defer unregisterOther()
+	resp = cacheRequest(t, "external-other-token", http.MethodGet, base+"/cache?keys=ext-key&version=v", "", "", "")
+	resp.Body.Close()
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode, "the remote server must scope the entry by the ref the runner sent")
 
 	dl, err := http.Get(strings.Replace(hit.ArchiveLocation, publicURL, r.cacheHandler.ExternalURL(), 1))
 	require.NoError(t, err)

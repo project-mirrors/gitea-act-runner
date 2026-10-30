@@ -303,6 +303,8 @@ Use `uses: builtin:checkout` to check out a repository without downloading `acti
 
 Each runner starts its own cache server, so runners do not share cached entries. A runner in a container on the jobs' Docker daemon attaches itself to each job network, so jobs reach its cache without extra setup.
 
+As on GitHub, a job restores caches saved for its own ref, its pull request's base branch and the default branch, so a cache saved by a pull request is only restored by that pull request.
+
 **Sharing a cache between runners**
 
 Run one `gitea-runner cache-server` and point every runner at it, using the same secret everywhere, for example from `openssl rand -hex 32`:

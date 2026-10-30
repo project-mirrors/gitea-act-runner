@@ -15,6 +15,7 @@ type Request struct {
 type Cache struct {
 	ID             uint64 `json:"id"`
 	Repo           string `json:"repo"`
+	Ref            string `json:"ref,omitzero"`
 	Key            string `json:"key"`
 	Version        string `json:"version"`
 	Size           int64  `json:"cacheSize"`
