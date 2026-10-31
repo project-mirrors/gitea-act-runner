@@ -23,13 +23,14 @@ func newLocalReusableWorkflowExecutor(rc *RunContext) common.Executor {
 		return common.NewErrorExecutor(err)
 	}
 
-	if !rc.Config.NoSkipCheckout {
+	preset := rc.Config.PresetGitHubContext
+	if preset == nil {
 		// resolve the local workflow against the workspace root, not the process
 		// working directory, so it is found regardless of where the runner is invoked
 		return newReusableWorkflowExecutor(rc, rc.Config.Workdir, localWorkflow.Path, false)
 	}
 
-	uses := fmt.Sprintf("%s/%s@%s", rc.Config.PresetGitHubContext.Repository, localWorkflow.Path, rc.Config.PresetGitHubContext.Sha)
+	uses := fmt.Sprintf("%s/%s@%s", preset.Repository, localWorkflow.Path, preset.Sha)
 
 	remoteReusableWorkflow, err := newRemoteReusableWorkflow(rc.Config.GitHubInstance, uses)
 	if err != nil {

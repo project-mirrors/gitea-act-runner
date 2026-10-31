@@ -122,7 +122,7 @@ func TestNewLocalReusableWorkflowExecutorFindsSameRepositoryPaths(t *testing.T) 
 
 	for _, uses := range []string{"./.gitea/workflows/reusable.yml", "$/.gitea/workflows/reusable.yml"} {
 		rc := &RunContext{
-			Config: &Config{Workdir: workdir},
+			Config: &Config{Workdir: workdir, NoSkipCheckout: true},
 			Run:    &model.Run{JobID: "job", Workflow: &model.Workflow{Jobs: map[string]*model.Job{"job": {Uses: uses}}}},
 		}
 		err := newLocalReusableWorkflowExecutor(rc)(t.Context())

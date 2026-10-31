@@ -266,7 +266,7 @@ func testCLIShutdownCancels(t *testing.T) {
 	}
 }
 
-func testExecArtifacts(t *testing.T) {
+func testExec(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
@@ -274,18 +274,25 @@ func testExecArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflow, err := os.ReadFile("testdata/workflows/exec_artifact.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	workflows := t.TempDir()
-	for _, name := range []string{"a.yml", "b.yml"} {
-		if err := os.WriteFile(filepath.Join(workflows, name), workflow, 0o644); err != nil {
+	workflows, workdir := t.TempDir(), t.TempDir()
+	for dst, src := range map[string]string{
+		filepath.Join(workflows, "a.yml"):                                    "exec_artifact.yml",
+		filepath.Join(workflows, "b.yml"):                                    "exec_artifact.yml",
+		filepath.Join(workflows, "reusable_caller.yml"):                      "reusable_caller.yml",
+		filepath.Join(workdir, ".gitea", "workflows", "reusable_callee.yml"): "reusable_callee.yml",
+	} {
+		content, err := os.ReadFile(filepath.Join("testdata", "workflows", src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dst, content, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	workdir := t.TempDir()
 	for _, args := range [][]string{
 		{"init", "-q"},
 		{"remote", "add", "origin", "https://example.com/e2e/exec.git"},
@@ -297,14 +304,18 @@ func testExecArtifacts(t *testing.T) {
 	}
 
 	artifacts := t.TempDir()
-	args := []string{"exec", "-C", workdir, "-W", workflows, "-i", os.Getenv("E2E_JOB_IMAGE"), "--artifact-server-path", artifacts}
+	args := []string{"exec", "-C", workdir, "-W", workflows, "-i", os.Getenv("E2E_JOB_IMAGE"), "--artifact-server-path", artifacts, "--no-skip-checkout"}
 	if fixture.network != "" {
 		args = append(args, "--network", fixture.network)
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "ACTIONS_") })
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("exec: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "e2e-reusable-ran") {
+		t.Errorf("the called workflow did not run:\n%s", out)
 	}
 	if blobs, _ := filepath.Glob(filepath.Join(artifacts, "v4", "*", "*", "blob")); len(blobs) != 2 {
 		t.Fatalf("want one v4 artifact blob per workflow run, got %v", blobs)
