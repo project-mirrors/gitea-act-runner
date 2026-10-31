@@ -403,6 +403,13 @@ func TestKubernetesPodFailsBeforeSteps(t *testing.T) {
 	job := pod.JobContainer(&NewContainerInput{Image: "missing"})
 	require.NoError(t, job.Create(nil, nil)(t.Context()))
 	require.ErrorContains(t, job.Start(false)(t.Context()), "ErrImagePull: no such image")
+	failed, _ := fakeKubernetes(t, `{"spec":{"containers":[{}]},"status":{"phase":"Failed","initContainerStatuses":[
+		{"name":"gitea-runner-transfer","state":{"terminated":{"exitCode":1,"message":"exec format error\n"}}}]}}`)
+	pod, err = NewKubernetesPod(KubernetesOptions{Kubeconfig: failed})
+	require.NoError(t, err)
+	job = pod.JobContainer(&NewContainerInput{Image: "node"})
+	require.NoError(t, job.Create(nil, nil)(t.Context()))
+	require.ErrorContains(t, job.Start(false)(t.Context()), "container gitea-runner-transfer exited with 1: exec format error")
 
 	plugin := filepath.Join(t.TempDir(), "kubeconfig")
 	require.NoError(t, os.WriteFile(plugin, []byte(`

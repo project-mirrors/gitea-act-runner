@@ -49,6 +49,60 @@ A job with `runs-on: [linux, gpu]` gets the `linux` and then the `gpu` entry of 
 
 Job pods mount no service account token unless the template sets `automountServiceAccountToken: true`. Job pods and their Secrets are labeled `app.kubernetes.io/managed-by: gitea-runner` and `com.gitea.runner.uuid: <runner UUID>`. The idle cleanup removes those the runner did not get to remove, once they are older than `runner.workdir_cleanup_age`.
 
+## Copying files over the pod network
+
+The runner copies files into the job container, such as the actions a step uses, with `tar` over `pods/exec`. That data goes through the API server, which on a managed cluster often sits in other zones than the nodes, so each byte can cross zones twice. With `transfer.mode` set to `auto` or `direct`, the job container instead fetches directories, such as actions and workspaces, and other copies of 64 KiB or more gzipped from the runner pod. Smaller ones, like step scripts, stay on `pods/exec`, as do copies out of the job container and step output.
+
+```yaml
+kubernetes:
+  transfer:
+    mode: direct # api (default), auto or direct
+    host: "" # address the runner listens on and job pods reach it at, defaults to its outbound IP, the pod IP in a cluster
+    port: 0 # port it listens on, defaults to a free one
+    image: "" # image with gitea-runner on its PATH, defaults to the image of a single-container runner pod in kubernetes.namespace
+```
+
+Each job pod then gets an init container named `gitea-runner-transfer` from `image`, which copies its `gitea-runner` into the `act` volume for the job container to fetch with over HTTPS. The modes differ in what happens when a job pod cannot reach the runner, for example because of a NetworkPolicy, or when no `image` is set and the runner is not a single-container pod in `kubernetes.namespace`:
+
+| Mode | Copies | When the pod network does not work |
+|---|---|---|
+| `api` | through the API server | not used |
+| `auto` | over the pod network | the job pod gets its copies through the API server, after one failed attempt, and a warning is logged |
+| `direct` | over the pod network | the job fails, so a broken setup shows instead of quietly costing API server traffic again |
+
+In both `auto` and `direct`, a job fails when its init container does, for example when `image` cannot be pulled or has no `gitea-runner` on its PATH. A private `image` needs `imagePullSecrets` in `pod_template`, and a versioned tag keeps job pods on the runner's version. An `initContainers` entry named `gitea-runner-transfer` in `pod_template` merges into the init container, for example to set its `resources`.
+
+The copies include secrets, such as `run` scripts with `${{ secrets.* }}` expanded, SSH keys for checkout and the runner's client key, so a runner only serves them to its own job pods:
+
+- The runner listens with a certificate it generates at start. Its SHA-256 pin reaches the job pod over the `pods/exec` stream, which the API server protects with TLS, and the job pod trusts no other certificate, so nobody on the pod network can read or change a copy.
+- Every copy has a one-time token, sent on that stream's stdin, so it shows neither in the command line nor in the API server audit log.
+- The runner serves a copy only to a connection from an IP of the job pod it is for. Other pods get a 404 and leave the copy for its job pod. This needs the runner to see the job pods' own addresses, so it does not work for a runner outside the cluster or behind a proxy that rewrites source addresses.
+
+To also keep other pods from connecting at all, allow the port only from the runner's own job pods, which carry its UUID in the `com.gitea.runner.uuid` label. The policy denies every other connection to the runner pod, so it also needs to allow `cache.port`, and both ports need fixed values:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gitea-runner-transfer
+spec:
+  podSelector:
+    matchLabels:
+      app: runner # the runner pod
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: <kubernetes.namespace>
+          podSelector:
+            matchLabels:
+              com.gitea.runner.uuid: <runner UUID, from the .runner file>
+      ports:
+        - port: 9090 # kubernetes.transfer.port
+        - port: 9091 # cache.port
+```
+
 ## Services
 
 Services share the pod's network, so a step reaches one by its id or `localhost`, and two services cannot listen on the same port. An id that is not a valid hostname is sanitized, so `my_db` is reached as `my-db`. Pass secrets to services through `env`, as `command` is visible in the pod spec. Of `options`, only `--health-*` is supported. They become a startup probe with Docker's defaults, which stops a service that fails its retries, so the job fails as on Docker.

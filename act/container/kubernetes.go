@@ -10,10 +10,12 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +26,7 @@ import (
 	"time"
 
 	"gitea.com/gitea/runner/act/common"
+	"gitea.com/gitea/runner/act/common/logging"
 
 	"github.com/kballard/go-shellquote"
 	"github.com/spf13/pflag"
@@ -37,6 +40,7 @@ type KubernetesOptions struct {
 	MaxLifetime  time.Duration
 	ForcePull    bool
 	RunnerUUID   string
+	Transfer     *KubernetesTransfer
 }
 
 // KubernetesPod runs a job container and its service containers as one pod.
@@ -47,6 +51,10 @@ type KubernetesPod struct {
 	job              *kubernetesContainer
 	services         []*kubernetesContainer
 	arch, path       string
+	ips              []net.IP
+	transfer         *transferServer
+	transferImage    string
+	transferHelper   string // empty when copies go through the API server
 }
 
 type kubernetesContainer struct {
@@ -76,6 +84,7 @@ type podStatus struct {
 	Spec   struct{ Containers []struct{} }
 	Status struct {
 		Phase, Reason, Message                   string
+		PodIPs                                   []struct{ IP string }
 		Conditions                               []struct{ Type, Status, Message string }
 		InitContainerStatuses, ContainerStatuses []containerStatus
 	}
@@ -131,13 +140,23 @@ func (p *KubernetesPod) create(ctx context.Context) error {
 		labels[runnerUUIDLabel] = p.options.RunnerUUID
 	}
 	metadata := map[string]any{"name": name, "labels": labels}
+	var runnerImage string
 	if hostname, err := os.Hostname(); p.client.inCluster && err == nil {
-		var runner struct{ Metadata struct{ Name, UID string } }
+		var runner struct {
+			Metadata struct{ Name, UID string }
+			Spec     struct{ Containers []struct{ Image string } }
+		}
 		if err := p.client.do(ctx, http.MethodGet, p.client.path("pods/"+hostname), nil, &runner); err == nil {
 			metadata["ownerReferences"] = []any{map[string]any{"apiVersion": "v1", "kind": "Pod", "name": runner.Metadata.Name, "uid": runner.Metadata.UID}}
+			if len(runner.Spec.Containers) == 1 {
+				runnerImage = runner.Spec.Containers[0].Image
+			}
 		} else {
 			common.Logger(ctx).Debugf("The runner is not pod %s, job pods get no owner: %v", hostname, err)
 		}
+	}
+	if err := p.setupTransfer(runnerImage); err != nil {
+		return err
 	}
 	secretData := map[string]string{}
 	manifest, err := p.manifest(name, secretData, metadata)
@@ -207,6 +226,18 @@ func (p *KubernetesPod) manifest(secret string, secretData map[string]string, me
 		}
 	}
 	spec := map[string]any{"restartPolicy": "Never", "containers": containers, "volumes": volumes}
+	if p.transferHelper != "" {
+		transfer := map[string]any{
+			"name": "gitea-runner-transfer", "image": p.transferImage, "terminationMessagePolicy": "FallbackToLogsOnError",
+			"command":         []string{"gitea-runner", KubernetesTransferCommand, "install", p.transferHelper},
+			"volumeMounts":    []any{map[string]any{"name": "act", "mountPath": p.job.GetActPath()}},
+			"securityContext": map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []string{"ALL"}}},
+		}
+		if p.options.ForcePull {
+			transfer["imagePullPolicy"] = "Always"
+		}
+		spec["initContainers"] = []any{transfer}
+	}
 	if len(hostnames) > 0 {
 		spec["hostAliases"] = []any{map[string]any{"ip": "127.0.0.1", "hostnames": hostnames}}
 	}
@@ -343,7 +374,13 @@ func (p *KubernetesPod) waitStarted(ctx context.Context) error {
 			return err
 		}
 		if pod.Status.Phase == "Failed" {
-			return fmt.Errorf("pod %s failed: %s", p.name, cmp.Or(pod.Status.Message, pod.Status.Reason))
+			reason := cmp.Or(pod.Status.Message, pod.Status.Reason)
+			for _, status := range append(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses...) {
+				if terminated := status.State.Terminated; reason == "" && terminated != nil && terminated.ExitCode != 0 {
+					reason = fmt.Sprintf("container %s exited with %d: %s", status.Name, terminated.ExitCode, strings.TrimSpace(terminated.Message))
+				}
+			}
+			return fmt.Errorf("pod %s failed: %s", p.name, reason)
 		}
 		started := len(pod.Status.ContainerStatuses) == len(pod.Spec.Containers)
 		for _, status := range append(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses...) {
@@ -356,6 +393,9 @@ func (p *KubernetesPod) waitStarted(ctx context.Context) error {
 			}
 		}
 		if started {
+			for _, ip := range pod.Status.PodIPs {
+				p.ips = append(p.ips, net.ParseIP(ip.IP))
+			}
 			return nil
 		}
 		for _, condition := range pod.Status.Conditions {
@@ -457,22 +497,35 @@ func (c *kubernetesContainer) Exec(command []string, env map[string]string, _, w
 	}
 }
 
-// compressCopyMin is the size from which Copy compresses: below it gzip saves next to nothing on the wire and costs a process in the pod.
+// compressCopyMin is the size from which Copy compresses and uses the transfer helper: below it that saves next to nothing on the wire and costs a process in the pod.
 const compressCopyMin = 64 << 10
 
-// extract streams the tar write produces into destPath over exec, which goes through the API server.
-// With compress it is gzipped on the way, as copied actions shrink about fivefold and API server traffic often crosses zones.
+// extract streams the tar write produces into destPath, gzipped with compress, as copied actions shrink about fivefold and API server traffic often crosses zones.
 func (c *kubernetesContainer) extract(ctx context.Context, destPath string, compress bool, write func(io.Writer) error) error {
+	if compress && c.pod.transferHelper != "" {
+		request, done := c.pod.transfer.offer(c.pod.ips, write)
+		stdin, _ := json.Marshal(request)
+		var stderr bytes.Buffer
+		err := c.pod.client.exec(ctx, c.pod.name, c.name, []string{c.pod.transferHelper, KubernetesTransferCommand, "fetch", destPath}, bytes.NewReader(stdin), io.Discard, &stderr)
+		taken, writeErr := done()
+		if err == nil || ctx.Err() != nil {
+			return err
+		}
+		if taken || !c.pod.options.Transfer.Fallback {
+			return fmt.Errorf("copy to %s over the pod network: %w: %s", destPath, errors.Join(writeErr, err), strings.TrimSpace(stderr.String()))
+		}
+		c.pod.transferHelper = "" // a pod that cannot reach the runner once will not later
+		logging.Warnf("Copying into pod %s over the pod network failed, copying through the API server instead: %v: %s", c.pod.name, err, strings.TrimSpace(stderr.String()))
+	}
 	compress = compress && c.gzip
 	reader, writer := io.Pipe()
 	defer reader.Close()
 	go func() {
-		if !compress {
+		if compress {
+			writer.CloseWithError(writeGzip(writer, write))
+		} else {
 			writer.CloseWithError(write(writer))
-			return
 		}
-		compressed, _ := gzip.NewWriterLevel(writer, gzip.BestSpeed) // fast enough to not slow copies down, nearly as small as the default level
-		writer.CloseWithError(errors.Join(write(compressed), compressed.Close()))
 	}()
 	script := `mkdir -p "$1" && tar -xf - -C "$1"`
 	if compress {
@@ -483,6 +536,12 @@ func (c *kubernetesContainer) extract(ctx context.Context, destPath string, comp
 		return fmt.Errorf("extract to %s: %w: %s", destPath, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// writeGzip gzips what write produces into w, at a level fast enough to not slow copies down and nearly as small as the default.
+func writeGzip(w io.Writer, write func(io.Writer) error) error {
+	compressed, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
+	return errors.Join(write(compressed), compressed.Close())
 }
 
 func (c *kubernetesContainer) Copy(destPath string, files ...*FileEntry) common.Executor {

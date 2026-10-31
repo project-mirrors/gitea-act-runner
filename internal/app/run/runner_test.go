@@ -21,6 +21,7 @@ import (
 	"gitea.com/gitea/runner/act/artifactcache"
 	"gitea.com/gitea/runner/act/common"
 	"gitea.com/gitea/runner/act/common/logging"
+	"gitea.com/gitea/runner/act/container"
 	"gitea.com/gitea/runner/act/runner"
 	clientmocks "gitea.com/gitea/runner/internal/pkg/client/mocks"
 	"gitea.com/gitea/runner/internal/pkg/config"
@@ -274,6 +275,17 @@ func TestRunnerKubernetesOptionsLayerTheLabelPodTemplatesInRunsOnOrder(t *testin
 	r := &Runner{cfg: cfg, labels: labels.Labels{{Name: "linux"}, {Name: "gpu"}, {Name: "large"}}}
 
 	require.Equal(t, []map[string]any{{"base": true}, {"large": true}, {"gpu": true}}, r.kubernetesOptions([]string{"linux", "large", "other", "gpu", "large"}).PodTemplates)
+}
+
+func TestRunnerKubernetesOptionsTransfer(t *testing.T) {
+	kubernetesRunner := &Runner{cfg: &config.Config{}}
+	kubernetesRunner.cfg.Kubernetes.Transfer = config.KubernetesTransfer{Mode: config.KubernetesTransferModeAPI, Host: "10.0.0.5", Port: 4000, Image: "gitea/runner:latest"}
+	require.Nil(t, kubernetesRunner.kubernetesOptions(nil).Transfer)
+
+	kubernetesRunner.cfg.Kubernetes.Transfer.Mode = config.KubernetesTransferModeAuto
+	require.Equal(t, &container.KubernetesTransfer{Host: "10.0.0.5", Port: 4000, Image: "gitea/runner:latest", Fallback: true}, kubernetesRunner.kubernetesOptions(nil).Transfer)
+	kubernetesRunner.cfg.Kubernetes.Transfer.Mode = config.KubernetesTransferModeDirect
+	require.Equal(t, &container.KubernetesTransfer{Host: "10.0.0.5", Port: 4000, Image: "gitea/runner:latest"}, kubernetesRunner.kubernetesOptions(nil).Transfer)
 }
 
 // Proxy variables are assembled per task, because a job's service containers have to be

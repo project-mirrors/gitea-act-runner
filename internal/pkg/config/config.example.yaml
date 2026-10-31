@@ -306,6 +306,18 @@ kubernetes:
   #pod_template: {}
   # Pod templates merged over pod_template, in runs-on order, for jobs whose runs-on has the label they are keyed by.
   #pod_templates: {}
+  # Have job pods fetch directories, such as actions, and copies of 64 KiB or more gzipped from the runner over the pod network,
+  # instead of the runner streaming them through the API server. An init container copies gitea-runner from image into each job pod.
+  # api: through the API server (default). auto: over the pod network, through the API server for a job pod that
+  # cannot reach the runner. direct: over the pod network only, so a broken setup fails jobs instead of quietly
+  # costing API server traffic again.
+  #transfer:
+  #  mode: api
+  #  # Address and port the runner listens on and job pods reach it at, the outbound IP and a free port when empty.
+  #  host: ""
+  #  port: 0
+  #  # Image with gitea-runner on its PATH, the runner pod's image when it has a single container and runs in namespace.
+  #  image: ""
 
 # Optional local task-admission checks. Disabled by default. When enabled, low
 # disk space or a failing script pauses new task fetching; existing jobs continue.

@@ -210,6 +210,25 @@ type Kubernetes struct {
 	Namespace    string                    `yaml:"namespace"`     // Namespace of job pods, empty uses the service account's, else the kubeconfig context's, else default.
 	PodTemplate  map[string]any            `yaml:"pod_template"`  // PodTemplate is a pod manifest the runner merges its own onto.
 	PodTemplates map[string]map[string]any `yaml:"pod_templates"` // PodTemplates are merged over PodTemplate, in runs-on order, for jobs whose runs-on has the label they are keyed by.
+	Transfer     KubernetesTransfer        `yaml:"transfer"`      // Transfer has job pods fetch copied files from the runner over the pod network instead of through the API server.
+}
+
+// Kubernetes transfer modes: how files the runner copies reach job pods.
+const (
+	KubernetesTransferModeAPI    = "api"    // through the API server
+	KubernetesTransferModeAuto   = "auto"   // over the pod network, through the API server for a job pod that cannot reach the runner
+	KubernetesTransferModeDirect = "direct" // over the pod network only, a copy that cannot reach the runner fails
+)
+
+// KubernetesTransferModes are the valid kubernetes.transfer.mode values.
+var KubernetesTransferModes = []string{KubernetesTransferModeAPI, KubernetesTransferModeAuto, KubernetesTransferModeDirect}
+
+// KubernetesTransfer configures copying files into job pods over the pod network.
+type KubernetesTransfer struct {
+	Mode  string `yaml:"mode"`  // Mode is one of KubernetesTransferModes, api when empty.
+	Host  string `yaml:"host"`  // Host is the address the runner listens on and job pods reach it at, empty uses the outbound IP.
+	Port  uint16 `yaml:"port"`  // Port the runner listens on for job pods, 0 picks a free one.
+	Image string `yaml:"image"` // Image has gitea-runner on its PATH, empty uses the image of a single-container runner pod.
 }
 
 // Metrics represents the configuration for the Prometheus metrics endpoint.
@@ -345,6 +364,12 @@ func LoadDefault(file string) (*Config, error) {
 	}
 	if !slices.Contains(ToolCacheModes, cfg.Runner.ToolCacheMode) {
 		return nil, fmt.Errorf("invalid runner.tool_cache_mode %q: must be one of %q", cfg.Runner.ToolCacheMode, ToolCacheModes)
+	}
+	if cfg.Kubernetes.Transfer.Mode == "" {
+		cfg.Kubernetes.Transfer.Mode = KubernetesTransferModeAPI
+	}
+	if !slices.Contains(KubernetesTransferModes, cfg.Kubernetes.Transfer.Mode) {
+		return nil, fmt.Errorf("invalid kubernetes.transfer.mode %q: must be one of %q", cfg.Kubernetes.Transfer.Mode, KubernetesTransferModes)
 	}
 	if cfg.Runner.LogReportLevel != "" {
 		if _, err := logging.ParseLevel(cfg.Runner.LogReportLevel); err != nil {

@@ -140,6 +140,19 @@ func TestLoadDefault_ToolCacheMode(t *testing.T) {
 	assert.Contains(t, err.Error(), "tool_cache_mode")
 }
 
+func TestLoadDefault_KubernetesTransferMode(t *testing.T) {
+	cfg, err := LoadDefault(write(t, "kubernetes:\n  transfer:\n    host: 10.0.0.5\n"))
+	require.NoError(t, err)
+	assert.Equal(t, KubernetesTransferModeAPI, cfg.Kubernetes.Transfer.Mode, "copies stay on the API server unless asked")
+
+	cfg, err = LoadDefault(write(t, "kubernetes:\n  transfer:\n    mode: direct\n"))
+	require.NoError(t, err)
+	assert.Equal(t, KubernetesTransferModeDirect, cfg.Kubernetes.Transfer.Mode)
+
+	_, err = LoadDefault(write(t, "kubernetes:\n  transfer:\n    mode: fast\n"))
+	require.ErrorContains(t, err, "kubernetes.transfer.mode")
+}
+
 func TestLoadDefault_RejectsInvalidLogReportLevel(t *testing.T) {
 	_, err := LoadDefault(write(t, "runner:\n  log_report_level: loud\n"))
 	require.ErrorContains(t, err, "runner.log_report_level")

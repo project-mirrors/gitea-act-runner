@@ -58,6 +58,9 @@ func Execute(ctx context.Context) {
 	// ./gitea-runner bug-report
 	rootCmd.AddCommand(loadBugReportCmd())
 
+	// ./gitea-runner kubernetes-transfer, run inside Kubernetes job pods
+	rootCmd.AddCommand(loadKubernetesTransferCmd())
+
 	// ./gitea-runner config
 	rootCmd.AddCommand(loadConfigCmd(&configFile))
 
