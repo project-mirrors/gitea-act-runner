@@ -9,7 +9,10 @@ jobs:
     steps:
       - run: |
           echo e2e-before-outage
-          for i in $(seq -w 1 15); do
+          i=0
+          until curl -fs "${{ vars.E2E_GATE }}" > /dev/null; do
+            i=$((i + 1))
             echo "tick-$i"
-            sleep 1
+            sleep 0.2
           done
+          echo "ticks=$i"

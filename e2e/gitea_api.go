@@ -53,12 +53,16 @@ func (a *GiteaAPI) CreateRepo(ctx context.Context, name string) error {
 }
 
 func (a *GiteaAPI) CreateFile(ctx context.Context, repo, path, content, message string) error {
-	body := map[string]any{
-		"content": base64.StdEncoding.EncodeToString([]byte(content)),
-		"message": message,
+	return a.CreateFiles(ctx, repo, map[string]string{path: content}, message)
+}
+
+func (a *GiteaAPI) CreateFiles(ctx context.Context, repo string, files map[string]string, message string) error {
+	var operations []map[string]string
+	for path, content := range files {
+		operations = append(operations, map[string]string{"operation": "create", "path": path, "content": base64.StdEncoding.EncodeToString([]byte(content))})
 	}
-	url := fmt.Sprintf("/api/v1/repos/%s/%s/contents/%s", giteaAdminUser, repo, path)
-	return a.doJSON(ctx, http.MethodPost, url, body, nil)
+	body := map[string]any{"files": operations, "message": message}
+	return a.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/contents", giteaAdminUser, repo), body, nil)
 }
 
 func (a *GiteaAPI) CreateTag(ctx context.Context, repo, name string) error {

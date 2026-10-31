@@ -1047,23 +1047,25 @@ func makeTestRC(t *testing.T, jobYAML string) *RunContext {
 
 func TestApplyJobTimeout(t *testing.T) {
 	cases := []struct {
-		name        string
-		yaml        string
-		wantTimeout bool
+		name string
+		yaml string
+		want time.Duration
 	}{
-		{"empty", "runs-on: ubuntu-latest", false},
-		{"integer", "timeout-minutes: 5\nruns-on: ubuntu-latest", true},
-		{"zero ignored", "timeout-minutes: 0\nruns-on: ubuntu-latest", false},
-		{"non-numeric ignored", "timeout-minutes: abc\nruns-on: ubuntu-latest", false},
+		{"empty", "runs-on: ubuntu-latest", 0},
+		{"integer", "timeout-minutes: 5\nruns-on: ubuntu-latest", 5 * time.Minute},
+		{"zero ignored", "timeout-minutes: 0\nruns-on: ubuntu-latest", 0},
+		{"non-numeric ignored", "timeout-minutes: abc\nruns-on: ubuntu-latest", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rc := makeTestRC(t, tc.yaml)
-			ctx := t.Context()
-			newCtx, cancel := applyJobTimeout(ctx, rc, rc.Run.Job())
+			newCtx, cancel := applyJobTimeout(t.Context(), rc, rc.Run.Job())
 			defer cancel()
-			_, hasDeadline := newCtx.Deadline()
-			assert.Equal(t, tc.wantTimeout, hasDeadline)
+			deadline, hasDeadline := newCtx.Deadline()
+			assert.Equal(t, tc.want != 0, hasDeadline)
+			if hasDeadline {
+				assert.WithinDuration(t, time.Now().Add(tc.want), deadline, time.Minute)
+			}
 		})
 	}
 }

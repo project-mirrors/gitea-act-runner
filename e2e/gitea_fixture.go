@@ -15,9 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -40,7 +38,8 @@ type GiteaFixture struct {
 	image      string
 	version    string
 	baseURL    string
-	network    string // set in container mode; jobs must join it
+	network    string // the user-defined network every container of the suite joins
+	selfIP     string // the test process's address on network, which job containers can reach
 	adminToken string
 }
 
@@ -55,44 +54,10 @@ func dockerClient(ctx context.Context) (mobyclient.APIClient, error) {
 	return cli, nil
 }
 
-// Prefer docker bridge gateway, then LAN IP; never 127.0.0.1 (ACTIONS_RUNTIME_URL must reach the host from job containers).
-func hostAddress(ctx context.Context, cli mobyclient.APIClient) netip.Addr {
-	if gateway, ok := bridgeGateway(ctx, cli); ok && bindable(gateway) {
-		return gateway
-	}
-
-	loopback := netip.AddrFrom4([4]byte{127, 0, 0, 1})
-
-	conn, err := net.Dial("udp", "192.0.2.1:80") // TEST-NET-1: routing table only
-	if err != nil {
-		return loopback
-	}
-	defer conn.Close()
-
-	addr, ok := conn.LocalAddr().(*net.UDPAddr)
-	if !ok {
-		return loopback
-	}
-	return addr.AddrPort().Addr().Unmap()
-}
-
-func bridgeGateway(ctx context.Context, cli mobyclient.APIClient) (netip.Addr, bool) {
-	inspected, err := cli.NetworkInspect(ctx, "bridge", mobyclient.NetworkInspectOptions{})
-	if err != nil {
-		return netip.Addr{}, false
-	}
-	for _, cfg := range inspected.Network.IPAM.Config {
-		if cfg.Gateway.Is4() {
-			return cfg.Gateway, true
-		}
-	}
-	return netip.Addr{}, false
-}
-
 // When tests run inside a container (sibling docker daemon), join that network and address by name.
-func selfNetwork(ctx context.Context, cli mobyclient.APIClient) (string, bool) {
+func selfNetwork(ctx context.Context, cli mobyclient.APIClient) (string, string, bool) {
 	if _, err := os.Stat("/.dockerenv"); err != nil {
-		return "", false
+		return "", "", false
 	}
 
 	id, err := os.ReadFile("/proc/sys/kernel/hostname")
@@ -100,42 +65,19 @@ func selfNetwork(ctx context.Context, cli mobyclient.APIClient) (string, bool) {
 		id, err = os.ReadFile("/etc/hostname")
 	}
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 
 	inspected, err := cli.ContainerInspect(ctx, strings.TrimSpace(string(id)), mobyclient.ContainerInspectOptions{})
 	if err != nil || inspected.Container.NetworkSettings == nil {
-		return "", false
+		return "", "", false
 	}
-	for name := range inspected.Container.NetworkSettings.Networks {
+	for name, endpoint := range inspected.Container.NetworkSettings.Networks {
 		if name != "host" && name != "none" && name != "bridge" { // only user-defined nets have DNS
-			return name, true
+			return name, endpoint.IPAddress.String(), true
 		}
 	}
-	return "", false
-}
-
-func bindable(addr netip.Addr) bool {
-	l, err := net.Listen("tcp", net.JoinHostPort(addr.String(), "0"))
-	if err != nil {
-		return false
-	}
-	_ = l.Close()
-	return true
-}
-
-func freeHostPort(host string) (int, error) {
-	l, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-
-	addr, ok := l.Addr().(*net.TCPAddr)
-	if !ok {
-		return 0, fmt.Errorf("unexpected listener address type %T", l.Addr())
-	}
-	return addr.Port, nil
+	return "", "", false
 }
 
 func StartGitea(ctx context.Context, cli mobyclient.APIClient) (*GiteaFixture, error) {
@@ -151,31 +93,12 @@ func StartGitea(ctx context.Context, cli mobyclient.APIClient) (*GiteaFixture, e
 		return nil, errors.New("E2E_GITEA_IMAGE is not set")
 	}
 
-	name := fmt.Sprintf("gitea-runner-e2e-%d", time.Now().UnixNano())
-	containerPort := network.MustParsePort("3000/tcp")
-
-	var (
-		baseURL      string
-		hostConfig   = &apicontainer.HostConfig{}
-		netConfig    *network.NetworkingConfig
-		sharedNet, _ = selfNetwork(ctx, cli)
-	)
-	if sharedNet != "" {
-		baseURL = "http://" + net.JoinHostPort(name, "3000")
-		netConfig = &network.NetworkingConfig{
-			EndpointsConfig: map[string]*network.EndpointSettings{sharedNet: {}},
-		}
-	} else {
-		host := hostAddress(ctx, cli)
-		port, err := freeHostPort(host.String())
-		if err != nil {
-			return nil, fmt.Errorf("find a free host port: %w", err)
-		}
-		baseURL = "http://" + net.JoinHostPort(host.String(), strconv.Itoa(port))
-		hostConfig.PortBindings = network.PortMap{
-			containerPort: []network.PortBinding{{HostIP: host, HostPort: strconv.Itoa(port)}},
-		}
+	sharedNet, selfIP, ok := selfNetwork(ctx, cli)
+	if !ok {
+		return nil, errors.New("e2e tests must run in a container on a user-defined network, `make test-e2e` provides one")
 	}
+	name := fmt.Sprintf("gitea-runner-e2e-%d", time.Now().UnixNano())
+	baseURL := "http://" + net.JoinHostPort(name, "3000")
 
 	if _, err := cli.ImageInspect(ctx, image); err != nil {
 		return nil, fmt.Errorf("inspect gitea image %s: %w", image, err)
@@ -191,17 +114,16 @@ func StartGitea(ctx context.Context, cli mobyclient.APIClient) (*GiteaFixture, e
 				"GITEA__server__LFS_START_SERVER=true",
 				"GITEA__server__ROOT_URL=" + baseURL + "/",
 			},
-			ExposedPorts: network.PortSet{containerPort: struct{}{}},
 		},
-		HostConfig:       hostConfig,
-		NetworkingConfig: netConfig,
+		HostConfig:       &apicontainer.HostConfig{Tmpfs: map[string]string{"/data": "exec"}},
+		NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{sharedNet: {}}},
 		Name:             name,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create gitea container: %w", err)
 	}
 
-	f := &GiteaFixture{cli: cli, id: resp.ID, image: image, baseURL: baseURL, network: sharedNet}
+	f := &GiteaFixture{cli: cli, id: resp.ID, image: image, baseURL: baseURL, network: sharedNet, selfIP: selfIP}
 	closeClient = false
 
 	if _, err := cli.ContainerStart(ctx, f.id, mobyclient.ContainerStartOptions{}); err != nil {

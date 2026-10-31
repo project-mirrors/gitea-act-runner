@@ -28,7 +28,7 @@ func testRunCancellation(t *testing.T) {
 	pushWorkflow(t, api, repo, "cancel.yml")
 
 	wfRun := waitForRun(t, api, repo)
-	waitForRunningJobLog(t, api, repo, wfRun.ID, "e2e-live-log-marker")
+	waitForRunningJobLog(t, api, repo, wfRun.ID, "e2e-live-log-marker", 1)
 	if !cancelSupported {
 		requireSuccess(t, api, repo, wfRun.ID)
 		return
@@ -49,31 +49,32 @@ func testRunCancellation(t *testing.T) {
 	}
 }
 
-func waitForRunningJobLog(t *testing.T, api *GiteaAPI, repo string, runID int64, substr string) {
+func waitForRunningJobLog(t *testing.T, api *GiteaAPI, repo string, runID int64, prefix string, count int) {
 	t.Helper()
 	// The budget covers scheduling and the container start, which a loaded runner makes slow.
 	ctx, cancel := context.WithTimeout(t.Context(), runTimeout)
 	defer cancel()
 
-	status := "none"
 	for {
 		jobs, err := api.Jobs(ctx, repo, runID)
 		if err != nil {
 			t.Fatalf("list jobs: %v", err)
 		}
-		if len(jobs) > 0 {
-			status = jobs[0].Status
-			if status == "in_progress" {
-				logs, err := api.JobLogs(ctx, repo, jobs[0].ID)
-				if err == nil && commandRow(logs, substr) == substr {
-					return
+		logged := 0
+		for _, job := range jobs {
+			if job.Status == "in_progress" {
+				if logs, err := api.JobLogs(ctx, repo, job.ID); err == nil && commandRow(logs, prefix) != "" {
+					logged++
 				}
 			}
+		}
+		if logged >= count {
+			return
 		}
 		select {
 		case <-ctx.Done():
 			dumpRunLogs(t, api, repo, runID)
-			t.Fatalf("job of run %d is %q and never logged %q", runID, status, substr)
+			t.Fatalf("%d of %d running jobs of run %d logged %q", logged, count, runID, prefix)
 		case <-time.After(pollInterval):
 		}
 	}

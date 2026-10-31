@@ -10,6 +10,8 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -101,6 +103,10 @@ func (p *flakyProxy) restore() { p.down.Store(false) }
 func testReconnect(t *testing.T) {
 	t.Parallel()
 	api, repo := newScenario(t)
+	gate, release := newGate(t)
+	if err := api.CreateVariable(t.Context(), repo, "E2E_GATE", gate); err != nil {
+		t.Fatalf("create gate variable: %v", err)
+	}
 	proxy := newFlakyProxy(t, fixture.baseURL)
 	startRunner(t, repo, "e2e-reconnect", runnerOptions{host: true, address: proxy.URL()})
 
@@ -112,14 +118,19 @@ func testReconnect(t *testing.T) {
 
 	pushWorkflow(t, api, repo, "reconnect.yml")
 	slow := waitForRunAfter(t, api, repo, idle.ID)
-	waitForRunningJobLog(t, api, repo, slow.ID, "e2e-before-outage")
-	// the job logs a line per second, so a long outage spans several that can only arrive after it
+	waitForRunningJobLog(t, api, repo, slow.ID, "e2e-before-outage", 1)
+	// the job logs a line every 200ms until released, so the outage spans several that can only arrive after it
 	proxy.cut(t, 8)
 	proxy.restore()
+	release()
 	requireSuccess(t, api, repo, slow.ID)
 	logs := runLogs(t, api, repo, slow.ID)
-	for i := 1; i <= 15; i++ {
-		if tick := fmt.Sprintf("tick-%02d", i); commandRow(logs, tick) != tick {
+	ticks, err := strconv.Atoi(strings.TrimPrefix(commandRow(logs, "ticks="), "ticks="))
+	if err != nil {
+		t.Fatalf("the job did not report its tick count: %v\n%s", err, logs)
+	}
+	for i := 1; i <= ticks; i++ {
+		if tick := fmt.Sprintf("tick-%d", i); commandRow(logs, tick) != tick {
 			t.Errorf("log line %s written during or after the outage was lost:\n%s", tick, logs)
 			break
 		}

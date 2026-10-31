@@ -11,27 +11,11 @@ import (
 	"time"
 )
 
-func testWorkflowDispatch(t *testing.T) {
-	t.Parallel()
-	ctx := t.Context()
-
-	api, repo := newScenario(t)
-	pushWorkflow(t, api, repo, "dispatch.yml")
-
-	branch, err := api.DefaultBranch(ctx, repo)
-	if err != nil {
-		t.Fatalf("get default branch: %v", err)
+func testWorkflowDispatch(t *testing.T, m mode) {
+	result := runWorkflow(t, m, workflowSpec{files: []string{"dispatch.yml"}, inputs: map[string]string{"subject": "dispatch-input-value"}})
+	if result.conclusion != "success" {
+		t.Errorf("run concluded %q, want success", result.conclusion)
 	}
-	inputs := map[string]string{"subject": "dispatch-input-value"}
-	if err := waitForDispatch(ctx, api, repo, "dispatch.yml", branch, inputs); err != nil {
-		t.Fatalf("dispatch workflow: %v", err)
-	}
-
-	dispatched := waitForRun(t, api, repo)
-	if dispatched.Event != "workflow_dispatch" {
-		t.Fatalf("run event is %q, want workflow_dispatch", dispatched.Event)
-	}
-	requireSuccess(t, api, repo, dispatched.ID)
 }
 
 // Gitea indexes workflows asynchronously after the Contents API commit.

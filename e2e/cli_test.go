@@ -67,10 +67,9 @@ func newCLIRunner(t *testing.T, label, extraRunnerConfig string) *cliRunner {
   log_report_interval: 500ms
 %scache:
   dir: %s
-`, filepath.Join(dir, ".runner"), extraRunnerConfig, filepath.Join(dir, "cache"))
-	if fixture.network != "" {
-		cfg += "container:\n  network: " + fixture.network + "\n"
-	}
+container:
+  network: %s
+`, filepath.Join(dir, ".runner"), extraRunnerConfig, filepath.Join(dir, "cache"), fixture.network)
 	c := &cliRunner{api: api, repo: repo, bin: bin, cfgFile: filepath.Join(dir, "config.yaml"), dir: dir}
 	if err := os.WriteFile(c.cfgFile, []byte(cfg), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -221,13 +220,26 @@ func testCLILabelsOverride(t *testing.T) {
 func testCLIShutdownDrains(t *testing.T) {
 	t.Parallel()
 	c := newCLIRunner(t, "e2e-shutdown", "  shutdown_timeout: 1m\n")
+	gate, release := newGate(t)
+	if err := c.api.CreateVariable(t.Context(), c.repo, "E2E_GATE", gate); err != nil {
+		t.Fatalf("create gate variable: %v", err)
+	}
 	d := c.startDaemon(t)
 
 	pushWorkflow(t, c.api, c.repo, "cli_shutdown.yml")
 	wfRun := waitForRun(t, c.api, c.repo)
-	waitForRunningJobLog(t, c.api, c.repo, wfRun.ID, "e2e-shutdown-started")
+	waitForRunningJobLog(t, c.api, c.repo, wfRun.ID, "e2e-shutdown-started", 1)
 
 	d.terminate(t)
+	deadline := time.After(time.Minute)
+	for !strings.Contains(d.log.String(), "shutdown initiated") {
+		select {
+		case <-deadline:
+			t.Fatalf("daemon never started shutting down\n%s", d.log)
+		case <-time.After(pollInterval):
+		}
+	}
+	release()
 	if err := d.wait(t, runTimeout); err != nil {
 		t.Errorf("daemon did not exit cleanly: %v\n%s", err, d.log)
 	}
@@ -248,7 +260,7 @@ func testCLIShutdownCancels(t *testing.T) {
 
 	pushWorkflow(t, c.api, c.repo, "cli_shutdown.yml")
 	wfRun := waitForRun(t, c.api, c.repo)
-	waitForRunningJobLog(t, c.api, c.repo, wfRun.ID, "e2e-shutdown-started")
+	waitForRunningJobLog(t, c.api, c.repo, wfRun.ID, "e2e-shutdown-started", 1)
 
 	d.terminate(t)
 	if err := d.wait(t, runTimeout); err != nil {
@@ -266,7 +278,7 @@ func testCLIShutdownCancels(t *testing.T) {
 	}
 }
 
-func testExec(t *testing.T) {
+func testExecArtifacts(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
@@ -274,25 +286,18 @@ func testExec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflows, workdir := t.TempDir(), t.TempDir()
-	for dst, src := range map[string]string{
-		filepath.Join(workflows, "a.yml"):                                    "exec_artifact.yml",
-		filepath.Join(workflows, "b.yml"):                                    "exec_artifact.yml",
-		filepath.Join(workflows, "reusable_caller.yml"):                      "reusable_caller.yml",
-		filepath.Join(workdir, ".gitea", "workflows", "reusable_callee.yml"): "reusable_callee.yml",
-	} {
-		content, err := os.ReadFile(filepath.Join("testdata", "workflows", src))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(dst, content, 0o644); err != nil {
+	workflow, err := os.ReadFile("testdata/workflows/exec_artifact.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflows := t.TempDir()
+	for _, name := range []string{"a.yml", "b.yml"} {
+		if err := os.WriteFile(filepath.Join(workflows, name), workflow, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 
+	workdir := t.TempDir()
 	for _, args := range [][]string{
 		{"init", "-q"},
 		{"remote", "add", "origin", "https://example.com/e2e/exec.git"},
@@ -304,18 +309,11 @@ func testExec(t *testing.T) {
 	}
 
 	artifacts := t.TempDir()
-	args := []string{"exec", "-C", workdir, "-W", workflows, "-i", os.Getenv("E2E_JOB_IMAGE"), "--artifact-server-path", artifacts, "--no-skip-checkout"}
-	if fixture.network != "" {
-		args = append(args, "--network", fixture.network)
-	}
+	args := []string{"exec", "-C", workdir, "-W", workflows, "-i", os.Getenv("E2E_JOB_IMAGE"), "--artifact-server-path", artifacts, "--network", fixture.network}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "ACTIONS_") })
-	out, err := cmd.CombinedOutput()
-	if err != nil {
+	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("exec: %v\n%s", err, out)
-	}
-	if !strings.Contains(string(out), "e2e-reusable-ran") {
-		t.Errorf("the called workflow did not run:\n%s", out)
 	}
 	if blobs, _ := filepath.Glob(filepath.Join(artifacts, "v4", "*", "*", "blob")); len(blobs) != 2 {
 		t.Fatalf("want one v4 artifact blob per workflow run, got %v", blobs)

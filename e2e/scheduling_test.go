@@ -75,10 +75,16 @@ func testCapacity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			api, repo := newScenario(t)
+			gate, release := newGate(t)
+			if err := api.CreateVariable(t.Context(), repo, "E2E_GATE", gate); err != nil {
+				t.Fatalf("create gate variable: %v", err)
+			}
 			startRunner(t, repo, "e2e-capacity", runnerOptions{capacity: tc.capacity})
 			pushWorkflow(t, api, repo, "capacity.yml")
 
 			wfRun := waitForRun(t, api, repo)
+			waitForRunningJobLog(t, api, repo, wfRun.ID, "span-start=", tc.capacity)
+			release()
 			requireSuccess(t, api, repo, wfRun.ID)
 
 			jobs, err := api.Jobs(t.Context(), repo, wfRun.ID)

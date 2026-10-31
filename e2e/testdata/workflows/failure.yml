@@ -21,10 +21,3 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo dependent
-  timeout:
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    steps:
-      - run: |
-          echo e2e-timeout-started
-          sleep 300

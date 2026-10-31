@@ -6,5 +6,5 @@ jobs:
     steps:
       - run: |
           echo e2e-shutdown-started
-          sleep 8
+          until curl -fs "${{ vars.E2E_GATE }}" > /dev/null; do sleep 0.1; done
           echo e2e-shutdown-finished

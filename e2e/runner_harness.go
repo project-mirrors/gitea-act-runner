@@ -33,6 +33,7 @@ type runnerOptions struct {
 	host       bool   // register a host-mode label instead of a docker one
 	name       string // suffix that keeps runner names unique when a test starts several
 	address    string // Gitea address the runner talks to, default the fixture
+	timeout    time.Duration
 }
 
 func startRunner(t *testing.T, repo, labelName string, options runnerOptions) *poll.Poller {
@@ -60,9 +61,8 @@ func startRunner(t *testing.T, repo, labelName string, options runnerOptions) *p
 	cfg.Runner.StateReportInterval = 500 * time.Millisecond // so cancel reaches the job quickly
 	cfg.Runner.LogReportInterval = 500 * time.Millisecond
 	cfg.Runner.Capacity = max(options.capacity, 1)
-	if fixture.network != "" {
-		cfg.Container.Network = fixture.network
-	}
+	cfg.Runner.Timeout = cmp.Or(options.timeout, cfg.Runner.Timeout)
+	cfg.Container.Network = fixture.network
 
 	scheme := labels.SchemeDocker
 	if options.kubernetes != nil {

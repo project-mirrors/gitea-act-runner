@@ -8,15 +8,12 @@ package e2e
 import "testing"
 
 // testReusableWorkflow runs a local workflow_call workflow and consumes its output.
-func testReusableWorkflow(t *testing.T) {
-	t.Parallel()
-	api, repo := newScenario(t)
-	pushWorkflow(t, api, repo, "reusable_callee.yml")
-	pushWorkflow(t, api, repo, "reusable_caller.yml")
-
-	wfRun := waitForRun(t, api, repo)
-	requireSuccess(t, api, repo, wfRun.ID)
-	if logs := runLogs(t, api, repo, wfRun.ID); commandRow(logs, "e2e-reusable-ran") == "" {
-		t.Errorf("the called workflow did not run:\n%s", logs)
+func testReusableWorkflow(t *testing.T, m mode) {
+	result := runWorkflow(t, m, workflowSpec{
+		files:    []string{"reusable_callee.yml", "reusable_caller.yml"},
+		execArgs: []string{"--no-skip-checkout"},
+	})
+	if result.conclusion != "success" || !result.hasLine("e2e-reusable-ran") {
+		t.Errorf("run concluded %q, want success with the called workflow's marker", result.conclusion)
 	}
 }

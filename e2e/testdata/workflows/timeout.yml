@@ -1,0 +1,9 @@
+name: timeout
+on: push
+jobs:
+  timeout:
+    runs-on: e2e-timeout
+    steps:
+      - run: |
+          echo e2e-timeout-started
+          sleep 300

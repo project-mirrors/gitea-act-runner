@@ -57,12 +57,15 @@ Each lives in `internal/pkg/action/<name>` and is registered in `builtinActions`
 
 `make test-e2e` runs the runner against `E2E_GITEA_IMAGE`. It defaults to the nightly image.
 It requires Docker and is excluded from `make test`. CI runs stable and nightly variants in
-parallel.
+parallel. Outside a container it runs `go test` in a Linux container on its own network, as CI does,
+so both take the same paths. `E2E_ARGS` passes extra flags, e.g. `make test-e2e E2E_ARGS='-run TestCompatibility/dispatch'`.
 
 The `cli_*` scenarios build the binary and drive `register` and `daemon` as a user would, including `--once`,
-`--labels` and shutdown with a running job. `failure_paths` covers failed, skipped, tolerated and timed-out jobs.
-`label_routing` and `capacity` cover scheduling, `reconnect` drops the connection to Gitea through a proxy, and
-`host_mode` and `reusable_workflow` cover host labels and `workflow_call`.
+`--labels` and shutdown with a running job. `failure_paths` covers failed, skipped and tolerated jobs, `job_timeout`
+a job killed at the runner's deadline. `label_routing` and `capacity` cover scheduling, `reconnect` drops the
+connection to Gitea through a proxy, and `host_mode` and `reusable_workflow` cover host labels and `workflow_call`.
+`dispatch`, `failure_paths` and `reusable_workflow` run in every mode: through the daemon and `exec`, each on
+Docker and Kubernetes.
 
-The suite shares one Gitea and regular runner. Cache and ephemeral scenarios use isolated
+The suite shares one Gitea, regular runner and k3s cluster. Cache and ephemeral scenarios use isolated
 repository runners. A run path is `<workflow>@<ref>` and a log row is `<timestamp>Z <payload>`.

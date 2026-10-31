@@ -23,4 +23,16 @@ for pull in "${pulls[@]}"; do
 done
 ((result == 0)) || exit "$result"
 
-exec "${GO:-go}" test -tags e2e -count=1 -parallel "$E2E_CONCURRENCY" -timeout 20m -v ./e2e/...
+args=(test -tags e2e -count=1 -parallel "$E2E_CONCURRENCY" -timeout 20m -v "$@" ./e2e/...)
+if [[ -f /.dockerenv ]]; then
+  exec "${GO:-go}" "${args[@]}"
+fi
+
+# Run like CI: in a Linux container on a user-defined network, which every container of the suite joins.
+network="gitea-runner-e2e-$$"
+docker network create "$network" > /dev/null
+trap 'docker network rm "$network" > /dev/null || true' EXIT
+docker run --rm --network "$network" -w "$PWD" -v "$PWD:$PWD" -v /var/run/docker.sock:/var/run/docker.sock \
+  -v gitea-runner-e2e-gomod:/go/pkg/mod -v gitea-runner-e2e-gocache:/root/.cache/go-build \
+  -e E2E_CONCURRENCY -e E2E_JOB_IMAGE -e E2E_GITEA_IMAGE -e E2E_K3S_IMAGE -e SERVICE_IMAGE \
+  "golang:$(sed -n 's/^toolchain go//p' go.mod)" go "${args[@]}"
