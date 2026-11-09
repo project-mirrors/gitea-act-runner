@@ -4,10 +4,10 @@ EXECUTABLE := gitea-runner$(shell $(GO) env GOEXE)
 HAS_GO = $(shell hash $(GO) > /dev/null 2>&1 && echo "GO" || echo "NOGO" )
 
 PODMAN_TEST_IMAGE ?= quay.io/containers/podman:v5.8.9-immutable@sha256:87f42f37fa85b421664c30b8f5f9cfc23920057f5e5fcadf0b6f68d9edc6d415 # renovate: datasource=docker
-E2E_JOB_IMAGE ?= docker.gitea.com/runner-images:ubuntu-latest@sha256:657378e5cfd898e36f820459c60ef8e69be8fcda9fd354e4381a8b654d091bbc # renovate: datasource=docker
+E2E_JOB_IMAGE ?= docker.gitea.com/runner-images:ubuntu-latest@sha256:b96ba465021b1a4c6a1c9e79220c2b9bfad0f29b09dbb528bbfb35411443a3a4 # renovate: datasource=docker
 SERVICE_IMAGE ?= nginx:1.31.7-alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d # renovate: datasource=docker
 E2E_GITEA_IMAGE ?= gitea/gitea:main-nightly
-E2E_K3S_IMAGE ?= rancher/k3s:v1.37.1-k3s1@sha256:ca7f37d993d82ef0dcdcfecb2e0e2618ea541dbaffc620c8cedebe01a82acd0d # renovate: datasource=docker
+E2E_K3S_IMAGE ?= rancher/k3s:v1.37.2-k3s1@sha256:21ea6e0fac4e3930c2ce8aa40ddd41a8b18cb3e9a0222c030dc005e7e88c4332 # renovate: datasource=docker
 WINDOWS_TEST_IMAGE ?= dockurr/windows:6.06@sha256:16fd7c39a3e48bb946d29c59dc6015942e5b900a1fa5d7e5552053bfc48ee2ea # renovate: datasource=docker
 
 GOFILES := $(shell find . -type f -name "*.go" -o -name "go.mod" ! -name "generated.*")
