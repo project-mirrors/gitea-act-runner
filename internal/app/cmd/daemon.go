@@ -208,7 +208,7 @@ func runDaemon(ctx context.Context, daemArgs *daemonArgs, configFile *string) fu
 		case err != nil && ctx.Err() != nil && !client.IsRegistrationRejected(err):
 			return nil
 		case err != nil && connect.CodeOf(err) == connect.CodeUnimplemented:
-			logging.Errorf("Your Gitea version is too old to support runner declare, please upgrade to v1.21 or later")
+			logging.Errorf("Your Gitea version is too old to support runner declare, please upgrade to v%s or later", ver.MinGiteaVersion)
 			return err
 		case err != nil:
 			logging.WithError(err).Error("fail to invoke Declare")

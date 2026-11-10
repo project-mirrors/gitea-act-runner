@@ -355,7 +355,7 @@ func TestReporter_StateNotifyFlush(t *testing.T) {
 	})
 }
 
-func TestReporter_CloseAlwaysSendsRowsWithNoMore(t *testing.T) {
+func TestReporter_CloseFinalizesLogWithoutRows(t *testing.T) {
 	var lastReq atomic.Pointer[runnerv1.UpdateLogRequest]
 	var noMoreCalls atomic.Int64
 
@@ -400,7 +400,7 @@ func TestReporter_CloseAlwaysSendsRowsWithNoMore(t *testing.T) {
 	final := lastReq.Load()
 	require.NotNil(t, final)
 	assert.True(t, final.NoMore, "final UpdateLog must carry NoMore=true")
-	assert.NotEmpty(t, final.Rows, "final UpdateLog must carry at least one row")
+	assert.Empty(t, final.Rows, "a job without output must not get a log row")
 }
 
 func TestReporter_StateHeartbeat(t *testing.T) {
