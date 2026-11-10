@@ -110,7 +110,7 @@ Versioned and `nightly` tags take the same suffixes, like `nightly-dind`. The im
 
 ### Example deployments
 
-See the [examples](examples) directory for more deployments, among them systemd, Kubernetes and VMs.
+See the [examples](examples) directory for more deployments, among them systemd, launchd on macOS, Kubernetes and VMs.
 
 ## Configuration
 
