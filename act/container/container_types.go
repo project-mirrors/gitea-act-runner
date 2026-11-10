@@ -5,7 +5,6 @@
 package container
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -33,38 +32,6 @@ type ExitCodeError int
 
 func (e ExitCodeError) Error() string {
 	return fmt.Sprintf("Process completed with exit code %d.", int(e))
-}
-
-type commandOutput struct {
-	*io.PipeReader
-	cancel context.CancelFunc
-	done   chan struct{}
-	err    error
-}
-
-func (output *commandOutput) Close() error {
-	_, _ = io.Copy(io.Discard, output.PipeReader)
-	output.PipeReader.Close()
-	output.cancel()
-	<-output.done
-	return output.err
-}
-
-func streamOutput(ctx context.Context, run func(context.Context, io.Writer, io.Writer) error) io.ReadCloser {
-	ctx, cancel := context.WithCancel(ctx)
-	reader, writer := io.Pipe()
-	output := &commandOutput{PipeReader: reader, cancel: cancel, done: make(chan struct{})}
-	go func() {
-		defer close(output.done)
-		defer cancel()
-		var stderr bytes.Buffer
-		output.err = run(ctx, writer, &stderr)
-		if output.err != nil && strings.TrimSpace(stderr.String()) != "" {
-			output.err = fmt.Errorf("%w: %s", output.err, strings.TrimSpace(stderr.String()))
-		}
-		writer.CloseWithError(output.err)
-	}()
-	return output
 }
 
 // NewContainerInput the input for the New function
@@ -167,9 +134,7 @@ type Container interface {
 	Create(capAdd, capDrop []string) common.Executor
 	Copy(destPath string, files ...*FileEntry) common.Executor
 	CopyDir(destPath, srcPath string, useGitIgnore, skipGitDir bool) common.Executor
-	ExecOutput(ctx context.Context, command []string) (io.ReadCloser, error)
 	GetContainerArchive(ctx context.Context, srcPath string) (io.ReadCloser, error)
-	CopyTarStream(ctx context.Context, destPath string, write func(*TarWriter) error) error
 	Inspect(ctx context.Context) (*Info, error)
 	DumpLogs(ctx context.Context) error
 	Pull(forcePull bool) common.Executor

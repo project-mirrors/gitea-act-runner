@@ -218,7 +218,7 @@ func Serve(ctx context.Context, artifactPath, addr, port string) context.CancelF
 	logger.Debugf("Artifacts base path '%s'", artifactPath)
 	uploads(router, artifactPath)
 	downloads(router, artifactPath)
-	RegisterV4(router, artifactPath)
+	registerV4(router, artifactPath)
 
 	server := &http.Server{
 		Addr:              net.JoinHostPort(addr, port),

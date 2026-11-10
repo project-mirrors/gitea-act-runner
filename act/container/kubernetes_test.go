@@ -273,17 +273,6 @@ func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
 	assert.Equal(t, "hunter2\nit's\nme\n5\n"+workdir+"\n", jobLog.String())
 	assert.Equal(t, ExitCodeError(3), job.Exec([]string{"sh", "-c", "echo failing >&2; exit 3"}, nil, "", "")(ctx))
 	assert.Contains(t, jobLog.String(), "failing\n")
-	output, err := job.ExecOutput(ctx, []string{"sh", "-c", `printf 'out\000'; printf ' failed \n' >&2; exit 3`})
-	require.NoError(t, err)
-	content, err := io.ReadAll(output)
-	var exit ExitCodeError
-	require.ErrorAs(t, err, &exit)
-	assert.Equal(t, ExitCodeError(3), exit)
-	assert.Contains(t, err.Error(), ": failed")
-	assert.Equal(t, "out\x00", string(content))
-	require.ErrorAs(t, output.Close(), &exit)
-	assert.Equal(t, ExitCodeError(3), exit)
-
 	for _, query := range cluster.requests["exec"] {
 		assert.NotContains(t, query, "hunter2")
 	}
@@ -296,7 +285,7 @@ func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
 	reader := tar.NewReader(archive)
 	header, err := reader.Next()
 	require.NoError(t, err)
-	content, err = io.ReadAll(reader)
+	content, err := io.ReadAll(reader)
 	require.NoError(t, err)
 	assert.Equal(t, "event.json", header.Name)
 	assert.JSONEq(t, `{"ref":"main"}`, string(content))
@@ -318,18 +307,6 @@ func TestKubernetesPodRunsJobThroughAPI(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "main()", string(script))
 	assert.Contains(t, lastExec(), "command="+url.QueryEscape(workdir+"/act/actions/sha/"))
-	assert.Contains(t, lastExec(), url.QueryEscape("gzip -dc |"))
-
-	require.NoError(t, job.CopyTarStream(ctx, workdir+"/download/new", func(tw *TarWriter) error {
-		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: "dir/data.txt", Mode: 0o644, Size: 7}); err != nil {
-			return err
-		}
-		_, err := tw.Write([]byte("payload"))
-		return err
-	}))
-	downloaded, err := os.ReadFile(workdir + "/download/new/dir/data.txt")
-	require.NoError(t, err)
-	assert.Equal(t, "payload", string(downloaded))
 	assert.Contains(t, lastExec(), url.QueryEscape("gzip -dc |"))
 
 	pathEnv := map[string]string{}

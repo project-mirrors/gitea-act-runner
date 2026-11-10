@@ -213,10 +213,6 @@ func parseKVAndFile(rawKVs []string, filePath string) map[string]string {
 	return result
 }
 
-func (i *executeArgs) artifactServerURL() string {
-	return "http://" + net.JoinHostPort(i.artifactServerAddr, i.artifactServerPort)
-}
-
 // Workdir returns path to workdir
 func (i *executeArgs) Workdir() string {
 	return i.resolve(".")
@@ -390,7 +386,6 @@ func (i *executeArgs) runnerConfig(eventName string, env, proxyEnv map[string]st
 		ArtifactServerPath:                i.artifactServerPath,
 		ArtifactServerPort:                i.artifactServerPort,
 		ArtifactServerAddr:                i.artifactServerAddr,
-		ResultsURL:                        i.artifactServerURL(),
 		NoSkipCheckout:                    i.noSkipCheckout,
 		EventName:                         eventName,
 		EventJSON:                         eventJSON,
@@ -522,7 +517,7 @@ func runExec(ctx context.Context, execArgs *executeArgs) func(cmd *cobra.Command
 				token := cmp.Or(inheritedToken, artifacts.LocalRuntimeToken(workflowRun, maxLifetime))
 				config.RuntimeTokens[run.Workflow] = token
 				config.ExtraMasks = append(config.ExtraMasks, token)
-				handler.RegisterJob(token, artifactcache.JobCredential{Repo: "__local/__exec", Results: execArgs.artifactServerURL()})
+				handler.RegisterJob(token, artifactcache.JobCredential{Repo: "__local/__exec", Results: "http://" + net.JoinHostPort(execArgs.artifactServerAddr, execArgs.artifactServerPort)})
 			}
 		}
 

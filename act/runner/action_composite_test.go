@@ -11,8 +11,6 @@ import (
 	"gitea.com/gitea/runner/act/common/git"
 	"gitea.com/gitea/runner/act/common/logging"
 	"gitea.com/gitea/runner/act/common/logging/logtest"
-	"gitea.com/gitea/runner/act/container"
-	"gitea.com/gitea/runner/internal/pkg/action"
 
 	"gitea.dev/actionslib/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -183,22 +181,4 @@ func newTestCompositeRunContext(t *testing.T, parent *RunContext) *RunContext {
 	}, "/action")
 	require.NoError(t, err)
 	return composite
-}
-
-func TestBuiltinActionGetsLowercaseInputsAndTheJobTokenInComposites(t *testing.T) {
-	job := makeTestRC(t, "runs-on: ubuntu-latest")
-	job.Config.Secrets = map[string]string{"ACTIONS_RUNTIME_TOKEN": "daemon-token"}
-	job.JobContainer = &container.HostEnvironment{Path: t.TempDir(), ActPath: t.TempDir(), Workdir: t.TempDir()}
-	composite := newTestCompositeRunContext(t, job)
-	composite.JobContainer = job.JobContainer
-	for _, rc := range []*RunContext{job, composite} {
-		var got *action.Context
-		sab := &stepActionBuiltin{Step: &model.Step{ID: "x", With: map[string]string{"Name": "x"}}, RunContext: rc, run: func(_ctx context.Context, c *action.Context) error {
-			got = c
-			return nil
-		}}
-		require.NoError(t, sab.main()(t.Context()))
-		assert.Equal(t, "daemon-token", got.RuntimeToken)
-		assert.Equal(t, map[string]string{"name": "x"}, got.Inputs)
-	}
 }

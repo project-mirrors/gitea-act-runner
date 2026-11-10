@@ -22,7 +22,6 @@ func TestStepFactoryNewStep(t *testing.T) {
 		{"StepLocalAction", &model.Step{Uses: "./action@v1"}, &stepActionLocal{}},
 		{"StepDocker", &model.Step{Uses: "docker://image:tag"}, &stepDocker{}},
 		{"StepRun", &model.Step{Run: "cmd"}, &stepRun{}},
-		{"StepBuiltinAction", &model.Step{Uses: "builtin:checkout"}, &stepActionBuiltin{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			step, err := (&stepFactoryImpl{}).newStep(test.model, &RunContext{})
@@ -35,7 +34,6 @@ func TestStepFactoryNewStep(t *testing.T) {
 func TestStepFactoryInvalidStep(t *testing.T) {
 	for _, stepModel := range []*model.Step{
 		{Uses: "remote/action@v1", Run: "cmd"},
-		{Uses: "builtin:unknown"},
 	} {
 		_, err := (&stepFactoryImpl{}).newStep(stepModel, &RunContext{Name: "build"})
 		assert.ErrorContains(t, err, "job:build ", stepModel.Uses)

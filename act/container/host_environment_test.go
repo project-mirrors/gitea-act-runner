@@ -8,7 +8,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -84,68 +83,10 @@ func TestGetContainerArchive(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
-func TestHostCopyTarStream(t *testing.T) {
-	dest := filepath.Join(t.TempDir(), "out")
-	write := func(name string, mode int64, body string) func(*TarWriter) error {
-		return func(tw *TarWriter) error {
-			if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: mode, Size: int64(len(body))}); err != nil {
-				return err
-			}
-			_, err := tw.Write([]byte(body))
-			return err
-		}
-	}
-	e := &HostEnvironment{}
-	require.NoError(t, e.CopyTarStream(t.Context(), dest, write("dir/run.sh", 0o755, "#!/bin/sh\n")))
-	content, err := os.ReadFile(filepath.Join(dest, "dir", "run.sh"))
-	require.NoError(t, err)
-	assert.Equal(t, "#!/bin/sh\n", string(content))
-	if runtime.GOOS != "windows" {
-		require.NoError(t, os.Chmod(filepath.Join(dest, "dir", "run.sh"), 0o444))
-		require.NoError(t, e.CopyTarStream(t.Context(), dest, func(tw *TarWriter) error {
-			if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: "dir/", Mode: 0o555}); err != nil {
-				return err
-			}
-			return write("dir/run.sh", 0o755, "")(tw)
-		}))
-		t.Cleanup(func() { require.NoError(t, os.Chmod(filepath.Join(dest, "dir"), 0o755)) })
-		for name, mode := range map[string]os.FileMode{"dir": 0o555, filepath.Join("dir", "run.sh"): 0o755} {
-			info, err := os.Stat(filepath.Join(dest, name))
-			require.NoError(t, err)
-			assert.Equal(t, mode, info.Mode().Perm(), name)
-		}
-		require.NoError(t, os.Symlink(t.TempDir(), filepath.Join(dest, "link")))
-		require.ErrorContains(t, e.CopyTarStream(t.Context(), dest, write("link/x", 0o644, "x")), "escapes")
-	}
-
-	require.ErrorContains(t, e.CopyTarStream(t.Context(), dest, write("../escape", 0o644, "x")), "escapes")
-	assert.NoFileExists(t, filepath.Join(filepath.Dir(dest), "escape"))
-	require.Error(t, e.CopyTarStream(t.Context(), dest, func(_tw *TarWriter) error { return fmt.Errorf("read body: %w", io.EOF) }))
-	canceled, cancel := context.WithCancel(t.Context())
-	cancel()
-	require.ErrorIs(t, e.CopyTarStream(canceled, dest, write("late", 0o644, "x")), context.Canceled)
-	assert.NoFileExists(t, filepath.Join(dest, "late"))
-}
-
 func TestHostEnvironmentExecExitCode(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX shell")
-	}
-	for _, read := range []bool{true, false} {
-		output, err := (&HostEnvironment{AllocatePTY: true}).ExecOutput(t.Context(), []string{"sh", "-c", `test ! -t 1; printf 'out\000'; printf ' failed \n' >&2; exit 3`})
-		require.NoError(t, err)
-		if read {
-			content, err := io.ReadAll(output)
-			var exit ExitCodeError
-			require.ErrorAs(t, err, &exit)
-			assert.Equal(t, ExitCodeError(3), exit)
-			assert.Equal(t, "out\x00", string(content))
-			assert.Equal(t, "Process completed with exit code 3.: failed", err.Error())
-		}
-		var exit ExitCodeError
-		require.ErrorAs(t, output.Close(), &exit)
-		assert.Equal(t, ExitCodeError(3), exit)
 	}
 	for name, allocatePTY := range map[string]bool{"without PTY": false, "with PTY": true} {
 		t.Run(name, func(t *testing.T) {

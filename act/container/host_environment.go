@@ -16,7 +16,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -116,20 +115,6 @@ func (e *HostEnvironment) Inspect(_ context.Context) (*Info, error) {
 	return &Info{Health: HealthNone, Ports: map[string]string{}}, nil
 }
 
-func (e *HostEnvironment) ExecOutput(ctx context.Context, command []string) (io.ReadCloser, error) {
-	return streamOutput(ctx, func(ctx context.Context, stdout, stderr io.Writer) error {
-		cmd := exec.CommandContext(ctx, command[0], command[1:]...)
-		cmd.Dir, cmd.Stdout, cmd.Stderr = e.Workdir, stdout, stderr
-		if err := cmd.Run(); err != nil {
-			if exit, ok := errors.AsType[*exec.ExitError](err); ok {
-				return ExitCodeError(exit.ExitCode())
-			}
-			return err
-		}
-		return nil
-	}), nil
-}
-
 func (e *HostEnvironment) GetContainerArchive(ctx context.Context, srcPath string) (io.ReadCloser, error) {
 	srcPath = filepath.Clean(srcPath)
 	fi, err := os.Lstat(srcPath)
@@ -175,58 +160,6 @@ func writeHostArchive(ctx context.Context, tc *filecollector.TarCollector, srcPa
 		defer f.Close()
 	}
 	return tc.WriteFile(fi.Name(), fi, linkname, f)
-}
-
-func (e *HostEnvironment) CopyTarStream(ctx context.Context, destPath string, write func(*TarWriter) error) error {
-	if err := os.MkdirAll(destPath, 0o777); err != nil {
-		return err
-	}
-	root, err := os.OpenRoot(destPath)
-	if err != nil {
-		return err
-	}
-	defer root.Close()
-	content := pipeTar(0, 0, "", nil, write)
-	defer content.Close()
-	tr := tar.NewReader(content)
-	var dirs []*tar.Header
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		} else if err != nil {
-			return err
-		}
-		hdr.Name = filepath.FromSlash(strings.TrimSuffix(hdr.Name, "/"))
-		if hdr.Typeflag == tar.TypeDir {
-			err = root.MkdirAll(hdr.Name, 0o777) // modes apply after the contents, so read-only directories can be filled
-			dirs = append(dirs, hdr)
-		} else {
-			err = writeRootFile(root, hdr.Name, hdr.FileInfo().Mode().Perm(), tr)
-		}
-		if err != nil {
-			return err
-		}
-	}
-	for _, dir := range slices.Backward(dirs) {
-		if err := root.Chmod(dir.Name, dir.FileInfo().Mode().Perm()); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func writeRootFile(root *os.Root, name string, mode fs.FileMode, body io.Reader) error {
-	_ = root.Remove(name) // replaces read-only files and applies mode, as the daemon and tar do
-	file, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(file, body)
-	return errors.Join(err, file.Close())
 }
 
 func (e *HostEnvironment) Pull(_ bool) common.Executor {

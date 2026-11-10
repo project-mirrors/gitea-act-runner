@@ -45,7 +45,7 @@ runner:
   #client_cert_file: /etc/gitea-runner/client.crt
   #client_key_file: /etc/gitea-runner/client.key
   # PEM CA certificates of a Gitea instance with a private CA, trusted besides the system's.
-  # Runner-side git and builtin:checkout use it instead of the system's bundle for the instance.
+  # Runner-side git uses it instead of the system's bundle for the instance.
   # Jobs get it at /var/run/act/ca.crt, or in their act directory on the host, with NODE_EXTRA_CA_CERTS
   # pointing there unless the job, or on Docker its image, sets it. Other tools in jobs, such as the
   # git that actions/checkout runs, need the CA in the image's bundle, for example via container.volumes.

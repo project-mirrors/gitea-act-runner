@@ -51,11 +51,6 @@ fields.
 - Tests read what was logged with `logtest.NewLogger()`, or `logtest.SetDefault(t)` for the
   package functions.
 
-## Built-in actions
-
-Each lives in `internal/pkg/action/<name>` and is registered in `builtinActions` in
-`act/runner/step_action_builtin.go`.
-
 ## End-to-end compatibility tests
 
 `make test-e2e` runs the runner against `E2E_GITEA_IMAGE`. It defaults to the nightly image.

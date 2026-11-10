@@ -71,11 +71,6 @@ func (c *hookContainer) UpdateFromEnv(_ string, env *map[string]string) common.E
 	}
 }
 
-func (c *hookContainer) ExecOutput(_ctx context.Context, command []string) (io.ReadCloser, error) {
-	c.cmd = command
-	return io.NopCloser(bytes.NewBufferString(c.output)), c.err
-}
-
 func (c *hookContainer) GetContainerArchive(context.Context, string) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(c.pathTar)), nil
 }

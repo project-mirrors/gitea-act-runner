@@ -14,9 +14,6 @@ In the job image, or on the host for host jobs:
 
 - `bash` or `sh`, or `pwsh` or `powershell` on Windows.
 - `node` for JavaScript actions and `hashFiles()`.
-- `git` 2.34.1 or newer for [`builtin:checkout`](docs/builtin-actions.md).
-- `git-lfs` for `builtin:checkout` with `lfs: true`.
-- `ssh` for `builtin:checkout` with `ssh-key`.
 
 Kubernetes mode needs [a few more tools](docs/kubernetes.md) in job images.
 
@@ -244,10 +241,6 @@ volumes:
 ```
 
 Set `container.sweep: true` to remove the containers, networks and volumes most Linux container jobs create when they end, `docker compose` services included. Leave it off if jobs deploy services to the runner's Docker daemon.
-
-### Built-in actions (`uses: builtin:<name>`)
-
-`uses: builtin:checkout`, `builtin:upload-artifact` and `builtin:download-artifact` replace their `actions/` counterparts without an action download or Node in the job image, see [docs/builtin-actions.md](docs/builtin-actions.md).
 
 ### Caching (`actions/cache`)
 

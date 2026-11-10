@@ -260,28 +260,6 @@ func TestDockerExecFailure(t *testing.T) {
 	assert.Equal(t, ExitCodeError(1), exitErr)
 	assert.Equal(t, "Process completed with exit code 1.", err.Error())
 
-	client.On("ContainerInspect", ctx, "123", mobyclient.ContainerInspectOptions{}).
-		Return(mobyclient.ContainerInspectResult{}, nil)
-	client.On("ExecCreate", mock.Anything, "123", mobyclient.ExecCreateOptions{
-		Cmd: []string{"printf", `a\b`}, AttachStdout: true, AttachStderr: true,
-	}).Return(mobyclient.ExecCreateResult{ID: "output"}, nil)
-	client.On("ExecAttach", mock.Anything, "output", mobyclient.ExecAttachOptions{}).
-		Return(mobyclient.ExecAttachResult{
-			Conn:   &mockConn{},
-			Reader: bufio.NewReader(bytes.NewReader(append(stdcopyFrame(stdcopy.Stdout, "a\x00b"), stdcopyFrame(stdcopy.Stderr, " failed \n")...))),
-		}, nil)
-	client.On("ExecInspect", mock.Anything, "output", mobyclient.ExecInspectOptions{}).
-		Return(mobyclient.ExecInspectResult{ExitCode: 3}, nil)
-	output, err := cr.ExecOutput(ctx, []string{"printf", `a\b`})
-	require.NoError(t, err)
-	content, err := io.ReadAll(output)
-	require.ErrorAs(t, err, &exitErr)
-	assert.Equal(t, ExitCodeError(3), exitErr)
-	assert.Equal(t, "Process completed with exit code 3.: failed", err.Error())
-	assert.Equal(t, "a\x00b", string(content))
-	require.ErrorAs(t, output.Close(), &exitErr)
-	assert.Equal(t, ExitCodeError(3), exitErr)
-
 	client.AssertExpectations(t)
 }
 
@@ -570,8 +548,6 @@ func TestRejectsMissingContainer(t *testing.T) {
 	check("exec", cr.exec([]string{"echo"}, nil, "", "")(ctx))
 	_, err := cr.GetContainerArchive(ctx, "/var/run/act/x")
 	check("GetContainerArchive", err)
-	_, err = cr.ExecOutput(ctx, []string{"true"})
-	check("ExecOutput", err)
 	_, err = cr.Inspect(ctx)
 	check("Inspect", err)
 
@@ -581,46 +557,6 @@ func TestRejectsMissingContainer(t *testing.T) {
 	removed := &containerReference{id: "gone", cli: client, input: &NewContainerInput{Name: "job-1"}}
 	_, err = removed.Inspect(ctx)
 	check("Inspect after removal", err)
-}
-
-func TestCopyTarStreamOwnsMissingParentsAndRejectsEscapes(t *testing.T) {
-	ctx := t.Context()
-	client := &mockDockerClient{}
-	client.On("ContainerInspect", ctx, "job", mobyclient.ContainerInspectOptions{}).
-		Return(mobyclient.ContainerInspectResult{Container: container.InspectResponse{ID: "job", Name: "/job"}}, nil)
-	stat := func(p string, err error) {
-		client.On("ContainerStatPath", ctx, "job", mobyclient.ContainerStatPathOptions{Path: p}).
-			Return(mobyclient.ContainerStatPathResult{}, err).Once()
-	}
-	stat("/w/out/a", cerrdefs.ErrNotFound)
-	stat("/w/out", cerrdefs.ErrNotFound)
-	stat("/w", nil)
-	var entries []string
-	client.On("CopyToContainer", ctx, "job", mock.Anything).Run(func(args mock.Arguments) {
-		opts := args.Get(2).(mobyclient.CopyToContainerOptions)
-		assert.Equal(t, "/", opts.DestinationPath)
-		reader := tar.NewReader(opts.Content)
-		for {
-			header, err := reader.Next()
-			if errors.Is(err, io.EOF) {
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, []any{1001, 1002, ""}, []any{header.Uid, header.Gid, header.Uname}, header.Name)
-			entries = append(entries, header.Name)
-		}
-	}).Return(mobyclient.CopyToContainerResult{}, nil).Once()
-
-	cr := &containerReference{id: "job", cli: client, input: &NewContainerInput{Name: "job"}, UID: 1001, GID: 1002}
-	require.NoError(t, cr.CopyTarStream(ctx, "/w/out/a/", func(tw *TarWriter) error {
-		return tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: "dir/f.txt", Mode: 0o644, Uname: "nobody"})
-	}))
-	assert.Equal(t, []string{"w/out/", "w/out/a/", "w/out/a/dir/", "w/out/a/dir/f.txt"}, entries)
-	client.AssertExpectations(t)
-
-	require.ErrorContains(t, writeTarStream(io.Discard, 0, 0, "w/out/a", nil, func(tw *TarWriter) error {
-		return tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: "../../../etc/passwd"})
-	}), "escapes")
 }
 
 func TestPublicCopyPipelineHandlesStaleID(t *testing.T) {

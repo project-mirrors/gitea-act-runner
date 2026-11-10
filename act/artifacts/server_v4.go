@@ -35,7 +35,7 @@ const (
 	maxTwirpBytes = 1 << 20
 )
 
-func RegisterV4(router *http.ServeMux, baseDir string) {
+func registerV4(router *http.ServeMux, baseDir string) {
 	server := &serverV4{dir: filepath.Join(baseDir, "v4"), lastID: time.Now().UnixMilli(), created: map[string]bool{}} // IDs stay unique across invocations sharing baseDir
 	router.HandleFunc("POST "+artifactServicePath+"/CreateArtifact", twirp(server.createArtifact))
 	router.HandleFunc("POST "+artifactServicePath+"/FinalizeArtifact", twirp(server.finalizeArtifact))

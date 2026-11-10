@@ -553,10 +553,6 @@ func (c *kubernetesContainer) Copy(destPath string, files ...*FileEntry) common.
 	}
 }
 
-func (c *kubernetesContainer) CopyTarStream(ctx context.Context, destPath string, write func(*TarWriter) error) error {
-	return c.extract(ctx, destPath, true, func(writer io.Writer) error { return writeTarStream(writer, 0, 0, "", nil, write) }) // streams carry large content like artifacts
-}
-
 func (c *kubernetesContainer) CopyDir(destPath, srcPath string, useGitIgnore, skipGitDir bool) common.Executor {
 	return func(ctx context.Context) error {
 		return c.extract(ctx, destPath, true, func(writer io.Writer) error { // directories are actions and workspaces, megabytes of compressible sources
@@ -565,17 +561,17 @@ func (c *kubernetesContainer) CopyDir(destPath, srcPath string, useGitIgnore, sk
 	}
 }
 
-func (c *kubernetesContainer) ExecOutput(ctx context.Context, command []string) (io.ReadCloser, error) {
-	return streamOutput(ctx, func(ctx context.Context, stdout, stderr io.Writer) error {
-		return c.pod.client.exec(ctx, c.pod.name, c.name, command, nil, stdout, stderr)
-	}), nil
-}
-
+// GetContainerArchive streams the archive, checking the path first as tar writes an empty archive for a missing one.
 func (c *kubernetesContainer) GetContainerArchive(ctx context.Context, srcPath string) (io.ReadCloser, error) {
-	reader, err := c.ExecOutput(ctx, []string{"sh", "-c", `test -e "$1" -o -L "$1" && exec tar -cf - -C "$2" "$3"`, "sh", srcPath, path.Dir(srcPath), path.Base(srcPath)})
-	if err != nil {
-		return nil, err
-	}
+	reader, writer := io.Pipe()
+	go func() {
+		var stderr bytes.Buffer
+		err := c.pod.client.exec(ctx, c.pod.name, c.name, []string{"sh", "-c", `test -e "$1" -o -L "$1" && exec tar -cf - -C "$2" "$3"`, "sh", srcPath, path.Dir(srcPath), path.Base(srcPath)}, nil, writer, &stderr)
+		if err != nil {
+			err = fmt.Errorf("archive %s: %w: %s", srcPath, err, strings.TrimSpace(stderr.String()))
+		}
+		writer.CloseWithError(err)
+	}()
 	return startedArchive(reader)
 }
 

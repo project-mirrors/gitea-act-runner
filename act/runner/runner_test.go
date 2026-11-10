@@ -455,7 +455,6 @@ func TestRunEventHostEnvironment(t *testing.T) {
 			{workdir, "nix-prepend-path", "push", "", platforms, secrets},
 			{workdir, "uses-docker-url", "push", "", platforms, secrets},
 			{workdir, "local-action-dockerfile", "push", "", platforms, secrets},
-			{workdir, "builtin-checkout", "push", "", platforms, secrets},
 			{workdir, "inputs-via-env-context", "push", "", platforms, secrets},
 			{workdir, "do-not-leak-step-env-in-composite", "push", "", platforms, secrets},
 			{workdir, "set-env-step-env-override", "push", "", platforms, secrets},

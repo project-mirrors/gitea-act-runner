@@ -28,7 +28,7 @@ func TestArtifactFlow(t *testing.T) {
 	router := http.NewServeMux()
 	uploads(router, artifactPath)
 	downloads(router, artifactPath)
-	RegisterV4(router, artifactPath)
+	registerV4(router, artifactPath)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -256,7 +256,7 @@ func TestArtifactFlow(t *testing.T) {
 		require.Equal(t, "attachment; filename*=UTF-8''50%25%20art%40v1", header.Get("Content-Disposition"))
 
 		rerun := http.NewServeMux()
-		RegisterV4(rerun, artifactPath)
+		registerV4(rerun, artifactPath)
 		recorder := httptest.NewRecorder()
 		rerun.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, artifactServicePath+"/CreateArtifact", strings.NewReader("{"+artifactRef+"}")))
 		require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
