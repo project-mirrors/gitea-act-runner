@@ -132,8 +132,8 @@ runner:
   # What to mount at RUNNER_TOOL_CACHE (/opt/hostedtoolcache), where setup actions install tools:
   #   none:   nothing. A docker job sees what its image ships there, a host job an empty dir, and
   #           either way what it installs is gone when the job ends.
-  #   shared: one tool cache every job reuses. Two jobs writing the same tool version at once
-  #           corrupt it, so use it only with capacity 1.
+  #   shared: one tool cache per capacity slot, reused by later jobs. It hides the tools later job
+  #           images ship, so use images without them.
   #tool_cache_mode: none
   # Optional executable on the host, run once after each task's built-in cleanup
   # (post-steps, container teardown, bind-workdir removal). Additive only.

@@ -273,7 +273,7 @@ func (rc *RunContext) validVolumes() []string {
 		volumes = append(volumes, hostEnv.Path, hostEnv.GetActPath())
 	}
 	if rc.Config.SharedToolCache {
-		volumes = append(volumes, sharedToolCacheVolume)
+		volumes = append(volumes, rc.toolCacheVolume())
 	}
 	if rc.Config.BindWorkdir {
 		volumes = append(volumes, rc.Config.Workdir, rc.workdirMountRoot())
@@ -331,6 +331,13 @@ func (rc *RunContext) startDockerProxy(ctx context.Context) {
 		return
 	}
 	rc.dockerProxy = container.NewDockerProxy(ctx, rc.jobContainerName())
+}
+
+func (rc *RunContext) toolCacheVolume() string {
+	if rc.Config.ToolCacheSlot == "" {
+		return sharedToolCacheVolume
+	}
+	return sharedToolCacheVolume + "-" + rc.Config.ToolCacheSlot
 }
 
 // toolCache returns the tool cache path the job sees, relocatable through RUNNER_TOOL_CACHE.
@@ -393,7 +400,7 @@ func (rc *RunContext) GetBindsAndMounts(ctx context.Context) ([]string, map[stri
 	}
 	if rc.Config.SharedToolCache {
 		if toolCache := rc.toolCache(container.DefaultToolCache); !claimed[toolCache] {
-			mounts[sharedToolCacheVolume] = toolCache
+			mounts[rc.toolCacheVolume()] = toolCache
 		}
 	}
 	if hostEnv, ok := rc.JobContainer.(*container.HostEnvironment); ok {
@@ -453,6 +460,10 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
 			toolCacheParent = cacheDir
 		}
 		toolCache := rc.toolCache(filepath.Join(toolCacheParent, "tool_cache"))
+		if rc.Config.ToolCacheSlot != "" {
+			toolCache = filepath.Join(toolCache, rc.Config.ToolCacheSlot)
+			rc.Env["RUNNER_TOOL_CACHE"] = toolCache // overrides a RUNNER_TOOL_CACHE the slots would otherwise share
+		}
 		if err := os.MkdirAll(toolCache, 0o777); err != nil {
 			return err
 		}

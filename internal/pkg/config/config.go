@@ -193,7 +193,7 @@ type Container struct {
 	Sweep                bool                          `yaml:"sweep"`                  // Sweep removes the containers, networks and volumes a job creates through its Docker proxy when the job ends.
 }
 
-// Values of Runner.ToolCacheMode: the runner mounts no tool cache, or one that every job reuses.
+// Values of Runner.ToolCacheMode: the runner mounts no tool cache, or one per capacity slot that its jobs reuse.
 const (
 	ToolCacheModeNone   = "none"
 	ToolCacheModeShared = "shared"
@@ -454,10 +454,6 @@ func LoadDefault(file string) (*Config, error) {
 	}
 
 	// Validate and fix invalid config combinations to prevent confusing behavior.
-	if cfg.Runner.ToolCacheMode == ToolCacheModeShared && cfg.Runner.Capacity > 1 {
-		logging.Warnf("runner.tool_cache_mode %q with capacity %d: two jobs writing the same tool version at once corrupt it",
-			ToolCacheModeShared, cfg.Runner.Capacity)
-	}
 	if cfg.Runner.FetchTimeout > RequestTimeout {
 		logging.Warnf("fetch_timeout (%v) exceeds the RPC timeout (%v), capping it", cfg.Runner.FetchTimeout, RequestTimeout)
 		cfg.Runner.FetchTimeout = RequestTimeout
