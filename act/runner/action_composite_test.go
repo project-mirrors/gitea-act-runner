@@ -99,6 +99,19 @@ func TestCompositeActionParity(t *testing.T) {
 
 		require.ErrorIs(t, rc.compositeExecutor(&model.Action{Runs: model.ActionRuns{Using: "composite", Steps: []model.Step{{ID: "nested", Uses: "org/action@v1"}}}}).pre(t.Context()), assert.AnError)
 	})
+
+	t.Run("post steps log under their own step ids", func(t *testing.T) {
+		hook := logtest.NewWithLevel(logging.LevelDebug)
+		rc := &RunContext{Config: &Config{}, JobContainer: &jobContainerMock{}}
+		steps := rc.compositeExecutor(&model.Action{Runs: model.ActionRuns{Using: "composite", Steps: []model.Step{{ID: "first", Uses: "./first"}, {ID: "second", Uses: "./second"}}}})
+		require.NoError(t, steps.post(common.WithLogger(t.Context(), logging.New(hook))))
+		var stepIDs []any
+		for _, record := range hook.AllRecords() {
+			ids, _ := record.Attr("stepID")
+			stepIDs = append(stepIDs, ids)
+		}
+		assert.Equal(t, []any{[]string{"second"}, []string{"first"}}, stepIDs)
+	})
 }
 
 func TestAppendUniqueMasks(t *testing.T) {

@@ -217,11 +217,11 @@ func (rc *RunContext) compositeExecutor(action *model.Action) *compositeSteps {
 		steps = append(steps, newCompositeStepLogExecutor(rc.newCompositeCommandExecutor(step.main()), stepID))
 
 		// run the post executor in reverse order
-		stepPost := rc.newCompositeCommandExecutor(step.post())
+		stepPost := newCompositeStepLogExecutor(rc.newCompositeCommandExecutor(step.post()), stepID)
 		if postExecutor != nil {
 			stepPost = stepPost.Finally(postExecutor)
 		}
-		postExecutor = newCompositeStepLogExecutor(stepPost, stepID)
+		postExecutor = stepPost
 	}
 
 	steps = append(steps, common.JobError)
