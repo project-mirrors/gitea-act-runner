@@ -225,7 +225,7 @@ func TestRunJobHook(t *testing.T) {
 		rc, ctx := newHookRunContext(jobContainer, &Config{JobStartedHook: "/hooks/started.sh"})
 
 		require.ErrorContains(t, rc.runJobStartedHook(ctx), "boom")
-		assert.Nil(t, jobContainer.cmd)
+		assert.NotContains(t, jobContainer.cmd, "/hooks/started.sh")
 		assert.NotContains(t, rc.Env, "STALE")
 	})
 
@@ -242,17 +242,26 @@ func TestRunJobHook(t *testing.T) {
 // actions/runner deliberately runs a hook without the flags it gives `run:` steps, and an
 // executable without a known extension speaks for itself through its shebang.
 func TestHookCommand(t *testing.T) {
-	for hookPath, want := range map[string]struct {
-		cmd   []string
-		shell string
+	for _, tc := range []struct {
+		hookPath string
+		hasShell bool
+		cmd      []string
+		shell    string
 	}{
-		"/hooks/started.sh":            {[]string{"bash", "-e", "/hooks/started.sh"}, "bash -e {0}"},
-		"/hooks/started.PS1":           {[]string{"pwsh", "-command", ". '/hooks/started.PS1'"}, `pwsh -command ". '{0}'"`},
-		"/hooks/started":               {[]string{"/hooks/started"}, ""},
-		`C:\hooks\O'Brien\started.ps1`: {[]string{"pwsh", "-command", `. 'C:\hooks\O''Brien\started.ps1'`}, `pwsh -command ". '{0}'"`},
+		{"/hooks/started.sh", true, []string{"bash", "-e", "/hooks/started.sh"}, "bash -e {0}"},
+		{"/hooks/started.sh", false, []string{"sh", "-e", "/hooks/started.sh"}, "sh -e {0}"},
+		{"/hooks/started.PS1", true, []string{"pwsh", "-command", ". '/hooks/started.PS1'"}, `pwsh -command ". '{0}'"`},
+		{"/hooks/started.PS1", false, []string{"powershell", "-command", ". '/hooks/started.PS1'"}, `powershell -command ". '{0}'"`},
+		{"/hooks/started", false, []string{"/hooks/started"}, ""},
+		{`C:\hooks\O'Brien\started.ps1`, true, []string{"pwsh", "-command", `. 'C:\hooks\O''Brien\started.ps1'`}, `pwsh -command ". '{0}'"`},
 	} {
-		cmd, shell := hookCommand(hookPath)
-		assert.Equal(t, want.cmd, cmd, hookPath)
-		assert.Equal(t, want.shell, shell, hookPath)
+		cmd, shell := hookCommand(tc.hookPath, func(preferred, fallback string) string {
+			if tc.hasShell {
+				return preferred
+			}
+			return fallback
+		})
+		assert.Equal(t, tc.cmd, cmd, tc.hookPath)
+		assert.Equal(t, tc.shell, shell, tc.hookPath)
 	}
 }

@@ -6,9 +6,11 @@
 package process
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -94,4 +96,35 @@ func TestTreeKillCancelBeforeCaptureKillsTree(t *testing.T) {
 	defer killer.Close()
 	require.Error(t, cmd.Wait())
 	require.Eventually(t, func() bool { return !processAlive(childPID) }, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestTreeKillCancelRunsInterruptTrap(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	marker := filepath.Join(t.TempDir(), "interrupted")
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", `trap 'echo interrupted > "$1"; exit 0' INT; echo ready; read value`, "sh", marker)
+	cmd.SysProcAttr = SysProcAttr("", false)
+	input, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	defer input.Close()
+	output, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	treeKill := NewTreeKill(cmd)
+	treeKill.GracefulCancel = true
+	require.NoError(t, cmd.Start())
+	killer, err := treeKill.Capture(cmd.Process)
+	require.NoError(t, err)
+	defer killer.Close()
+	t.Cleanup(func() {
+		_ = killer.Kill()
+		_ = cmd.Wait()
+	})
+	var ready string
+	_, err = fmt.Fscanln(output, &ready)
+	require.NoError(t, err)
+	require.Equal(t, "ready", ready)
+
+	cancel()
+	require.ErrorIs(t, treeKill.Wait(ctx, cmd), context.Canceled)
+	require.FileExists(t, marker)
 }

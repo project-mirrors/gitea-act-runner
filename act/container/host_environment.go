@@ -283,6 +283,7 @@ func (e *HostEnvironment) exec(ctx context.Context, command []string, cmdline st
 	// wait, so an orphan holding cmd's stdout pipe cannot hang cmd.Wait().
 	treeKill := process.NewTreeKill(cmd)
 	treeKill.KeepLeftovers = !tracked
+	treeKill.GracefulCancel = true
 
 	var ppty *os.File
 	var tty *os.File

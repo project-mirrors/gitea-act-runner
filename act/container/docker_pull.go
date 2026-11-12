@@ -61,11 +61,10 @@ func NewDockerPullExecutor(input NewDockerPullExecutorInput) common.Executor {
 		// stream rather than on the call itself, so both have to be checked
 		pullOnce := func(opts client.ImagePullOptions) error {
 			reader, err := cli.ImagePull(ctx, imageRef, opts)
-			streamErr := logDockerResponse(logger, reader, err != nil)
 			if err != nil {
 				return err
 			}
-			return streamErr
+			return logDockerResponse(logger, reader, logger.Debugf)
 		}
 
 		err = pullOnce(imagePullOptions)

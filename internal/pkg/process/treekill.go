@@ -32,8 +32,9 @@ const treeKillWaitDelay = 10 * time.Second
 // Callers still set cmd.SysProcAttr (via SysProcAttr) themselves, because the
 // value differs between the plain and PTY execution paths.
 type TreeKill struct {
-	killer        atomic.Pointer[Killer]
-	KeepLeftovers bool
+	killer         atomic.Pointer[Killer]
+	KeepLeftovers  bool
+	GracefulCancel bool
 }
 
 // NewTreeKill sets cmd.Cancel, cmd.WaitDelay and CREATE_SUSPENDED. Call it after setting cmd.SysProcAttr, and Capture once after a successful Start.
@@ -42,12 +43,12 @@ func NewTreeKill(cmd *exec.Cmd) *TreeKill {
 	t := &TreeKill{}
 	cmd.Cancel = func() error {
 		if k := t.killer.Load(); k != nil {
-			return k.Kill()
+			return k.cancel(cmd.Process, t.GracefulCancel)
 		}
 		if cmd.Process != nil {
 			if killer, err := NewKiller(cmd.Process); err == nil {
 				defer killer.Close()
-				return killer.Kill()
+				return killer.cancel(cmd.Process, t.GracefulCancel)
 			}
 			return cmd.Process.Kill()
 		}

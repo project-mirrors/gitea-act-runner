@@ -45,6 +45,7 @@ func TestTreeKillWaitWithLeftoverHoldingOutput(t *testing.T) {
 			cmd.Stdout = io.Discard
 			cmd.SysProcAttr = SysProcAttr("", false)
 			tk := NewTreeKill(cmd)
+			tk.GracefulCancel = true
 			cmd.WaitDelay = 50 * time.Millisecond
 			require.NoError(t, cmd.Start())
 			killer, err := tk.Capture(cmd.Process)

@@ -751,11 +751,14 @@ func TestExecAsDockerStageEntrypoint(t *testing.T) {
 	}
 }
 
-func TestDockerActionHasPreAndPostStep(t *testing.T) {
+func TestActionHasPreAndPostStep(t *testing.T) {
 	newStep := func(runs model.ActionRuns) actionStep {
 		return &stepActionRemote{action: &model.Action{Runs: runs}}
 	}
 	ctx := t.Context()
+
+	assert.False(t, hasPreStep(newStep(model.ActionRuns{Using: "composite", Steps: []model.Step{{Run: "true"}}}))(ctx))
+	assert.True(t, hasPreStep(newStep(model.ActionRuns{Using: "composite", Steps: []model.Step{{Run: "true"}, {Uses: "actions/cache@v4"}}}))(ctx))
 
 	assert.False(t, hasPreStep(newStep(model.ActionRuns{Using: "docker", Image: "Dockerfile"}))(ctx))
 	assert.False(t, hasPostStep(newStep(model.ActionRuns{Using: "docker", Image: "Dockerfile"}))(ctx))

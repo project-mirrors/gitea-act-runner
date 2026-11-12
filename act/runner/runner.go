@@ -100,7 +100,11 @@ type Config struct {
 
 // RunnerDebug reports whether debug logging is on, exposed as `runner.debug` and RUNNER_DEBUG.
 func (c Config) RunnerDebug() bool {
-	return c.Secrets["ACTIONS_STEP_DEBUG"] == "true" || c.Env["ACTIONS_STEP_DEBUG"] == "true"
+	stepDebug, ok := c.Secrets["ACTIONS_STEP_DEBUG"]
+	if !ok {
+		stepDebug = c.Vars["ACTIONS_STEP_DEBUG"]
+	}
+	return stepDebug == "true" || c.Env["ACTIONS_STEP_DEBUG"] == "true"
 }
 
 // GetToken: Adapt to Gitea

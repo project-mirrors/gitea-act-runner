@@ -152,6 +152,8 @@ type NewDockerBuildExecutorInput struct {
 	ContextDir   string
 	Dockerfile   string
 	BuildContext io.Reader
+	Dockerignore []byte // applied to BuildContext as the docker CLI applies it
+	Stdout       io.Writer
 	ImageTag     string
 	Platform     string
 	BuildArgs    map[string]*string

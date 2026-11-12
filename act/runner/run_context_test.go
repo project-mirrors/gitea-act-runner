@@ -342,6 +342,7 @@ jobs:
     container:
       image: node:20
       credentials: {username: "${{ env.REG_USER }}", password: pass}
+      ports: ["8080:80"]
     services:
       redis:
         image: redis:latest
@@ -351,6 +352,7 @@ jobs:
 `, &Config{Vars: map[string]string{"REG_USER": "user", "TEXT": "${{ 'literal' }}"}})
 	redis, job = inputs[0], inputs[1]
 	require.Equal(t, "user", job.Username)
+	require.Equal(t, "8080", job.PortBindings["80/tcp"][0].HostPort)
 	require.Equal(t, "user", redis.Username)
 	require.Equal(t, []string{"TEXT=${{ 'literal' }}"}, redis.Env)
 	require.Equal(t, "--volumes-from "+job.Name, redis.WorkflowOptions)
@@ -1781,23 +1783,33 @@ func TestRunContextGetRunnerContext(t *testing.T) {
 		assert.NotContains(t, runnerContext, "debug")
 	})
 
-	t.Run("reports debug when step debugging is on", func(t *testing.T) {
+	t.Run("reports debug from the secret, else the variable, also in composites", func(t *testing.T) {
 		rc := createRunsOnRunContext(t, "ubuntu-latest")
 		rc.Config.Secrets = map[string]string{"ACTIONS_STEP_DEBUG": "true"}
-
 		assert.Equal(t, "1", rc.getRunnerContext(ctx)["debug"])
+		assert.Equal(t, "1", (&RunContext{Parent: rc, Config: &Config{}}).getRunnerContext(ctx)["debug"])
+
+		rc.Config.Secrets = map[string]string{}
+		rc.Config.Vars = map[string]string{"ACTIONS_STEP_DEBUG": "true"}
+		assert.Equal(t, "1", rc.getRunnerContext(ctx)["debug"])
+
+		rc.Config.Secrets = map[string]string{"ACTIONS_STEP_DEBUG": "false"}
+		assert.NotContains(t, rc.getRunnerContext(ctx), "debug")
 	})
 
 	t.Run("keeps the execution environment values", func(t *testing.T) {
 		rc := createRunsOnRunContext(t, "ubuntu-latest")
 		rc.Config.Workdir = "/host/work/owner/repo"
-		rc.JobContainer = &container.HostEnvironment{Workdir: rc.Config.Workdir, Path: "/container/work/owner/repo", TmpDir: "/tmp/act", ToolCache: "/tmp/tool_cache"}
+		rc.JobContainer = &container.HostEnvironment{Workdir: rc.Config.Workdir, Path: "/container/work/owner/repo", TmpDir: "/tmp/act", ToolCache: "/tmp/tool_cache", ActPath: "/tmp/act-files"}
 
 		runnerContext := rc.getRunnerContext(ctx)
 		assert.Equal(t, "/tmp/act", runnerContext["temp"])
 		assert.Equal(t, "/tmp/tool_cache", runnerContext["tool_cache"])
 		assert.Equal(t, "/container/work/owner", runnerContext["workspace"])
-		assert.Equal(t, "/container/work/owner/repo", rc.getGithubContext(ctx).Workspace)
+		githubContext := rc.getGithubContext(ctx)
+		assert.Equal(t, "/container/work/owner/repo", githubContext.Workspace)
+		assert.Equal(t, "/tmp/act-files/workflow/envs.txt", githubContext.Env)
+		assert.Equal(t, "/tmp/act-files/workflow/pathcmd.txt", githubContext.Path)
 		assert.NotEmpty(t, runnerContext["os"])
 	})
 }

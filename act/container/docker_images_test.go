@@ -38,7 +38,7 @@ func loadScratchImage(t *testing.T, platform string) string {
 	response, err := cli.ImageLoad(t.Context(), &archive)
 	require.NoError(t, err)
 	defer response.Close()
-	require.NoError(t, logDockerResponse(common.Logger(t.Context()), response, false))
+	require.NoError(t, logDockerResponse(common.Logger(t.Context()), response, common.Logger(t.Context()).Debugf))
 	t.Cleanup(func() {
 		_, _ = cli.ImageRemove(context.WithoutCancel(t.Context()), tag, mobyclient.ImageRemoveOptions{Force: true})
 	})

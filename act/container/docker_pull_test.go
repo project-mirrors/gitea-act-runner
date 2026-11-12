@@ -95,15 +95,16 @@ func TestIsPinnedImage(t *testing.T) {
 // The pull path reports a failure the daemon sent mid-stream, so it must carry the reason
 // whichever of the two shapes the daemon used.
 func TestLogDockerResponseError(t *testing.T) {
-	logger := logging.New(logtest.New())
+	logger, hook := logtest.NewLogger()
 	streamErr := func(line string) error {
-		return logDockerResponse(logger, io.NopCloser(strings.NewReader(line)), false)
+		return logDockerResponse(logger, io.NopCloser(strings.NewReader(line)), logger.Infof)
 	}
 	require.EqualError(t, streamErr(`{"error":"toomanyrequests: rate limit exceeded"}`), "toomanyrequests: rate limit exceeded")
 	require.EqualError(t, streamErr(`{"errorDetail":{"message":"unexpected EOF"}}`), "unexpected EOF")
 	require.NoError(t, streamErr(`{"status":"Downloading"}`))
 	require.NoError(t, streamErr(`{"stream":"`+strings.Repeat("x", 70000)+`"}`))
+	assert.Equal(t, logging.LevelInfo, hook.LastRecord().Level)
 	require.ErrorIs(t, logDockerResponse(logger, io.NopCloser(io.MultiReader(
 		strings.NewReader(`{"status":"Downloading"}`+"\n"), iotest.ErrReader(io.ErrUnexpectedEOF),
-	)), false), io.ErrUnexpectedEOF)
+	)), logger.Infof), io.ErrUnexpectedEOF)
 }

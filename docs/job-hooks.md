@@ -28,8 +28,8 @@ The script is run according to its extension:
 
 | Extension | Command |
 | --- | --- |
-| `.sh` | `bash -e <path>` |
-| `.ps1` | `pwsh -command . '<path>'` |
+| `.sh` | `bash -e <path>`, or `sh -e <path>` without bash |
+| `.ps1` | `pwsh -command . '<path>'`, or `powershell` on a host without pwsh |
 | anything else | the file itself, which needs its own shebang and executable bit |
 
 As on GitHub, the shell flags applied to `run:` steps are **not** applied to a hook — set `pipefail` or anything else you want inside the script.

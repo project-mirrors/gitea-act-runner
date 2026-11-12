@@ -68,6 +68,8 @@ func (k *Killer) Kill() error {
 	return windows.TerminateJobObject(k.job, 1)
 }
 
+func (k *Killer) cancel(_process *os.Process, _graceful bool) error { return k.Kill() }
+
 // Close releases the job handle. It does not terminate the processes.
 func (k *Killer) Close() error {
 	if k == nil {

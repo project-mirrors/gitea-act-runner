@@ -7,6 +7,8 @@ package container
 
 import (
 	"archive/tar"
+	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -35,7 +37,7 @@ func TestDockerBuildLabelsImageWithItsTagAndReportsDaemonError(t *testing.T) {
 	t.Setenv("DOCKER_AUTH_CONFIG", "")
 
 	require.ErrorContains(t, NewDockerBuildExecutor(NewDockerBuildExecutorInput{
-		ImageTag: "action:test", Dockerfile: "Dockerfile", BuildContext: strings.NewReader(""),
+		ImageTag: "action:test", Dockerfile: "Dockerfile", BuildContext: strings.NewReader(""), Stdout: io.Discard,
 	})(t.Context()), "build rejected")
 	require.JSONEq(t, `{"com.gitea.runner.image":"action:test"}`, labels)
 }
@@ -70,5 +72,58 @@ func TestCreateBuildContextFollowsDockerignoreAndSymlinkedRootButKeepsDockerfile
 		}
 		require.NoError(t, buildContext.Close())
 		require.Equal(t, []string{".dockerignore", "a.txt", "build/keep.txt", "empty/", "Dockerfile"}, names, contextDir)
+	}
+}
+
+func TestFilterBuildContextAppliesDockerignoreAndMaterializesHardlinksToExcludedFiles(t *testing.T) {
+	const dockerignore = "*.log\nbuild\n!build/keep.txt\nActionfile\n.dockerignore\n"
+	for _, prefix := range []string{"", "./"} {
+		var archive bytes.Buffer
+		writer := tar.NewWriter(&archive)
+		for _, entry := range []struct {
+			name, body, link string
+			typeflag         byte
+		}{
+			{"Actionfile", "FROM scratch", "", tar.TypeReg},
+			{"output.log", "log", "", tar.TypeReg},
+			{"build/", "", "", tar.TypeDir},
+			{"build/drop.txt", "drop", "", tar.TypeReg},
+			{"build/keep.txt", "keep", "", tar.TypeReg},
+			{"entrypoint", "", prefix + "output.log", tar.TypeLink},
+			{"other-entrypoint", "", prefix + "output.log", tar.TypeLink},
+			{".dockerignore", dockerignore, "", tar.TypeReg},
+		} {
+			require.NoError(t, writer.WriteHeader(&tar.Header{Name: prefix + entry.name, Linkname: entry.link, Typeflag: entry.typeflag, Size: int64(len(entry.body)), Mode: 0o644}))
+			_, err := io.WriteString(writer, entry.body)
+			require.NoError(t, err)
+		}
+		require.NoError(t, writer.Close())
+
+		unfiltered, err := filterBuildContext(bytes.NewReader(archive.Bytes()), nil, "Actionfile")
+		require.NoError(t, err)
+		passedThrough, err := io.ReadAll(unfiltered)
+		require.NoError(t, err)
+		require.Equal(t, archive.Bytes(), passedThrough)
+
+		filtered, err := filterBuildContext(bytes.NewReader(archive.Bytes()), []byte(dockerignore), "Actionfile")
+		require.NoError(t, err)
+		var entries []string
+		for reader := tar.NewReader(filtered); ; {
+			header, err := reader.Next()
+			if err == io.EOF {
+				break
+			}
+			require.NoError(t, err)
+			body, err := io.ReadAll(reader)
+			require.NoError(t, err)
+			entries = append(entries, fmt.Sprintf("%s %c %s %s", strings.TrimPrefix(header.Name, prefix), header.Typeflag, strings.TrimPrefix(header.Linkname, prefix), body))
+		}
+		require.Equal(t, []string{
+			"Actionfile 0  FROM scratch",
+			"build/keep.txt 0  keep",
+			"entrypoint 0  log",
+			"other-entrypoint 1 entrypoint ",
+			".dockerignore 0  " + dockerignore,
+		}, entries, prefix)
 	}
 }

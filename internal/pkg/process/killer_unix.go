@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"syscall"
+	"time"
 )
 
 // Killer terminates a started process together with its whole process group,
@@ -50,6 +51,38 @@ func (k *Killer) Kill() error {
 		return err
 	}
 	return nil
+}
+
+func (k *Killer) cancel(process *os.Process, graceful bool) error {
+	if graceful && k.pgid > 0 {
+		for _, stage := range []struct {
+			signal syscall.Signal
+			delay  time.Duration
+		}{
+			{syscall.SIGINT, 7500 * time.Millisecond},
+			{syscall.SIGTERM, 2500 * time.Millisecond},
+		} {
+			if process.Signal(syscall.Signal(0)) != nil || syscall.Kill(-k.pgid, stage.signal) != nil || waitForExit(process, stage.delay) {
+				break
+			}
+		}
+	}
+	return k.Kill()
+}
+
+func waitForExit(process *os.Process, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for !errors.Is(process.Signal(syscall.Signal(0)), os.ErrProcessDone) {
+		select {
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+		}
+	}
+	return true
 }
 
 // Close is a no-op on Unix; there is no job handle to release.

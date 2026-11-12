@@ -8,10 +8,13 @@ package container
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -63,7 +66,7 @@ func NewDockerBuildExecutor(input NewDockerBuildExecutorInput) common.Executor {
 		}
 		var buildContext io.ReadCloser
 		if input.BuildContext != nil {
-			buildContext = io.NopCloser(input.BuildContext)
+			buildContext, err = filterBuildContext(input.BuildContext, input.Dockerignore, input.Dockerfile)
 		} else {
 			buildContext, err = createBuildContext(ctx, input.ContextDir, input.Dockerfile)
 		}
@@ -78,8 +81,95 @@ func NewDockerBuildExecutor(input NewDockerBuildExecutorInput) common.Executor {
 		if err != nil {
 			return err
 		}
-		return logDockerResponse(logger, resp.Body, false)
+		err = logDockerResponse(logger, resp.Body, func(format string, args ...any) { fmt.Fprintf(input.Stdout, format, args...) })
+		common.FlushWriter(input.Stdout)
+		return err
 	}
+}
+
+func filterBuildContext(buildContext io.Reader, dockerignore []byte, relDockerfile string) (io.ReadCloser, error) {
+	excludes, err := ignorefile.ReadAll(bytes.NewReader(dockerignore))
+	if err != nil || len(excludes) == 0 {
+		return io.NopCloser(buildContext), err
+	}
+	pm, err := patternmatcher.New(excludes)
+	if err != nil {
+		return nil, err
+	}
+	reader, writer := io.Pipe()
+	go func() {
+		writer.CloseWithError(writeFilteredBuildContext(writer, buildContext, pm, path.Clean(filepath.ToSlash(relDockerfile))))
+	}()
+	return reader, nil
+}
+
+func writeFilteredBuildContext(w io.Writer, buildContext io.Reader, pm *patternmatcher.PatternMatcher, relDockerfile string) error {
+	spool, err := os.CreateTemp("", "gitea-runner-build-") // excluded content, for a kept hardlink to it
+	if err != nil {
+		return err
+	}
+	defer os.Remove(spool.Name())
+	defer spool.Close()
+
+	reader := tar.NewReader(buildContext)
+	writer := tar.NewWriter(w)
+	buffer := make([]byte, 32*1024)
+	excluded := map[string]*excludedBuildContextEntry{}
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			return writer.Close()
+		}
+		if err != nil {
+			return err
+		}
+		name := path.Clean(header.Name)
+		var target *excludedBuildContextEntry
+		if header.Typeflag == tar.TypeLink {
+			target = excluded[path.Clean(header.Linkname)]
+		}
+		if name != ".dockerignore" && name != relDockerfile {
+			skip, err := pm.MatchesOrParentMatches(name)
+			if err != nil {
+				return err
+			}
+			if skip {
+				if target != nil {
+					excluded[name] = target
+				} else if header.Typeflag != tar.TypeDir {
+					offset, err := spool.Seek(0, io.SeekCurrent)
+					if err != nil {
+						return err
+					}
+					excluded[name] = &excludedBuildContextEntry{header: header, offset: offset}
+					if _, err := io.CopyBuffer(spool, reader, buffer); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+		}
+		var content io.Reader = reader
+		if target != nil && target.keptName != "" {
+			header.Linkname = target.keptName
+		} else if target != nil {
+			header.Typeflag, header.Linkname, header.Size = target.header.Typeflag, target.header.Linkname, target.header.Size
+			content = io.NewSectionReader(spool, target.offset, header.Size)
+			target.keptName = header.Name
+		}
+		if err := writer.WriteHeader(header); err != nil {
+			return err
+		}
+		if _, err := io.CopyBuffer(writer, content, buffer); err != nil {
+			return err
+		}
+	}
+}
+
+type excludedBuildContextEntry struct {
+	header   *tar.Header
+	offset   int64
+	keptName string
 }
 
 func createBuildContext(ctx context.Context, contextDir, relDockerfile string) (io.ReadCloser, error) {

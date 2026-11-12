@@ -44,7 +44,11 @@ func (rc *RunContext) runJobHook(ctx context.Context, hookPath, name string) err
 	rc.CurrentStep = ""
 	defer func() { rc.CurrentStep = previousStep }()
 
-	cmd, shell := hookCommand(hookPath)
+	env := rc.mergeEnv(rc.caEnv, rc.containerSpec.Env, rc.GetEnv())
+	rc.withGithubEnv(ctx, rc.getGithubContext(ctx), env)
+	rc.ApplyExtraPath(ctx, &env)
+
+	cmd, shell := hookCommand(hookPath, func(preferred, fallback string) string { return rc.shellOrFallback(ctx, env, preferred, fallback) })
 	rawLogger := common.Logger(ctx).With(rawOutputField, true)
 	rawLogger.Infof("A %s hook has been configured by the runner administrator", name)
 	rawLogger.Infof("::group::Run '%s'", EscapeCommandData(hookPath))
@@ -52,10 +56,6 @@ func (rc *RunContext) runJobHook(ctx context.Context, hookPath, name string) err
 		rawLogger.Infof("shell: %s", shell)
 	}
 	rawLogger.Infof("::endgroup::")
-
-	env := rc.mergeEnv(rc.caEnv, rc.containerSpec.Env, rc.GetEnv())
-	rc.withGithubEnv(ctx, rc.getGithubContext(ctx), env)
-	rc.ApplyExtraPath(ctx, &env)
 
 	err := rc.setupHookFileCommands(ctx, env)
 	if err == nil {
@@ -104,12 +104,14 @@ func (rc *RunContext) processHookFileCommands(ctx context.Context) error {
 // gives `run:` steps — a hook sets its own. See docs/adrs/1751-runner-job-hooks.md there.
 // The second return value is how the invocation is shown in the log, empty when the file is
 // executed directly.
-func hookCommand(hookPath string) (cmd []string, shell string) {
+func hookCommand(hookPath string, shellOrFallback func(preferred, fallback string) string) (cmd []string, shell string) {
 	switch strings.ToLower(path.Ext(hookPath)) {
 	case ".sh":
-		return []string{"bash", "-e", hookPath}, "bash -e {0}"
+		shellName := shellOrFallback("bash", "sh")
+		return []string{shellName, "-e", hookPath}, shellName + " -e {0}"
 	case ".ps1":
-		return []string{"pwsh", "-command", ". '" + expressionStringEscape(hookPath) + "'"}, `pwsh -command ". '{0}'"`
+		shellName := shellOrFallback("pwsh", "powershell")
+		return []string{shellName, "-command", ". '" + expressionStringEscape(hookPath) + "'"}, shellName + ` -command ". '{0}'"`
 	default:
 		return []string{hookPath}, ""
 	}

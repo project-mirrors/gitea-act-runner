@@ -346,8 +346,10 @@ func execAsDocker(ctx context.Context, step actionStep, actionName, actionDir, b
 					ImageTag:   image,
 					Platform:   rc.Config.ContainerArchitecture,
 					BuildArgs:  rc.proxyBuildArgs(),
+					Stdout:     common.NewLineWriter(rawLogLine(ctx)),
 				}
 				if localAction {
+					input.Dockerignore, _ = readSingleFileFromContainerArchive(ctx, rc.JobContainer, contextDir+"/.dockerignore", 1<<20)
 					buildContext, err := rc.JobContainer.GetContainerArchive(ctx, contextDir+"/.")
 					if err != nil {
 						return err
@@ -587,7 +589,8 @@ func shouldRunPreStep(step actionStep) common.Conditional {
 func hasPreStep(step actionStep) common.Conditional {
 	return func(ctx context.Context) bool {
 		action := step.getActionModel()
-		return action.Runs.Using.IsComposite() ||
+		// a pre stage evaluates `with` before earlier steps run, so only a composite nesting actions gets one
+		return (action.Runs.Using.IsComposite() && slices.ContainsFunc(action.Runs.Steps, func(compositeStep model.Step) bool { return compositeStep.Uses != "" })) ||
 			(action.Runs.Using.IsNode() &&
 				action.Runs.Pre != "") ||
 			(action.Runs.Using.IsDocker() &&
