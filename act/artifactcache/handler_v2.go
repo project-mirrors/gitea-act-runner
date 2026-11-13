@@ -40,12 +40,13 @@ const (
 	twirpInternal        = "internal"
 	twirpUnavailable     = "unavailable"
 	twirpUnauthenticated = "unauthenticated"
+	twirpDenied          = "permission_denied"
 )
 
 func (h *Handler) registerV2Routes(router *http.ServeMux) {
-	router.HandleFunc("POST "+cacheServiceV2Path+"/CreateCacheEntry", h.bearerAuth(h.v2CreateCacheEntry))
-	router.HandleFunc("POST "+cacheServiceV2Path+"/FinalizeCacheEntryUpload", h.bearerAuth(h.v2FinalizeCacheEntryUpload))
-	router.HandleFunc("POST "+cacheServiceV2Path+"/GetCacheEntryDownloadURL", h.bearerAuth(h.v2GetCacheEntryDownloadURL))
+	router.HandleFunc("POST "+cacheServiceV2Path+"/CreateCacheEntry", h.cacheModeAuth(true, h.v2CreateCacheEntry))
+	router.HandleFunc("POST "+cacheServiceV2Path+"/FinalizeCacheEntryUpload", h.cacheModeAuth(true, h.v2FinalizeCacheEntryUpload))
+	router.HandleFunc("POST "+cacheServiceV2Path+"/GetCacheEntryDownloadURL", h.cacheModeAuth(false, h.v2GetCacheEntryDownloadURL))
 	router.HandleFunc("PUT "+blobPath+"/{id}", h.signedAuth(blobUploadPurpose, h.v2UploadBlob))
 }
 
@@ -267,6 +268,8 @@ func (h *Handler) twirpError(w http.ResponseWriter, r *http.Request, code string
 		status = http.StatusServiceUnavailable
 	case twirpUnauthenticated:
 		status = http.StatusUnauthorized
+	case twirpDenied:
+		status = http.StatusForbidden
 	}
 	h.responseJSON(w, r, status, map[string]any{"code": code, "msg": err.Error()})
 }

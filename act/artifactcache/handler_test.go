@@ -1003,7 +1003,7 @@ func TestHandler_UnregisterRevokes(t *testing.T) {
 	}
 }
 
-func TestHandler_CrossRepoIsolation(t *testing.T) {
+func TestHandler_CrossRepoAndCacheModeIsolation(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "artifactcache")
 	handler, err := StartHandler(Options{Dir: dir})
@@ -1012,6 +1012,8 @@ func TestHandler_CrossRepoIsolation(t *testing.T) {
 	handler.RegisterJob("token-a", JobCredential{Repo: "owner/repoA"})
 	handler.RegisterJob("token-b", JobCredential{Repo: "owner/repoB"})
 	handler.RegisterJob("token-a-pull", JobCredential{Repo: "owner/repoA", Ref: "refs/pull/1/head"})
+	handler.RegisterJob("token-a-read", JobCredential{Repo: "owner/repoA", CacheMode: "read"})
+	handler.RegisterJob("token-a-write-only", JobCredential{Repo: "owner/repoA", CacheMode: "write-only"})
 
 	base := handler.ExternalURL() + apiPath
 	key := "shared-key"
@@ -1041,12 +1043,31 @@ func TestHandler_CrossRepoIsolation(t *testing.T) {
 	resp.Body.Close()
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 
-	resp, err = clientA.Get(fmt.Sprintf("%s/cache?keys=%s&version=%s", base, key, version))
-	require.NoError(t, err)
-	resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	clientRead := &http.Client{Transport: &bearerTransport{token: "token-a-read"}}
+	for _, client := range []*http.Client{clientA, clientRead} {
+		resp, err = client.Get(fmt.Sprintf("%s/cache?keys=%s&version=%s", base, key, version))
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	}
 
-	for _, client := range []*http.Client{clientB, {Transport: &bearerTransport{token: "token-a-pull"}}} {
+	requireDenied := func(prefix string, do func() (*http.Response, error)) {
+		resp, err := do()
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		denied := map[string]string{}
+		require.NoError(t, json.UnmarshalRead(resp.Body, &denied))
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		assert.True(t, strings.HasPrefix(denied["message"], prefix), denied["message"])
+	}
+	requireDenied("cache write denied:", func() (*http.Response, error) {
+		return clientRead.Post(base+"/caches", "application/json", strings.NewReader(`{"key":"new-key","version":"`+version+`"}`))
+	})
+	requireDenied("cache read denied:", func() (*http.Response, error) {
+		return (&http.Client{Transport: &bearerTransport{token: "token-a-write-only"}}).Get(fmt.Sprintf("%s/cache?keys=%s&version=%s", base, key, version))
+	})
+
+	for _, client := range []*http.Client{clientB, {Transport: &bearerTransport{token: "token-a-pull"}}, clientRead} {
 		req, err = http.NewRequest(http.MethodPatch, fmt.Sprintf("%s/caches/%d", base, id), bytes.NewReader([]byte("poison")))
 		require.NoError(t, err)
 		req.Header.Set("Content-Range", "bytes 0-5/*")

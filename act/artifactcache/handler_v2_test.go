@@ -227,6 +227,30 @@ func TestCacheServiceV2Lookups(t *testing.T) {
 		assert.NotEmpty(t, got["archiveLocation"])
 	})
 
+	t.Run("a read-only job only restores and a write-only one only saves", func(t *testing.T) {
+		handler.RegisterJob("read-only", JobCredential{Repo: testRepo, CacheMode: "read"})
+		readOnlyClient := &http.Client{Transport: &bearerTransport{token: "read-only"}}
+
+		assert.Equal(t, true, v2Call(t, handler, readOnlyClient, "GetCacheEntryDownloadURL", map[string]any{"key": "deps-abc", "version": "v1"})["ok"])
+		for _, method := range []string{"CreateCacheEntry", "FinalizeCacheEntryUpload"} {
+			got := v2Call(t, handler, readOnlyClient, method, map[string]any{"key": "deps-new", "version": "v1", "size_bytes": 1})
+			assert.Equal(t, false, got["ok"], method)
+			assert.True(t, strings.HasPrefix(got["message"].(string), "cache write denied:"), method)
+		}
+
+		handler.RegisterJob("write-only", JobCredential{Repo: testRepo, CacheMode: "write-only"})
+		writeOnlyClient := &http.Client{Transport: &bearerTransport{token: "write-only"}}
+		assert.Equal(t, true, v2Call(t, handler, writeOnlyClient, "CreateCacheEntry", map[string]any{"key": "deps-write-only", "version": "v1"})["ok"])
+		resp, err := writeOnlyClient.Post(handler.ExternalURL()+cacheServiceV2Path+"/GetCacheEntryDownloadURL", "application/json", strings.NewReader(`{"key":"deps-abc","version":"v1"}`))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		got := map[string]string{}
+		require.NoError(t, json.UnmarshalRead(resp.Body, &got))
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		assert.Equal(t, twirpDenied, got["code"])
+		assert.True(t, strings.HasPrefix(got["msg"], "cache read denied:"), got["msg"])
+	})
+
 	t.Run("another repository sees nothing", func(t *testing.T) {
 		handler.RegisterJob("other-runtime-token", JobCredential{Repo: "other/repo"})
 		otherClient := &http.Client{Transport: &bearerTransport{token: "other-runtime-token"}}

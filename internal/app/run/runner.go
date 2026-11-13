@@ -543,7 +543,14 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 	// is removed when the task finishes, so a leaked token stops working as
 	// soon as the job ends rather than remaining valid for the runner's
 	// lifetime.
-	revokeCache, resultsURL := r.registerCacheForTask(giteaRuntimeToken, cacheCredential(preset, cacheURL), reporter)
+	cred := cacheCredential(preset, cacheURL, cmp.Or(job.CacheMode, workflow.CacheMode))
+	if cacheURL != "" {
+		envs["ACTIONS_CACHE_MODE"] = cred.CacheMode // @actions/cache skips what the mode forbids
+		if cred.CacheMode != "write" {
+			reporter.Logf("Cache mode: %s", cred.CacheMode)
+		}
+	}
+	revokeCache, resultsURL := r.registerCacheForTask(giteaRuntimeToken, cred, reporter)
 	defer revokeCache()
 
 	eventJSON, err := json.Marshal(preset.Event)
@@ -728,17 +735,24 @@ func (r *Runner) registerCacheForTask(token string, cred artifactcache.JobCreden
 }
 
 // cacheCredential scopes the job's cache entries by ref, as GitHub does.
-func cacheCredential(preset *model.GithubContext, publicURL string) artifactcache.JobCredential {
+func cacheCredential(preset *model.GithubContext, publicURL, cacheMode string) artifactcache.JobCredential {
 	ref := preset.Ref
-	if strings.HasPrefix(preset.EventName, "pull_request") && preset.EventName != "pull_request_target" {
-		number, _ := preset.Event["number"].(float64)
+	if number, ok := preset.Event["number"].(float64); ok && strings.HasPrefix(preset.EventName, "pull_request") && preset.EventName != "pull_request_target" {
 		ref = fmt.Sprintf("refs/pull/%d/head", int64(number)) // review events take github.ref from the reviewer's commit_id
+	}
+	defaultRef := branchRef(model.AsString(model.NestedMapLookup(preset.Event, "repository", "default_branch")))
+	if cacheMode == "" { // only trusted events save caches for the default branch
+		cacheMode = "write"
+		if ref == defaultRef && !slices.Contains([]string{"push", "workflow_dispatch", "schedule", "delete", "registry_package"}, preset.EventName) {
+			cacheMode = "read"
+		}
 	}
 	return artifactcache.JobCredential{
 		Repo:       preset.Repository,
 		Ref:        ref,
 		BaseRef:    branchRef(preset.BaseRef),
-		DefaultRef: branchRef(model.AsString(model.NestedMapLookup(preset.Event, "repository", "default_branch"))),
+		DefaultRef: defaultRef,
+		CacheMode:  cacheMode,
 		PublicURL:  publicURL,
 	}
 }

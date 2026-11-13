@@ -1,7 +1,7 @@
 connectrpc.com/connect/v2 v2.0.2 h1:PoPDmOlhc46elsuCdKCKTxjNBb3HJlKF+s/sP2oucPw=
 connectrpc.com/connect/v2 v2.0.2/go.mod h1:N32OLrstcPUzkykFynnefFro3+xzSdOrZlK2jHmS/xo=
-gitea.dev/actionslib v1.5.2 h1:PSSUd+4jIjI+ycqo62+BRgAWkBnzjgeGQAcI3ZqH7LY=
-gitea.dev/actionslib v1.5.2/go.mod h1:i8wUQMnvGwT13f2re2ZTMCFL/TyauQLeOb1L4ngjtPk=
+gitea.dev/actionslib v1.6.0 h1:1xKhGyJzL9CYHJ+ESqFdxetbAU+2U7YIEuPYtsS3Fuk=
+gitea.dev/actionslib v1.6.0/go.mod h1:i8wUQMnvGwT13f2re2ZTMCFL/TyauQLeOb1L4ngjtPk=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
