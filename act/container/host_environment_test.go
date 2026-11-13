@@ -158,27 +158,12 @@ func TestHostEnvironmentAllocatePTY(t *testing.T) {
 }
 
 func TestHostEnvironmentRemoveWorkdir(t *testing.T) {
-	for name, owned := range map[string]bool{"preserves caller workdir": false, "cleans owned workdir": true} {
-		t.Run(name, func(t *testing.T) {
-			miscRoot, workdir := t.TempDir(), t.TempDir()
-			e := &HostEnvironment{
-				Path:         filepath.Join(miscRoot, "hostexecutor"),
-				Workdir:      workdir,
-				CleanWorkdir: owned,
-				Root:         miscRoot,
-			}
-			require.NoError(t, os.MkdirAll(e.Path, 0o700))
-			require.NoError(t, os.MkdirAll(filepath.Join(miscRoot, "tmp"), 0o700))
-			require.NoError(t, e.Remove()(t.Context()))
-			assert.NoDirExists(t, miscRoot)
-			_, err := os.Stat(workdir)
-			if owned {
-				assert.ErrorIs(t, err, os.ErrNotExist)
-			} else {
-				require.NoError(t, err)
-			}
-		})
-	}
+	miscRoot, workdir := t.TempDir(), t.TempDir()
+	e := &HostEnvironment{Path: filepath.Join(miscRoot, "hostexecutor"), Workdir: workdir, Root: miscRoot}
+	require.NoError(t, os.MkdirAll(e.Path, 0o700))
+	require.NoError(t, e.Remove()(t.Context()))
+	assert.NoDirExists(t, miscRoot)
+	assert.DirExists(t, workdir)
 }
 
 func TestRemoveAllWithContextDoesNotHangOnStuckDelete(t *testing.T) {

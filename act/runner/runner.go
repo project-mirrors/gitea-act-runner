@@ -70,7 +70,6 @@ type Config struct {
 	EventJSON             string               // the content of JSON file to use for event.json in containers, overrides EventPath
 	ContainerNamePrefix   string               // the prefix of container name
 	ContainerMaxLifetime  time.Duration        // the max lifetime of job containers
-	CleanWorkdir          bool                 // remove host executor workdir on teardown
 	DefaultActionInstance string               // the default actions web site
 	// DefaultActionInstanceIsSelfHosted reports whether DefaultActionInstance is this
 	// self-hosted Gitea (DEFAULT_ACTIONS_URL=self). It gates token trust: only then may the

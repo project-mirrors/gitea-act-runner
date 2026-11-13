@@ -603,7 +603,6 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		EventJSON:            string(eventJSON),
 		ContainerNamePrefix:  fmt.Sprintf("GITEA-ACTIONS-TASK-%d", task.Id),
 		ContainerMaxLifetime: maxLifetime,
-		CleanWorkdir:         true,
 		ContainerNetworkMode: docker_container.NetworkMode(r.cfg.Container.Network),
 		CacheContainer:       cacheContainer,
 		ContainerNetworkCreateOptions: container.NewDockerNetworkCreateExecutorInput{

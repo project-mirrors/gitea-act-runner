@@ -9,13 +9,13 @@ It is configured under `runner.post_task_script` in the runner YAML config (see 
 For each task, execution order is:
 
 1. Workflow runs (steps, actions, containers).
-2. In-job cleanup (action `post:` steps, container stop/remove).
+2. In-job cleanup (action `post:` steps, container stop/remove, host job directory removal).
 3. Job outputs are reported to Gitea.
 4. Bind-workdir workspace removal, when `container.bind_workdir` is enabled.
 5. **Post-task script** (this hook).
 6. Final task acknowledgement to Gitea (`reporter.Close()`).
 
-The script is **additive**: it does not replace any built-in cleanup. When `container.bind_workdir` is enabled, the task workspace directory has usually already been deleted before the script starts. `GITEA_WORKSPACE` is still set to the path the job used, for reference.
+The script is **additive**: it does not replace any built-in cleanup. The workspace of host jobs, and of container jobs with `container.bind_workdir`, is deleted before the script starts.
 
 ## Runner stays offline until the script finishes
 
@@ -75,7 +75,7 @@ The script receives `runner.envs` / `runner.env_file` values plus:
 | `GITEA_TASK_ID` | Numeric task ID. |
 | `GITEA_RUN_ID` | Workflow run ID, when provided by the server. |
 | `GITEA_REPOSITORY` | Repository slug (`owner/name`). |
-| `GITEA_WORKSPACE` | Workspace path used for the job (may already be deleted). |
+| `GITEA_WORKSPACE` | Workspace path of the job. |
 | `GITEA_JOB_RESULT` | `success`, `failure`, `cancelled`, `skipped`, or `unknown`. |
 
 The script environment is **not** a full copy of the job container environment. System variables such as `PATH` are only present if you define them in `runner.envs` or `runner.env_file`.

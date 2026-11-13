@@ -31,18 +31,15 @@ import (
 )
 
 type HostEnvironment struct {
-	Path      string
-	TmpDir    string
-	ToolCache string
-	Workdir   string
-	// CleanWorkdir means teardown owns Workdir and may delete it. Leave false
-	// when Workdir points at a caller-owned checkout (e.g. `act` local mode).
-	CleanWorkdir bool
-	ActPath      string
-	Root         string
-	TrackingID   string // RUNNER_TRACKING_ID of the job, a step with another value keeps its leftovers
-	StdOut       io.Writer
-	AllocatePTY  bool // allocate a pseudo-TTY for each step's process
+	Path        string
+	TmpDir      string
+	ToolCache   string
+	Workdir     string
+	ActPath     string
+	Root        string
+	TrackingID  string // RUNNER_TRACKING_ID of the job, a step with another value keeps its leftovers
+	StdOut      io.Writer
+	AllocatePTY bool // allocate a pseudo-TTY for each step's process
 
 	// procGroup owns every process the job's steps start. Atomic: Remove may read
 	// it while a step is still starting.
@@ -436,24 +433,14 @@ func (e *HostEnvironment) Remove() common.Executor {
 		rmCtx, rmCancel := context.WithTimeout(context.Background(), hostCleanupTimeout)
 		defer rmCancel()
 
-		var errs []error
-		if err := removePathWithRetry(rmCtx, cmp.Or(e.Root, e.Path)); err != nil {
+		err := removePathWithRetry(rmCtx, cmp.Or(e.Root, e.Path))
+		if err != nil {
 			logger.Warnf("failed to remove host misc state %s: %v", cmp.Or(e.Root, e.Path), err)
-			errs = append(errs, err)
 		}
-		if e.CleanWorkdir {
-			if err := removePathWithRetry(rmCtx, e.Workdir); err != nil {
-				logger.Warnf("failed to remove host workspace %s: %v", e.Workdir, err)
-				errs = append(errs, err)
-			}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil // a stalled delete must not fail job completion
 		}
-		for _, err := range errs {
-			if !errors.Is(err, context.DeadlineExceeded) {
-				return errors.Join(errs...)
-			}
-		}
-		// Teardown timed out; warned above. Do not fail job completion over it.
-		return nil
+		return err
 	}
 }
 
