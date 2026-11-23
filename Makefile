@@ -3,9 +3,9 @@ GO ?= go
 EXECUTABLE := gitea-runner$(shell $(GO) env GOEXE)
 HAS_GO = $(shell hash $(GO) > /dev/null 2>&1 && echo "GO" || echo "NOGO" )
 
-PODMAN_TEST_IMAGE ?= quay.io/containers/podman:v6.1.3-immutable@sha256:1d844fd1fc6ce68c1e72ae19550cc3caef039306219ee007d88f7e67c5df4dd1 # renovate: datasource=docker
-E2E_JOB_IMAGE ?= docker.gitea.com/runner-images:ubuntu-latest@sha256:139605d4a6ab61e48dfd7687b11184881c2d7fcf06bf739e9cadb34f73deb51d # renovate: datasource=docker
-SERVICE_IMAGE ?= nginx:1.31.7-alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d # renovate: datasource=docker
+PODMAN_TEST_IMAGE ?= quay.io/containers/podman:v6.2.0-immutable@sha256:a80e41e595d1abe8eed2cf3f00d0e82612493d0b24b68ef7b04b4255f56816be # renovate: datasource=docker
+E2E_JOB_IMAGE ?= docker.gitea.com/runner-images:ubuntu-latest@sha256:433d703e6214e93234583ecc9cbec0b30fb5691259b0581597aaede21b031f8b # renovate: datasource=docker
+SERVICE_IMAGE ?= nginx:1.31.8-alpine@sha256:fed7e14be83cbd2661a75cdc5b872d936cf155d46c327084d30b8df19ae88d72 # renovate: datasource=docker
 E2E_GITEA_IMAGE ?= gitea/gitea:main-nightly
 E2E_K3S_IMAGE ?= rancher/k3s:v1.37.2-k3s1@sha256:21ea6e0fac4e3930c2ce8aa40ddd41a8b18cb3e9a0222c030dc005e7e88c4332 # renovate: datasource=docker
 WINDOWS_TEST_IMAGE ?= dockurr/windows:6.06@sha256:16fd7c39a3e48bb946d29c59dc6015942e5b900a1fa5d7e5552053bfc48ee2ea # renovate: datasource=docker
@@ -17,7 +17,7 @@ DOCKER_TAG ?= nightly
 DOCKER_REF := $(DOCKER_IMAGE):$(DOCKER_TAG)
 
 GOLANGCI_LINT_PACKAGE ?= github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 # renovate: datasource=go
-GOVULNCHECK_PACKAGE ?= golang.org/x/vuln/cmd/govulncheck@v1.9.0 # renovate: datasource=go
+GOVULNCHECK_PACKAGE ?= golang.org/x/vuln/cmd/govulncheck@v1.10.0 # renovate: datasource=go
 
 GOTEST_FLAGS ?= -race -timeout 20m -parallel 8
 

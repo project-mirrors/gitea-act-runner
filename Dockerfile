@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 ### DIND VARIANT
 #
 #
-FROM docker:29.9.3-dind AS dind
+FROM docker:29.10.0-dind AS dind
 
 ARG VERSION=dev
 
@@ -42,7 +42,7 @@ ENTRYPOINT ["s6-svscan","/etc/s6"]
 ### DIND-ROOTLESS VARIANT
 #
 #
-FROM docker:29.9.3-dind-rootless AS dind-rootless
+FROM docker:29.10.0-dind-rootless AS dind-rootless
 
 ARG VERSION=dev
 
